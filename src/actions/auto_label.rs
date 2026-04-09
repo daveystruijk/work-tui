@@ -1,0 +1,41 @@
+//! **Auto Label** — adds missing repo labels to issues with matched PRs.
+//!
+//! For each issue that has a GitHub PR but is missing the corresponding repo
+//! label, this action adds the label via the Jira API. This is best-effort;
+//! failures are silently ignored.
+//!
+//! # Channel messages produced
+//! - [`BgMsg::Progress`] (per-issue progress)
+//! - [`BgMsg::AutoLabeled`]
+
+use tokio::sync::mpsc;
+
+use crate::actions::Progress;
+use crate::app::BgMsg;
+use crate::jira::JiraClient;
+
+/// A single label update: `(issue_key, new_labels_list)`.
+pub type LabelUpdate = (String, Vec<String>);
+
+/// Spawn auto-labeling for the given issues.
+///
+/// No-ops if `to_label` is empty.
+pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, to_label: Vec<LabelUpdate>) {
+    if to_label.is_empty() {
+        return;
+    }
+
+    let total = to_label.len();
+    tokio::spawn(async move {
+        for (i, (issue_key, new_labels)) in to_label.into_iter().enumerate() {
+            let _ = tx.send(BgMsg::Progress(Progress {
+                action: "auto_label",
+                message: format!("Labeling {issue_key}..."),
+                current: i + 1,
+                total,
+            }));
+            let result = client.update_labels(&issue_key, &new_labels).await;
+            let _ = tx.send(BgMsg::AutoLabeled(issue_key, result.map(|_| ())));
+        }
+    });
+}

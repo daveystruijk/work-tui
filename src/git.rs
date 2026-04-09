@@ -1,0 +1,168 @@
+use std::path::Path;
+
+use color_eyre::{eyre::eyre, Result};
+use tokio::process::Command;
+
+pub fn slugify(summary: &str) -> String {
+    let mut slug = String::with_capacity(summary.len());
+    let mut last_was_dash = false;
+
+    for ch in summary.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_was_dash = false;
+            continue;
+        }
+
+        if last_was_dash {
+            continue;
+        }
+
+        slug.push('-');
+        last_was_dash = true;
+    }
+
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+
+    if slug.len() > 60 {
+        slug.truncate(60);
+
+        while slug.ends_with('-') {
+            slug.pop();
+        }
+    }
+
+    slug
+}
+
+pub fn format_branch_name(issue_key: &str, slug: &str) -> String {
+    if slug.is_empty() {
+        return issue_key.to_string();
+    }
+
+    format!("{issue_key}-{slug}")
+}
+
+/// Check if a repo's working tree is clean (no uncommitted changes).
+pub async fn is_clean(repo_path: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(eyre!(
+            "git status failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
+    Ok(output.stdout.is_empty())
+}
+
+/// Fetch from origin in the given repo.
+pub async fn fetch_origin(repo_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args(["fetch", "origin"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(eyre!(
+            "git fetch origin failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
+    Ok(())
+}
+
+/// Create a new branch off origin/main in the given repo.
+pub async fn create_branch_from_origin_main(
+    repo_path: &Path,
+    issue_key: &str,
+    summary: &str,
+) -> Result<String> {
+    let slug = slugify(summary);
+    let branch_name = format_branch_name(issue_key, &slug);
+
+    let output = Command::new("git")
+        .args(["checkout", "-b", &branch_name, "origin/main"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        return Ok(branch_name);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(eyre!(
+        "{}",
+        if stderr.is_empty() {
+            "git checkout -b failed".to_string()
+        } else {
+            stderr
+        }
+    ))
+}
+
+/// Get the current branch in a specific repo directory.
+pub async fn current_branch_in(repo_path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(eyre!(
+        "{}",
+        if stderr.is_empty() {
+            "git rev-parse failed".to_string()
+        } else {
+            stderr
+        }
+    ))
+}
+
+pub async fn current_branch() -> Result<String> {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .output()
+        .await?;
+
+    if output.status.success() {
+        let branch_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(branch_name);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let message = if stderr.is_empty() {
+        "git rev-parse failed".into()
+    } else {
+        stderr
+    };
+
+    Err(eyre!(message))
+}
