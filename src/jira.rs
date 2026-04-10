@@ -136,8 +136,14 @@ impl JiraClient {
         Ok(())
     }
 
-    pub async fn update_description(&self, issue_key: &str, description: &str) -> Result<()> {
+    pub async fn update_issue(
+        &self,
+        issue_key: &str,
+        summary: &str,
+        description: &str,
+    ) -> Result<()> {
         let mut fields = BTreeMap::new();
+        fields.insert("summary".to_string(), Value::String(summary.to_string()));
         fields.insert(
             "description".to_string(),
             Value::String(description.to_string()),
@@ -258,7 +264,6 @@ impl JiraClient {
             make_issue_type("10004", "Epic"),
         ])
     }
-
 }
 
 fn make_issue_type(id: &str, name: &str) -> IssueType {

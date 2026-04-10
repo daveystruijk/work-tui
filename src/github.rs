@@ -68,7 +68,11 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(eyre!(
             "gh pr list --repo {repo_slug} failed: {}",
-            if stderr.is_empty() { "unknown error" } else { &stderr }
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
         ));
     }
 
@@ -90,6 +94,29 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
             }
         })
         .collect())
+}
+
+/// Create a pull request using `gh pr create` and return the PR URL.
+pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["pr", "create", "--title", title, "--body", body])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(eyre!(
+            "gh pr create failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {

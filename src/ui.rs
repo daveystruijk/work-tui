@@ -33,7 +33,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     match app.screen {
         Screen::List => render_list(app, frame),
         Screen::Detail => render_detail(app, frame),
-        Screen::EditDescription => render_edit(app, frame),
         Screen::New => render_new(app, frame),
     }
 }
@@ -173,7 +172,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     let help_text = if app.inline_new_active() {
         "Esc:Cancel  Enter:Create  type summary…"
     } else {
-        "Ctrl+C:Quit  Enter:View  o:PR  t:Ticket  p:Pick up  e:Edit  n:New  r:Refresh"
+        "Ctrl+C:Quit  Enter:View  o:PR  t:Ticket  p:Pick up  f:Finish  e:Edit  n:New  a:Add label  r:Refresh"
     };
     frame.render_widget(help_bar(help_text), chunks[2]);
 
@@ -480,7 +479,9 @@ fn render_detail(app: &App, frame: &mut Frame) {
     render_activity_panel(app, &issue.key, frame, body_chunks[1]);
 
     frame.render_widget(
-        help_bar("Esc:Back  o:PR  t:Ticket  e:Edit  p:Pick up  a:Add label  r:Refresh  j/k:Scroll"),
+        help_bar(
+            "Esc:Back  o:PR  t:Ticket  e:Edit  p:Pick up  f:Finish  a:Add label  r:Refresh  j/k:Scroll",
+        ),
         chunks[4],
     );
 
@@ -754,64 +755,6 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
         .style(Style::default().bg(SURFACE)),
         modal_layout[2],
     );
-}
-
-fn render_edit(app: &mut App, frame: &mut Frame) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(2),
-            Constraint::Length(3),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
-
-    let title = match app.selected_issue() {
-        Some(issue) => Line::from(vec![
-            Span::styled("✎ ", Style::default().fg(ACCENT_SOFT)),
-            Span::styled(
-                format!("Editing {} description", issue.key),
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        None => Line::from(vec![Span::styled(
-            "✎ Editing description",
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-        )]),
-    };
-
-    frame.render_widget(
-        Paragraph::new(title)
-            .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        " Editor ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(PANEL))
-                    .border_style(Style::default().fg(ACCENT_SOFT)),
-            )
-            .style(Style::default().bg(PANEL)),
-        chunks[0],
-    );
-
-    frame.render_widget(Clear, chunks[1]);
-    app.editor.set_style(Style::default().fg(TEXT).bg(SURFACE));
-    app.editor.set_block(
-        Block::bordered()
-            .title(Span::styled(
-                " Description editor ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ))
-            .style(Style::default().bg(SURFACE))
-            .border_style(Style::default().fg(ACCENT)),
-    );
-    frame.render_widget(&app.editor, chunks[1]);
-
-    frame.render_widget(help_bar("Esc:Cancel  Ctrl+S:Save"), chunks[2]);
-
-    render_status_bar(app, frame, chunks[3]);
 }
 
 fn render_new(app: &App, frame: &mut Frame) {

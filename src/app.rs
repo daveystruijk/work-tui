@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use color_eyre::{eyre::eyre, Result};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tui_textarea::TextArea;
 
 use crate::{
     actions::{self, poll_ci_status::CiChange, Progress},
@@ -32,6 +31,8 @@ pub enum BgMsg {
     IssueEvents(String, EventLoadState),
     /// Pick-up completed (from [`actions::pick_up`]).
     PickedUp(Result<String>),
+    /// Finish completed — PR created (from [`actions::finish`]).
+    Finished(Result<String>),
     /// Inline new issue created (from [`actions::create_inline_issue`]).
     InlineCreated(Result<String>),
     /// Labels updated for auto-labeling (from [`actions::auto_label`]).
@@ -55,19 +56,14 @@ pub enum BgMsg {
 pub enum DisplayRow {
     /// A parent story header (not necessarily in the fetched issues list).
     /// Contains the parent issue key and summary.
-    StoryHeader {
-        key: String,
-        summary: String,
-    },
+    StoryHeader { key: String, summary: String },
     /// An actual issue row. `depth` is 0 for top-level, 1 for subtask under a story.
     Issue {
         index: usize, // index into `self.issues`
         depth: u8,
     },
     /// Inline new-issue placeholder being edited in the list view.
-    InlineNew {
-        depth: u8,
-    },
+    InlineNew { depth: u8 },
 }
 
 /// State for the inline new-issue editor shown in the list view.
@@ -87,7 +83,6 @@ pub struct InlineNewState {
 pub enum Screen {
     List,
     Detail,
-    EditDescription,
     New,
 }
 
@@ -115,13 +110,13 @@ pub struct LabelPickerState {
 
 pub struct App {
     pub should_quit: bool,
+    pub edit_requested: bool,
     pub screen: Screen,
     pub input_mode: InputMode,
     pub issues: Vec<Issue>,
     pub selected_index: usize,
     pub jql: String,
     pub detail_scroll: u16,
-    pub editor: TextArea<'static>,
     pub new_form: Option<NewForm>,
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
@@ -180,13 +175,13 @@ impl App {
         let (bg_tx, bg_rx) = mpsc::unbounded_channel();
         let mut app = Self {
             should_quit: false,
+            edit_requested: false,
             screen: Screen::List,
             input_mode: InputMode::Normal,
             issues: Vec::new(),
             selected_index: 0,
             jql,
             detail_scroll: 0,
-            editor: TextArea::default(),
             new_form: None,
             repo_entries: Vec::new(),
             repo_error: None,
@@ -225,28 +220,17 @@ impl App {
 
     /// Kick off all initialization work as background tasks.
     pub fn spawn_initialize(&self) {
-        actions::initialize::spawn(
-            self.bg_tx.clone(),
-            self.client.clone(),
-            self.jql.clone(),
-        );
+        actions::initialize::spawn(self.bg_tx.clone(), self.client.clone(), self.jql.clone());
     }
 
     /// Spawn a full refresh (issues + PRs + statuses).
     pub fn spawn_refresh(&self) {
-        actions::refresh::spawn(
-            self.bg_tx.clone(),
-            self.client.clone(),
-            self.jql.clone(),
-        );
+        actions::refresh::spawn(self.bg_tx.clone(), self.client.clone(), self.jql.clone());
     }
 
     /// Spawn GitHub PR fetch for all configured repos.
     pub fn spawn_github_prs(&self) {
-        actions::fetch_github_prs::spawn(
-            self.bg_tx.clone(),
-            self.github_repos.clone(),
-        );
+        actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.github_repos.clone());
     }
 
     /// Spawn the periodic CI status polling loop (every 10s).
@@ -442,6 +426,15 @@ impl App {
                     self.status_message = format!("Failed to pick up issue: {err}");
                 }
             },
+            BgMsg::Finished(result) => match result {
+                Ok(pr_url) => {
+                    self.status_message = format!("PR created: {pr_url}");
+                    self.spawn_refresh();
+                }
+                Err(err) => {
+                    self.status_message = format!("Finish failed: {err}");
+                }
+            },
             BgMsg::InlineCreated(result) => match result {
                 Ok(key) => {
                     self.status_message = format!("Created {key}");
@@ -519,6 +512,28 @@ impl App {
             issue_description,
             repos[0].path.clone(),
             self.my_account_id.clone(),
+        );
+    }
+
+    /// Spawn finish workflow in background.
+    pub fn spawn_finish(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let issue_summary = issue.summary().unwrap_or_default();
+        let repos = self.repo_matches(issue);
+        if repos.is_empty() {
+            self.status_message = format!("Cannot finish {issue_key}: no linked repo");
+            return;
+        }
+
+        actions::finish::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            issue_key,
+            issue_summary,
+            repos[0].path.clone(),
         );
     }
 
@@ -684,26 +699,20 @@ impl App {
 
         fn top_level_created(entry: &TopLevel, issues: &[Issue]) -> Option<String> {
             match entry {
-                TopLevel::Standalone(idx) => issues[*idx]
-                    .field::<String>("created")
-                    .and_then(|r| r.ok()),
+                TopLevel::Standalone(idx) => {
+                    issues[*idx].field::<String>("created").and_then(|r| r.ok())
+                }
                 TopLevel::StoryGroup {
                     parent_issue_idx,
                     children,
                     ..
                 } => parent_issue_idx
-                    .and_then(|idx| {
-                        issues[idx]
-                            .field::<String>("created")
-                            .and_then(|r| r.ok())
-                    })
+                    .and_then(|idx| issues[idx].field::<String>("created").and_then(|r| r.ok()))
                     .or_else(|| {
                         children
                             .iter()
                             .filter_map(|idx| {
-                                issues[*idx]
-                                    .field::<String>("created")
-                                    .and_then(|r| r.ok())
+                                issues[*idx].field::<String>("created").and_then(|r| r.ok())
                             })
                             .min()
                     }),
@@ -715,7 +724,10 @@ impl App {
         for entry in top_levels {
             match entry {
                 TopLevel::Standalone(idx) => {
-                    rows.push(DisplayRow::Issue { index: idx, depth: 0 });
+                    rows.push(DisplayRow::Issue {
+                        index: idx,
+                        depth: 0,
+                    });
                 }
                 TopLevel::StoryGroup {
                     key,
@@ -723,12 +735,18 @@ impl App {
                     parent_issue_idx,
                     children,
                 } => {
-                    rows.push(DisplayRow::StoryHeader { key: key.clone(), summary });
+                    rows.push(DisplayRow::StoryHeader {
+                        key: key.clone(),
+                        summary,
+                    });
                     // Skip the parent issue row — it duplicates the story header
                     if let Some(idx) = parent_issue_idx {
                         let issue_key = &self.issues[idx].key;
                         if *issue_key != key {
-                            rows.push(DisplayRow::Issue { index: idx, depth: 1 });
+                            rows.push(DisplayRow::Issue {
+                                index: idx,
+                                depth: 1,
+                            });
                         }
                     }
                     for child_idx in children {
@@ -742,17 +760,6 @@ impl App {
         }
 
         self.display_rows = rows;
-    }
-
-    pub async fn save_description(&mut self) -> Result<()> {
-        let issue_key = match self.selected_issue() {
-            Some(issue) => issue.key.clone(),
-            None => return Err(eyre!("No issue selected")),
-        };
-        let text = self.editor.lines().join("\n");
-        self.client.update_description(&issue_key, &text).await?;
-        self.refresh_issues().await?;
-        Ok(())
     }
 
     pub async fn submit_new(&mut self) -> Result<String> {
@@ -871,15 +878,53 @@ impl App {
         }
     }
 
-    pub fn enter_edit(&mut self) {
-        let issue = match self.selected_issue() {
-            Some(issue) => issue,
-            None => return,
-        };
-        let text = issue.description().unwrap_or_default();
-        self.editor = TextArea::new(text.lines().map(|line| line.to_string()).collect());
-        self.screen = Screen::EditDescription;
-        self.input_mode = InputMode::Editing;
+    /// Open $EDITOR to edit the selected issue's summary and description.
+    ///
+    /// The file format mirrors a git commit message: the first line is the
+    /// summary, followed by a blank line, then the description body.
+    /// Returns `(new_summary, new_description)`, or `None` if unchanged.
+    pub fn edit_issue_via_editor(&self) -> Result<Option<(String, String)>> {
+        let issue = self.selected_issue().ok_or_else(|| eyre!("No issue selected"))?;
+        let original_summary = issue.summary().unwrap_or_default();
+        let original_description = issue.description().unwrap_or_default();
+
+        let content = format!("{original_summary}\n\n{original_description}");
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("{}.txt", issue.key));
+        std::fs::write(&path, &content)?;
+
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+        let status = std::process::Command::new(&editor)
+            .arg(&path)
+            .status()?;
+
+        if !status.success() {
+            std::fs::remove_file(&path).ok();
+            return Err(eyre!("Editor exited with non-zero status"));
+        }
+
+        let raw = std::fs::read_to_string(&path)?;
+        std::fs::remove_file(&path).ok();
+
+        let new_summary = raw.lines().next().unwrap_or("").trim().to_string();
+        let new_description = raw
+            .splitn(2, '\n')
+            .nth(1)
+            .unwrap_or("")
+            .trim_start_matches('\n')
+            .trim_end()
+            .to_string();
+
+        if new_summary.is_empty() {
+            return Err(eyre!("Summary cannot be empty"));
+        }
+
+        if new_summary == original_summary && new_description == original_description {
+            return Ok(None);
+        }
+
+        Ok(Some((new_summary, new_description)))
     }
 
     pub async fn enter_new(&mut self) -> Result<()> {
@@ -1213,8 +1258,6 @@ impl App {
         self.status_message = format!("Opened PR #{number} in browser");
         Ok(())
     }
-
-
 }
 
 async fn open_url_in_browser(url: &str) -> Result<()> {

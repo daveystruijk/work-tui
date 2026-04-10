@@ -64,12 +64,8 @@ pub fn spawn(
                 current: 3,
                 total: 6,
             }));
-            let branch = git::create_branch_from_origin_main(
-                &repo_path,
-                &issue_key,
-                &issue_summary,
-            )
-            .await?;
+            let branch =
+                git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
 
             // Step 4: Assign issue
             let _ = tx.send(BgMsg::Progress(Progress {
@@ -102,9 +98,7 @@ pub fn spawn(
                 current: 6,
                 total: 6,
             }));
-            let prompt = format!(
-                "{issue_summary}\n\n{issue_description}"
-            );
+            let prompt = format!("{issue_summary}\n\n{issue_description}");
             let escaped_prompt = prompt.replace('\'', "'\\''");
             let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
             let repo_dir = repo_path.display().to_string();

@@ -18,7 +18,10 @@ use gouqi::{r#async::Jira, Credentials, SearchOptions};
 fn overrides() -> HashMap<&'static str, Vec<&'static str>> {
     HashMap::from([
         ("ProductionLabel", vec!["production_labels"]),
-        ("AdminPanel", vec!["admin-panel-frontend", "admin-panel-backend"]),
+        (
+            "AdminPanel",
+            vec!["admin-panel-frontend", "admin-panel-backend"],
+        ),
         ("FlutterApp", vec!["dashboard-flutter"]),
     ])
 }
@@ -123,8 +126,11 @@ async fn main() -> Result<()> {
         }
 
         if apply {
-            let values: Vec<serde_json::Value> =
-                new_labels.iter().cloned().map(serde_json::Value::String).collect();
+            let values: Vec<serde_json::Value> = new_labels
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect();
             let mut fields = std::collections::BTreeMap::new();
             fields.insert("labels".to_string(), serde_json::Value::Array(values));
             let edit = gouqi::issues::EditIssue { fields };
@@ -135,6 +141,9 @@ async fn main() -> Result<()> {
         total_updates += 1;
     }
 
-    println!("\n{total_updates} issue(s) {} label changes", if apply { "had" } else { "would have" });
+    println!(
+        "\n{total_updates} issue(s) {} label changes",
+        if apply { "had" } else { "would have" }
+    );
     Ok(())
 }

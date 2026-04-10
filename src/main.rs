@@ -79,6 +79,57 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
                 continue;
             }
             handle_key_event(&mut app, key_event).await;
+
+            if app.edit_requested {
+                app.edit_requested = false;
+
+                let issue_key = app.selected_issue().map(|i| i.key.clone());
+                disable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture
+                )?;
+
+                let result = app.edit_issue_via_editor();
+
+                enable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    EnterAlternateScreen,
+                    EnableMouseCapture
+                )?;
+                terminal.clear()?;
+
+                match result {
+                    Ok(Some((new_summary, new_description))) => {
+                        if let Some(key) = issue_key {
+                            app.status_message = "Saving issue...".to_string();
+                            match app
+                                .client
+                                .update_issue(&key, &new_summary, &new_description)
+                                .await
+                            {
+                                Ok(_) => {
+                                    app.status_message = "Issue updated".to_string();
+                                    app.spawn_refresh();
+                                }
+                                Err(err) => {
+                                    app.status_message = format!("Failed to save issue: {err}");
+                                }
+                            }
+                        } else {
+                            app.status_message = "No issue selected".to_string();
+                        }
+                    }
+                    Ok(None) => {
+                        app.status_message = "Edit cancelled".to_string();
+                    }
+                    Err(err) => {
+                        app.status_message = format!("Editor failed: {err}");
+                    }
+                }
+            }
         }
     }
 
@@ -93,7 +144,6 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
     match app.screen {
         Screen::List => handle_list_normal(app, key_event).await,
         Screen::Detail => handle_detail(app, key_event).await,
-        Screen::EditDescription => handle_edit_description(app, key_event).await,
         Screen::New => handle_new(app, key_event).await,
     }
 }
@@ -146,7 +196,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                 }
                 'e' => {
                     if app.selected_issue().is_some() {
-                        app.enter_edit();
+                        app.edit_requested = true;
                     }
                 }
                 'o' => match app.open_selected_pr_in_browser().await {
@@ -168,6 +218,10 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                 'r' => {
                     app.loading = true;
                     app.spawn_refresh();
+                }
+                'f' => {
+                    app.status_message = "Finishing...".to_string();
+                    app.spawn_finish();
                 }
                 _ => {}
             }
@@ -249,7 +303,11 @@ async fn handle_detail(app: &mut App, key_event: KeyEvent) {
     match key_event.code {
         KeyCode::Esc => app.back_to_list(),
         KeyCode::Char(c) => match c.to_ascii_lowercase() {
-            'e' => app.enter_edit(),
+            'e' => {
+                if app.selected_issue().is_some() {
+                    app.edit_requested = true;
+                }
+            }
             'p' => {
                 app.status_message = "Picking up...".to_string();
                 app.spawn_pick_up();
@@ -263,6 +321,10 @@ async fn handle_detail(app: &mut App, key_event: KeyEvent) {
                 Err(err) => app.status_message = format!("Failed to open issue: {err}"),
             },
             'a' => app.open_label_picker(),
+            'f' => {
+                app.status_message = "Finishing...".to_string();
+                app.spawn_finish();
+            }
             'j' => app.detail_scroll = app.detail_scroll.saturating_add(1),
             'k' => app.detail_scroll = app.detail_scroll.saturating_sub(1),
             'r' => {
@@ -300,35 +362,6 @@ async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {
         KeyCode::Up => app.move_label_picker_selection(false),
         KeyCode::Char(c) => app.label_picker_type_char(c),
         _ => {}
-    }
-}
-
-async fn handle_edit_description(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
-    {
-        app.should_quit = true;
-        return;
-    }
-
-    match key_event.code {
-        KeyCode::Esc => app.back_to_list(),
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                match app.save_description().await {
-                    Ok(_) => {
-                        app.status_message = "Description saved".to_string();
-                        app.back_to_list();
-                    }
-                    Err(err) => app.status_message = format!("Failed to save description: {err}"),
-                }
-            } else {
-                app.editor.input(Event::Key(key_event));
-            }
-        }
-        _ => {
-            app.editor.input(Event::Key(key_event));
-        }
     }
 }
 

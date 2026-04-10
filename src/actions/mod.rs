@@ -12,6 +12,7 @@ pub mod auto_label;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_github_prs;
+pub mod finish;
 pub mod initialize;
 pub mod load_issue_events;
 pub mod pick_up;

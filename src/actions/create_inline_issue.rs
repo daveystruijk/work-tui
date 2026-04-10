@@ -31,13 +31,7 @@ pub fn spawn(
 
     tokio::spawn(async move {
         let result = client
-            .create_issue(
-                &project_key,
-                "10001",
-                &summary,
-                None,
-                parent_key.as_deref(),
-            )
+            .create_issue(&project_key, "10001", &summary, None, parent_key.as_deref())
             .await;
         let _ = tx.send(BgMsg::TaskFinished("Creating issue"));
         let _ = tx.send(BgMsg::InlineCreated(result));
