@@ -981,13 +981,13 @@ impl App {
     }
 
     pub fn reload_repo_entries(&mut self) {
-        match repos::scan_momo_repos() {
+        match repos::scan_repos() {
             Ok(entries) => {
                 self.repo_entries = entries;
                 self.repo_error = None;
             }
             Err(err) => {
-                let message = format!("Failed to read ~/momo: {err}");
+                let message = format!("Failed to scan repos: {err}");
                 self.repo_entries.clear();
                 self.repo_error = Some(message.clone());
                 self.status_message = message;
@@ -999,7 +999,7 @@ impl App {
         self.reload_repo_entries();
         if self.repo_entries.is_empty() {
             if self.repo_error.is_none() {
-                self.status_message = "No repositories found under ~/momo".to_string();
+                self.status_message = "No repositories found in REPOS_DIR".to_string();
             }
             return;
         }

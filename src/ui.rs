@@ -510,7 +510,7 @@ fn render_repo_panel(app: &App, issue: &Issue, frame: &mut Frame, area: Rect) {
         ]));
     } else if app.repo_entries.is_empty() {
         lines.push(Line::from(vec![Span::styled(
-            "No repositories found under ~/momo",
+            "No repositories found in REPOS_DIR",
             Style::default().fg(MUTED),
         )]));
     } else {

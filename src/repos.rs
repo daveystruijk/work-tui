@@ -1,7 +1,4 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{env, fs, path::PathBuf};
 
 use color_eyre::{eyre::eyre, Result};
 
@@ -12,8 +9,8 @@ pub struct RepoEntry {
     pub path: PathBuf,
 }
 
-pub fn scan_momo_repos() -> Result<Vec<RepoEntry>> {
-    let base = momo_root()?;
+pub fn scan_repos() -> Result<Vec<RepoEntry>> {
+    let base = repos_dir()?;
     let read_dir =
         fs::read_dir(&base).map_err(|err| eyre!("Failed to read {}: {err}", base.display()))?;
 
@@ -40,9 +37,9 @@ pub fn scan_momo_repos() -> Result<Vec<RepoEntry>> {
     Ok(repos)
 }
 
-fn momo_root() -> Result<PathBuf> {
-    let home = env::var("HOME").map_err(|_| eyre!("$HOME is not set"))?;
-    let path = Path::new(&home).join("momo");
+fn repos_dir() -> Result<PathBuf> {
+    let dir = env::var("REPOS_DIR").map_err(|_| eyre!("REPOS_DIR is not set"))?;
+    let path = PathBuf::from(dir);
     if !path.exists() {
         return Err(eyre!("{} does not exist", path.display()));
     }
