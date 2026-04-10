@@ -16,9 +16,9 @@ All configuration is done through environment variables. All are **required**:
 ```sh
 export JIRA_URL="https://yourteam.atlassian.net"
 export JIRA_EMAIL="you@example.com"
-export JIRA_API_TOKEN="your-api-token"
+export JIRA_API_TOKEN="your-api-token" # https://id.atlassian.com/manage-profile/security/api-tokens
 export JIRA_JQL="project = PROJ and status != Done and status != 'On development' and status != 'Canceled' ORDER BY updated DESC"
-export GITHUB_REPOS="org/app-backend,org/app-frontend"
+export GITHUB_REPOS="org/app-backend,org/app-frontend,org/etc"
 export REPOS_DIR="/Users/daveystruijk/code"
 ```
 
