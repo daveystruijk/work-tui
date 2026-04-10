@@ -15,6 +15,7 @@ pub mod fetch_github_prs;
 pub mod initialize;
 pub mod load_issue_events;
 pub mod pick_up;
+pub mod poll_ci_status;
 pub mod refresh;
 
 use std::fmt;

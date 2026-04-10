@@ -4,6 +4,7 @@ mod events;
 mod git;
 mod github;
 mod jira;
+mod notify;
 mod repos;
 mod ui;
 
@@ -39,6 +40,7 @@ async fn main() -> Result<()> {
     terminal.draw(|frame| ui::render(&mut app, frame))?;
 
     app.spawn_initialize();
+    app.spawn_poll_ci_status();
 
     let app_result = run_app(&mut terminal, app).await;
 

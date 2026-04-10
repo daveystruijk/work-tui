@@ -6,10 +6,11 @@ use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 
 use crate::{
-    actions::{self, Progress},
+    actions::{self, poll_ci_status::CiChange, Progress},
     events::{Event, EventLevel, EventLoadState, EventSource},
     github::{CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
+    notify,
     repos::{self, RepoEntry},
 };
 
@@ -45,6 +46,8 @@ pub enum BgMsg {
     ///
     /// Rendered in the status bar with step-by-step feedback.
     Progress(Progress),
+    /// One or more PR CI statuses changed (from [`actions::poll_ci_status`]).
+    CiStatusChanged(Vec<CiChange>),
 }
 
 /// A row in the display list — either a story header, an issue, or an inline-new placeholder.
@@ -243,6 +246,15 @@ impl App {
         actions::fetch_github_prs::spawn(
             self.bg_tx.clone(),
             self.github_repos.clone(),
+        );
+    }
+
+    /// Spawn the periodic CI status polling loop (every 10s).
+    pub fn spawn_poll_ci_status(&self) {
+        actions::poll_ci_status::spawn(
+            self.bg_tx.clone(),
+            self.github_repos.clone(),
+            std::time::Duration::from_secs(10),
         );
     }
 
@@ -465,6 +477,22 @@ impl App {
             }
             BgMsg::Progress(progress) => {
                 self.status_message = progress.to_string();
+            }
+            BgMsg::CiStatusChanged(changes) => {
+                for change in &changes {
+                    let status_label = match &change.new_status {
+                        CheckStatus::Pass => "passed ✓",
+                        CheckStatus::Fail => "failed ✗",
+                        CheckStatus::Pending => "running",
+                    };
+                    notify::send(
+                        "CI Status Changed",
+                        &format!(
+                            "PR #{} ({}) — CI {}",
+                            change.pr_number, change.head_branch, status_label
+                        ),
+                    );
+                }
             }
         }
     }
