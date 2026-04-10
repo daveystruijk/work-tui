@@ -2,6 +2,8 @@
 
 A terminal UI for picking up work.
 
+![Demo](docs/demo.gif)
+
 ## Prerequisites
 
 - Rust toolchain (`cargo`)
