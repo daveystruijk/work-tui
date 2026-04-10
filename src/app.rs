@@ -110,7 +110,7 @@ pub struct LabelPickerState {
 
 pub struct App {
     pub should_quit: bool,
-    pub edit_requested: bool,
+
     pub screen: Screen,
     pub input_mode: InputMode,
     pub issues: Vec<Issue>,
@@ -150,6 +150,8 @@ pub struct App {
     pub prev_issue_snapshot: HashMap<String, String>,
     /// Issue keys that should blink because they are new or changed. Value = remaining ticks.
     pub highlight_ticks: HashMap<String, usize>,
+    /// Story keys that are currently collapsed (children hidden).
+    pub collapsed_stories: HashSet<String>,
     /// Configured GitHub repos to scan for PRs (from GITHUB_REPOS env var)
     pub github_repos: Vec<String>,
     /// Maps issue key -> matched PR info from GitHub
@@ -175,7 +177,6 @@ impl App {
         let (bg_tx, bg_rx) = mpsc::unbounded_channel();
         let mut app = Self {
             should_quit: false,
-            edit_requested: false,
             screen: Screen::List,
             input_mode: InputMode::Normal,
             issues: Vec::new(),
@@ -205,6 +206,7 @@ impl App {
             inline_new: None,
             prev_issue_snapshot: HashMap::new(),
             highlight_ticks: HashMap::new(),
+            collapsed_stories: HashSet::new(),
             github_repos,
             github_prs: HashMap::new(),
             running_tasks: HashSet::new(),
@@ -611,6 +613,20 @@ impl App {
         None
     }
 
+    /// Toggle collapse state for the story at the current selection.
+    /// Returns true if a toggle happened (i.e. selection was on a StoryHeader).
+    pub fn toggle_story_collapse(&mut self) -> bool {
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+            _ => return false,
+        };
+        if !self.collapsed_stories.remove(&key) {
+            self.collapsed_stories.insert(key);
+        }
+        self.rebuild_display_rows();
+        true
+    }
+
     /// Build the flattened display rows from the current issues list.
     /// Groups subtasks under their parent story headers, sorted by key.
     pub fn rebuild_display_rows(&mut self) {
@@ -634,15 +650,13 @@ impl App {
             }
         }
 
-        // Sort children within each parent group by creation date (newest first)
-        let created_str = |idx: &usize| -> String {
-            self.issues[*idx]
-                .field::<String>("created")
-                .and_then(|r| r.ok())
-                .unwrap_or_default()
-        };
+        // Sort children within each parent group by status, then creation date descending
         for (_, children) in parent_groups.values_mut() {
-            children.sort_by(|a, b| created_str(b).cmp(&created_str(a)));
+            children.sort_by(|a, b| {
+                status_rank(&self.issues[*a])
+                    .cmp(&status_rank(&self.issues[*b]))
+                    .then_with(|| issue_created_str(&self.issues[*b]).cmp(&issue_created_str(&self.issues[*a])))
+            });
         }
 
         // Track which standalone issues are themselves parents
@@ -690,32 +704,58 @@ impl App {
             });
         }
 
-        // Sort all top-level entries by creation date (newest first)
+        // Sort all top-level entries by status, then creation date descending
         top_levels.sort_by(|a, b| {
-            let date_b = top_level_created(b, &self.issues);
-            let date_a = top_level_created(a, &self.issues);
-            date_b.cmp(&date_a)
+            let rank_a = top_level_status_rank(a, &self.issues);
+            let rank_b = top_level_status_rank(b, &self.issues);
+            rank_a
+                .cmp(&rank_b)
+                .then_with(|| top_level_created(b, &self.issues).cmp(&top_level_created(a, &self.issues)))
         });
 
-        fn top_level_created(entry: &TopLevel, issues: &[Issue]) -> Option<String> {
+        fn top_level_created(entry: &TopLevel, issues: &[Issue]) -> String {
             match entry {
-                TopLevel::Standalone(idx) => {
-                    issues[*idx].field::<String>("created").and_then(|r| r.ok())
-                }
+                TopLevel::Standalone(idx) => issue_created_str(&issues[*idx]),
                 TopLevel::StoryGroup {
                     parent_issue_idx,
                     children,
                     ..
-                } => parent_issue_idx
-                    .and_then(|idx| issues[idx].field::<String>("created").and_then(|r| r.ok()))
-                    .or_else(|| {
-                        children
-                            .iter()
-                            .filter_map(|idx| {
-                                issues[*idx].field::<String>("created").and_then(|r| r.ok())
-                            })
-                            .min()
-                    }),
+                } => {
+                    let parent_created = parent_issue_idx.map(|idx| issue_created_str(&issues[idx]));
+                    let child_max = children
+                        .iter()
+                        .map(|idx| issue_created_str(&issues[*idx]))
+                        .max();
+                    parent_created.into_iter().chain(child_max).max().unwrap_or_default()
+                }
+            }
+        }
+
+        fn issue_created_str(issue: &Issue) -> String {
+            issue
+                .field::<String>("created")
+                .and_then(|r| r.ok())
+                .unwrap_or_default()
+        }
+
+        fn top_level_status_rank(entry: &TopLevel, issues: &[Issue]) -> u8 {
+            match entry {
+                TopLevel::Standalone(idx) => status_rank(&issues[*idx]),
+                TopLevel::StoryGroup {
+                    parent_issue_idx,
+                    children,
+                    ..
+                } => {
+                    let child_min = children
+                        .iter()
+                        .map(|idx| status_rank(&issues[*idx]))
+                        .min()
+                        .unwrap_or(u8::MAX);
+                    let parent_rank = parent_issue_idx
+                        .map(|idx| status_rank(&issues[idx]))
+                        .unwrap_or(u8::MAX);
+                    child_min.min(parent_rank)
+                }
             }
         }
 
@@ -739,21 +779,23 @@ impl App {
                         key: key.clone(),
                         summary,
                     });
-                    // Skip the parent issue row — it duplicates the story header
-                    if let Some(idx) = parent_issue_idx {
-                        let issue_key = &self.issues[idx].key;
-                        if *issue_key != key {
+                    if !self.collapsed_stories.contains(&key) {
+                        // Skip the parent issue row — it duplicates the story header
+                        if let Some(idx) = parent_issue_idx {
+                            let issue_key = &self.issues[idx].key;
+                            if *issue_key != key {
+                                rows.push(DisplayRow::Issue {
+                                    index: idx,
+                                    depth: 1,
+                                });
+                            }
+                        }
+                        for child_idx in children {
                             rows.push(DisplayRow::Issue {
-                                index: idx,
+                                index: child_idx,
                                 depth: 1,
                             });
                         }
-                    }
-                    for child_idx in children {
-                        rows.push(DisplayRow::Issue {
-                            index: child_idx,
-                            depth: 1,
-                        });
                     }
                 }
             }
@@ -878,54 +920,6 @@ impl App {
         }
     }
 
-    /// Open $EDITOR to edit the selected issue's summary and description.
-    ///
-    /// The file format mirrors a git commit message: the first line is the
-    /// summary, followed by a blank line, then the description body.
-    /// Returns `(new_summary, new_description)`, or `None` if unchanged.
-    pub fn edit_issue_via_editor(&self) -> Result<Option<(String, String)>> {
-        let issue = self.selected_issue().ok_or_else(|| eyre!("No issue selected"))?;
-        let original_summary = issue.summary().unwrap_or_default();
-        let original_description = issue.description().unwrap_or_default();
-
-        let content = format!("{original_summary}\n\n{original_description}");
-
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("{}.txt", issue.key));
-        std::fs::write(&path, &content)?;
-
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-        let status = std::process::Command::new(&editor)
-            .arg(&path)
-            .status()?;
-
-        if !status.success() {
-            std::fs::remove_file(&path).ok();
-            return Err(eyre!("Editor exited with non-zero status"));
-        }
-
-        let raw = std::fs::read_to_string(&path)?;
-        std::fs::remove_file(&path).ok();
-
-        let new_summary = raw.lines().next().unwrap_or("").trim().to_string();
-        let new_description = raw
-            .splitn(2, '\n')
-            .nth(1)
-            .unwrap_or("")
-            .trim_start_matches('\n')
-            .trim_end()
-            .to_string();
-
-        if new_summary.is_empty() {
-            return Err(eyre!("Summary cannot be empty"));
-        }
-
-        if new_summary == original_summary && new_description == original_description {
-            return Ok(None);
-        }
-
-        Ok(Some((new_summary, new_description)))
-    }
 
     pub async fn enter_new(&mut self) -> Result<()> {
         let project_key = self.derive_project_key();
@@ -1258,6 +1252,21 @@ impl App {
         self.status_message = format!("Opened PR #{number} in browser");
         Ok(())
     }
+}
+
+/// Numeric rank for sorting issues by status. Lower = higher in the list.
+fn status_rank(issue: &Issue) -> u8 {
+    const ORDER: &[&str] = &["review", "progress", "rejected", "plan", "proposed"];
+    let name = issue
+        .status()
+        .map(|s| s.name)
+        .unwrap_or_default()
+        .to_lowercase();
+    ORDER
+        .iter()
+        .position(|&keyword| name.contains(keyword))
+        .map(|i| i as u8)
+        .unwrap_or(ORDER.len() as u8)
 }
 
 async fn open_url_in_browser(url: &str) -> Result<()> {

@@ -109,7 +109,10 @@ fn render_list(app: &mut App, frame: &mut Frame) {
         .iter()
         .enumerate()
         .map(|(row_idx, display_row)| match display_row {
-            DisplayRow::StoryHeader { key, summary } => story_header_row(key, summary, row_idx),
+            DisplayRow::StoryHeader { key, summary } => {
+                let collapsed = app.collapsed_stories.contains(key);
+                story_header_row(key, summary, row_idx, collapsed)
+            }
             DisplayRow::Issue { index, depth } => {
                 issue_row(app, &app.issues[*index], row_idx, *depth)
             }
@@ -172,7 +175,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     let help_text = if app.inline_new_active() {
         "Esc:Cancel  Enter:Create  type summary…"
     } else {
-        "Ctrl+C:Quit  Enter:View  o:PR  t:Ticket  p:Pick up  f:Finish  e:Edit  n:New  a:Add label  r:Refresh"
+        "Ctrl+C:Quit  Enter:View  o:PR  t:Ticket  p:Pick up  f:Finish  n:New  a:Add label  r:Refresh"
     };
     frame.render_widget(help_bar(help_text), chunks[2]);
 
@@ -183,7 +186,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     }
 }
 
-fn story_header_row(key: &str, summary: &str, idx: usize) -> Row<'static> {
+fn story_header_row(key: &str, summary: &str, idx: usize, collapsed: bool) -> Row<'static> {
     let row_style = if idx % 2 == 0 {
         Style::default().fg(MUTED).bg(PANEL)
     } else {
@@ -191,10 +194,11 @@ fn story_header_row(key: &str, summary: &str, idx: usize) -> Row<'static> {
     };
 
     let first_line = summary.lines().next().unwrap_or_default().to_string();
+    let icon = if collapsed { "▶" } else { "▼" };
 
     Row::new(vec![
         Cell::from(Span::styled(
-            format!("📖 {}", key),
+            format!("{} {}", icon, key),
             Style::default()
                 .fg(ACCENT_SOFT)
                 .add_modifier(Modifier::BOLD),
@@ -480,7 +484,7 @@ fn render_detail(app: &App, frame: &mut Frame) {
 
     frame.render_widget(
         help_bar(
-            "Esc:Back  o:PR  t:Ticket  e:Edit  p:Pick up  f:Finish  a:Add label  r:Refresh  j/k:Scroll",
+            "Esc:Back  o:PR  t:Ticket  p:Pick up  f:Finish  a:Add label  r:Refresh  j/k:Scroll",
         ),
         chunks[4],
     );

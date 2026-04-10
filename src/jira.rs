@@ -136,22 +136,6 @@ impl JiraClient {
         Ok(())
     }
 
-    pub async fn update_issue(
-        &self,
-        issue_key: &str,
-        summary: &str,
-        description: &str,
-    ) -> Result<()> {
-        let mut fields = BTreeMap::new();
-        fields.insert("summary".to_string(), Value::String(summary.to_string()));
-        fields.insert(
-            "description".to_string(),
-            Value::String(description.to_string()),
-        );
-        let edit = EditIssue { fields };
-        self.jira.issues().update(issue_key, edit).await?;
-        Ok(())
-    }
 
     pub async fn update_labels(&self, issue_key: &str, labels: &[String]) -> Result<()> {
         let values = labels.iter().cloned().map(Value::String).collect();

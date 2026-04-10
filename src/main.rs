@@ -80,56 +80,7 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             }
             handle_key_event(&mut app, key_event).await;
 
-            if app.edit_requested {
-                app.edit_requested = false;
 
-                let issue_key = app.selected_issue().map(|i| i.key.clone());
-                disable_raw_mode()?;
-                execute!(
-                    terminal.backend_mut(),
-                    LeaveAlternateScreen,
-                    DisableMouseCapture
-                )?;
-
-                let result = app.edit_issue_via_editor();
-
-                enable_raw_mode()?;
-                execute!(
-                    terminal.backend_mut(),
-                    EnterAlternateScreen,
-                    EnableMouseCapture
-                )?;
-                terminal.clear()?;
-
-                match result {
-                    Ok(Some((new_summary, new_description))) => {
-                        if let Some(key) = issue_key {
-                            app.status_message = "Saving issue...".to_string();
-                            match app
-                                .client
-                                .update_issue(&key, &new_summary, &new_description)
-                                .await
-                            {
-                                Ok(_) => {
-                                    app.status_message = "Issue updated".to_string();
-                                    app.spawn_refresh();
-                                }
-                                Err(err) => {
-                                    app.status_message = format!("Failed to save issue: {err}");
-                                }
-                            }
-                        } else {
-                            app.status_message = "No issue selected".to_string();
-                        }
-                    }
-                    Ok(None) => {
-                        app.status_message = "Edit cancelled".to_string();
-                    }
-                    Err(err) => {
-                        app.status_message = format!("Editor failed: {err}");
-                    }
-                }
-            }
         }
     }
 
@@ -194,11 +145,6 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.status_message = "Picking up...".to_string();
                     app.spawn_pick_up();
                 }
-                'e' => {
-                    if app.selected_issue().is_some() {
-                        app.edit_requested = true;
-                    }
-                }
                 'o' => match app.open_selected_pr_in_browser().await {
                     Ok(_) => {}
                     Err(err) => app.status_message = format!("{err}"),
@@ -228,9 +174,11 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
         }
         KeyCode::Enter => {
             app.pending_g = false;
-            if app.selected_issue().is_some() {
-                app.enter_detail();
-                app.spawn_load_issue_events();
+            if !app.toggle_story_collapse() {
+                if app.selected_issue().is_some() {
+                    app.enter_detail();
+                    app.spawn_load_issue_events();
+                }
             }
         }
         KeyCode::Down => {
@@ -303,11 +251,6 @@ async fn handle_detail(app: &mut App, key_event: KeyEvent) {
     match key_event.code {
         KeyCode::Esc => app.back_to_list(),
         KeyCode::Char(c) => match c.to_ascii_lowercase() {
-            'e' => {
-                if app.selected_issue().is_some() {
-                    app.edit_requested = true;
-                }
-            }
             'p' => {
                 app.status_message = "Picking up...".to_string();
                 app.spawn_pick_up();
