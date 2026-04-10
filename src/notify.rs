@@ -1,15 +1,8 @@
-//! Desktop notifications via `terminal-notifier` (macOS).
+//! Native desktop notifications via `notify-rust`.
 
-use tokio::process::Command;
+use notify_rust::Notification;
 
 /// Send a desktop notification. Fire-and-forget — errors are silently ignored.
 pub fn send(title: &str, message: &str) {
-    let title = title.to_string();
-    let message = message.to_string();
-    tokio::spawn(async move {
-        let _ = Command::new("terminal-notifier")
-            .args(["-title", &title, "-message", &message, "-sound", "default"])
-            .output()
-            .await;
-    });
+    let _ = Notification::new().summary(title).body(message).show();
 }
