@@ -58,6 +58,7 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
         terminal.draw(|frame| ui::render(&mut app, frame))?;
 
         app.tick_spinner();
+        app.tick_completed_tasks();
 
         // Drain all pending background messages (non-blocking)
         while let Ok(msg) = app.bg_rx.try_recv() {
@@ -96,6 +97,10 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
 }
 
 async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
+    if app.label_picker_active() {
+        handle_label_picker(app, key_event).await;
+        return;
+    }
     if key_event.modifiers.contains(KeyModifiers::CONTROL) {
         match key_event.code {
             KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -157,6 +162,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                         }
                     }
                 }
+                'a' => app.open_label_picker(),
                 'r' => {
                     app.loading = true;
                     app.spawn_refresh();
@@ -282,18 +288,15 @@ async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {
 
     match key_event.code {
         KeyCode::Esc => app.close_label_picker(),
-        KeyCode::Enter => match app.add_label_from_picker().await {
-            Ok(true) => app.close_label_picker(),
-            Ok(false) => {}
-            Err(err) => app.status_message = format!("Failed to add label: {err}"),
-        },
+        KeyCode::Enter => {
+            if app.add_label_from_picker() {
+                app.close_label_picker();
+            }
+        }
+        KeyCode::Backspace => app.label_picker_backspace(),
         KeyCode::Down => app.move_label_picker_selection(true),
         KeyCode::Up => app.move_label_picker_selection(false),
-        KeyCode::Char(c) => match c.to_ascii_lowercase() {
-            'j' => app.move_label_picker_selection(true),
-            'k' => app.move_label_picker_selection(false),
-            _ => {}
-        },
+        KeyCode::Char(c) => app.label_picker_type_char(c),
         _ => {}
     }
 }

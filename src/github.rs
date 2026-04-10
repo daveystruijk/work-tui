@@ -35,13 +35,6 @@ pub enum GithubStatus {
 }
 
 #[derive(Deserialize)]
-struct GhPr {
-    number: u64,
-    state: String,
-    url: String,
-}
-
-#[derive(Deserialize)]
 struct GhPrWithBranch {
     number: u64,
     state: String,
@@ -50,12 +43,6 @@ struct GhPrWithBranch {
     head_ref_name: String,
     #[serde(rename = "statusCheckRollup", default)]
     status_check_rollup: Option<Vec<GhCheckRollup>>,
-}
-
-#[derive(Deserialize)]
-struct GhCheck {
-    conclusion: Option<String>,
-    status: String,
 }
 
 /// Fetch all PRs for a given `owner/repo` in a single `gh` call.
@@ -128,109 +115,6 @@ fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {
         return CheckStatus::Pending;
     }
     CheckStatus::Pass
-}
-
-/// Search for a PR matching the given branch head in a specific repo directory.
-pub async fn find_pr_for_branch(repo_path: &Path, branch: &str) -> Result<Option<PrInfo>> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "all",
-            "--json",
-            "number,state,url",
-            "--limit",
-            "1",
-        ])
-        .current_dir(repo_path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(eyre!(
-            "gh pr list failed: {}",
-            if stderr.is_empty() {
-                "unknown error"
-            } else {
-                &stderr
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let prs: Vec<GhPr> = serde_json::from_str(&stdout)?;
-
-    let Some(pr) = prs.into_iter().next() else {
-        return Ok(None);
-    };
-
-    let checks = get_check_status(repo_path, pr.number)
-        .await
-        .unwrap_or(CheckStatus::Pending);
-
-    Ok(Some(PrInfo {
-        number: pr.number,
-        state: pr.state,
-        checks,
-        url: pr.url,
-        head_branch: String::new(),
-        repo_slug: String::new(),
-    }))
-}
-
-async fn get_check_status(repo_path: &Path, pr_number: u64) -> Result<CheckStatus> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "checks",
-            &pr_number.to_string(),
-            "--json",
-            "conclusion,status",
-        ])
-        .current_dir(repo_path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        // "no checks" is not an error — it means no CI configured
-        if stderr.contains("no checks") {
-            return Ok(CheckStatus::Pass);
-        }
-        return Err(eyre!(
-            "gh pr checks failed: {}",
-            if stderr.is_empty() {
-                "unknown error"
-            } else {
-                &stderr
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let checks: Vec<GhCheck> = serde_json::from_str(&stdout)?;
-
-    if checks.is_empty() {
-        return Ok(CheckStatus::Pass);
-    }
-
-    let any_fail = checks.iter().any(|c| {
-        c.conclusion.as_deref() == Some("failure") || c.conclusion.as_deref() == Some("cancelled")
-    });
-    if any_fail {
-        return Ok(CheckStatus::Fail);
-    }
-
-    let any_pending = checks.iter().any(|c| c.status != "completed");
-    if any_pending {
-        return Ok(CheckStatus::Pending);
-    }
-
-    Ok(CheckStatus::Pass)
 }
 
 pub async fn get_pr_events(repo_path: &Path, pr_number: u64) -> Result<Vec<Event>> {

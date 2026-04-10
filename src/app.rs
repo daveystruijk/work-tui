@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use color_eyre::{eyre::eyre, Result};
 use tokio::process::Command;
@@ -25,10 +25,6 @@ pub enum BgMsg {
     Issues(Result<Vec<Issue>>),
     /// GitHub PRs fetched for all configured repos (from [`actions::fetch_github_prs`]).
     GithubPrs(Vec<PrInfo>),
-    /// GitHub status resolved for a single issue (from [`actions::fetch_github_statuses`]).
-    GithubStatus(String, GithubStatus),
-    /// All GitHub statuses done (from [`actions::fetch_github_statuses`]).
-    GithubStatusesDone,
     /// Active branches resolved (from [`actions::detect_active_branches`]).
     ActiveBranches(HashMap<String, String>),
     /// Issue events loaded for detail view (from [`actions::load_issue_events`]).
@@ -39,6 +35,12 @@ pub enum BgMsg {
     InlineCreated(Result<String>),
     /// Labels updated for auto-labeling (from [`actions::auto_label`]).
     AutoLabeled(String, Result<()>),
+    /// Label added to an issue (from [`actions::add_label`]).
+    LabelAdded(Result<(String, String)>),
+    /// A background task has started. The payload is the human-readable task name.
+    TaskStarted(&'static str),
+    /// A background task has finished. The payload is the human-readable task name.
+    TaskFinished(&'static str),
     /// Generic progress update from any long-running action.
     ///
     /// Rendered in the status bar with step-by-step feedback.
@@ -102,9 +104,10 @@ pub struct NewForm {
     pub project_key: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LabelPickerState {
     pub selected: usize,
+    pub filter: String,
 }
 
 pub struct App {
@@ -145,10 +148,18 @@ pub struct App {
     pub display_rows: Vec<DisplayRow>,
     /// Active inline new-issue editor, if any.
     pub inline_new: Option<InlineNewState>,
+    /// Snapshot of issue keys → status names from the previous fetch, used to detect changes.
+    pub prev_issue_snapshot: HashMap<String, String>,
+    /// Issue keys that should blink because they are new or changed. Value = remaining ticks.
+    pub highlight_ticks: HashMap<String, usize>,
     /// Configured GitHub repos to scan for PRs (from GITHUB_REPOS env var)
     pub github_repos: Vec<String>,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
+    /// Currently running background task names
+    pub running_tasks: HashSet<&'static str>,
+    /// Recently completed task names (for brief status display), with remaining ticks
+    pub completed_tasks: VecDeque<(&'static str, usize)>,
     /// Sender for background tasks to deliver results
     pub bg_tx: mpsc::UnboundedSender<BgMsg>,
     /// Receiver polled in the event loop
@@ -194,8 +205,12 @@ impl App {
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
+            prev_issue_snapshot: HashMap::new(),
+            highlight_ticks: HashMap::new(),
             github_repos,
             github_prs: HashMap::new(),
+            running_tasks: HashSet::new(),
+            completed_tasks: VecDeque::new(),
             bg_tx,
             bg_rx,
         };
@@ -229,22 +244,6 @@ impl App {
             self.bg_tx.clone(),
             self.github_repos.clone(),
         );
-    }
-
-    /// Spawn GitHub status checks for all issues with matching repos.
-    pub fn spawn_github_statuses(&self) {
-        let lookups: Vec<_> = self
-            .issues
-            .iter()
-            .filter_map(|issue| {
-                let repos = self.repo_matches(issue);
-                let repo = repos.first()?;
-                let branch_prefix = issue.key.to_lowercase();
-                Some((issue.key.clone(), branch_prefix, repo.path.clone()))
-            })
-            .collect();
-
-        actions::fetch_github_statuses::spawn(self.bg_tx.clone(), lookups);
     }
 
     /// Spawn active branch detection for all issues.
@@ -334,9 +333,40 @@ impl App {
             },
             BgMsg::Issues(result) => match result {
                 Ok(issues) => {
+                    let prev_snapshot = self
+                        .issues
+                        .iter()
+                        .map(|i| {
+                            let status = i.status().map(|s| s.name).unwrap_or_default();
+                            (i.key.clone(), status)
+                        })
+                        .collect::<HashMap<_, _>>();
                     let selected_key = self.selected_issue().map(|i| i.key.clone());
                     self.issues = issues;
                     self.rebuild_display_rows();
+                    if !prev_snapshot.is_empty() {
+                        for issue in &self.issues {
+                            let key = &issue.key;
+                            let current_status = issue.status().map(|s| s.name).unwrap_or_default();
+                            match prev_snapshot.get(key) {
+                                None => {
+                                    self.highlight_ticks.insert(key.clone(), 75);
+                                }
+                                Some(old_status) if *old_status != current_status => {
+                                    self.highlight_ticks.insert(key.clone(), 75);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    self.prev_issue_snapshot = self
+                        .issues
+                        .iter()
+                        .map(|i| {
+                            let status = i.status().map(|s| s.name).unwrap_or_default();
+                            (i.key.clone(), status)
+                        })
+                        .collect();
                     let next_index = selected_key
                         .and_then(|key| {
                             self.display_rows.iter().position(|row| match row {
@@ -354,7 +384,6 @@ impl App {
                     self.github_statuses.clear();
                     self.issue_events.clear();
                     self.github_prs.clear();
-                    self.status_message = "Issues loaded, fetching PRs...".into();
                     // Chain: fetch branches, PRs, statuses
                     self.spawn_active_branches();
                     self.spawn_github_prs();
@@ -369,6 +398,7 @@ impl App {
             }
             BgMsg::GithubPrs(all_prs) => {
                 self.github_prs.clear();
+                self.github_statuses.clear();
                 for issue in &self.issues {
                     let key_lower = issue.key.to_lowercase();
                     let matched = all_prs
@@ -376,19 +406,16 @@ impl App {
                         .find(|pr| pr.head_branch.to_lowercase().starts_with(&key_lower));
                     if let Some(pr) = matched {
                         self.github_prs.insert(issue.key.clone(), pr.clone());
+                        self.github_statuses
+                            .insert(issue.key.clone(), GithubStatus::Found(pr.clone()));
                     }
                 }
-                self.status_message = "PRs loaded, checking CI...".into();
                 self.spawn_auto_label();
-                self.spawn_github_statuses();
-            }
-            BgMsg::GithubStatus(key, status) => {
-                self.github_statuses.insert(key, status);
-            }
-            BgMsg::GithubStatusesDone => {
                 self.github_loading = false;
                 self.refresh_latest_activity();
-                self.status_message = "Ready".into();
+                if self.running_tasks.is_empty() {
+                    self.status_message = "Ready".into();
+                }
             }
             BgMsg::IssueEvents(key, state) => {
                 self.issue_events.insert(key, state);
@@ -418,6 +445,24 @@ impl App {
             BgMsg::AutoLabeled(_key, _result) => {
                 // Silent — auto-labeling is best-effort
             }
+            BgMsg::LabelAdded(result) => match result {
+                Ok((issue_key, label)) => {
+                    self.status_message = format!("Added label {label} to {issue_key}");
+                    self.spawn_refresh();
+                }
+                Err(err) => {
+                    self.status_message = format!("Failed to add label: {err}");
+                }
+            },
+            BgMsg::TaskStarted(name) => {
+                self.running_tasks.insert(name);
+                self.update_task_status();
+            }
+            BgMsg::TaskFinished(name) => {
+                self.running_tasks.remove(name);
+                self.completed_tasks.push_back((name, 50));
+                self.update_task_status();
+            }
             BgMsg::Progress(progress) => {
                 self.status_message = progress.to_string();
             }
@@ -425,14 +470,16 @@ impl App {
     }
 
     /// Spawn pick-up issue in background.
-    pub fn spawn_pick_up(&self) {
+    pub fn spawn_pick_up(&mut self) {
         let Some(issue) = self.selected_issue() else {
             return;
         };
         let issue_key = issue.key.clone();
         let issue_summary = issue.summary().unwrap_or_default();
+        let issue_description = issue.description().unwrap_or_default();
         let repos = self.repo_matches(issue);
         if repos.is_empty() {
+            self.status_message = format!("Cannot pick up {issue_key}: no linked repo");
             return;
         }
 
@@ -441,6 +488,7 @@ impl App {
             self.client.clone(),
             issue_key,
             issue_summary,
+            issue_description,
             repos[0].path.clone(),
             self.my_account_id.clone(),
         );
@@ -955,7 +1003,10 @@ impl App {
             }
             return;
         }
-        self.label_picker = Some(LabelPickerState { selected: 0 });
+        self.label_picker = Some(LabelPickerState {
+            selected: 0,
+            filter: String::new(),
+        });
     }
 
     pub fn close_label_picker(&mut self) {
@@ -966,16 +1017,31 @@ impl App {
         self.label_picker.is_some()
     }
 
+    pub fn filtered_repo_entries(&self) -> Vec<&RepoEntry> {
+        let Some(picker) = &self.label_picker else {
+            return Vec::new();
+        };
+        if picker.filter.is_empty() {
+            return self.repo_entries.iter().collect();
+        }
+        let query = picker.filter.to_lowercase();
+        self.repo_entries
+            .iter()
+            .filter(|e| e.label.to_lowercase().contains(&query))
+            .collect()
+    }
+
     pub fn move_label_picker_selection(&mut self, down: bool) {
+        let count = self.filtered_repo_entries().len();
         let Some(picker) = self.label_picker.as_mut() else {
             return;
         };
-        if self.repo_entries.is_empty() {
+        if count == 0 {
             picker.selected = 0;
             return;
         }
         if down {
-            picker.selected = (picker.selected + 1).min(self.repo_entries.len() - 1);
+            picker.selected = (picker.selected + 1).min(count - 1);
             return;
         }
         if picker.selected == 0 {
@@ -986,7 +1052,23 @@ impl App {
 
     pub fn label_picker_entry(&self) -> Option<&RepoEntry> {
         let picker = self.label_picker.as_ref()?;
-        self.repo_entries.get(picker.selected)
+        self.filtered_repo_entries().get(picker.selected).copied()
+    }
+
+    pub fn label_picker_type_char(&mut self, ch: char) {
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.filter.push(ch);
+        picker.selected = 0;
+    }
+
+    pub fn label_picker_backspace(&mut self) {
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.filter.pop();
+        picker.selected = 0;
     }
 
     pub fn repo_matches(&self, issue: &Issue) -> Vec<&RepoEntry> {
@@ -1013,19 +1095,65 @@ impl App {
     /// UI can show incremental progress.
     pub fn tick_spinner(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        self.highlight_ticks.retain(|_, ticks| {
+            *ticks = ticks.saturating_sub(1);
+            *ticks > 0
+        });
     }
 
     /// Returns `true` when any background work is in progress.
     pub fn is_busy(&self) -> bool {
-        self.loading || self.github_loading || self.status_message.starts_with('[')
+        self.loading
+            || self.github_loading
+            || !self.running_tasks.is_empty()
+            || self.status_message.starts_with('[')
     }
 
-    pub async fn add_label_from_picker(&mut self) -> Result<bool> {
+    /// Compose `status_message` from currently running and recently completed tasks.
+    fn update_task_status(&mut self) {
+        if !self.running_tasks.is_empty() {
+            let names: Vec<_> = self.running_tasks.iter().copied().collect();
+            self.status_message = format!("[{}]", names.join(", "));
+        } else if let Some((name, _)) = self.completed_tasks.back() {
+            self.status_message = format!("{name} done");
+        }
+    }
+
+    /// Tick down completed-task display timers; called from the main loop tick.
+    pub fn tick_completed_tasks(&mut self) {
+        self.completed_tasks.retain_mut(|(_, ticks)| {
+            *ticks = ticks.saturating_sub(1);
+            *ticks > 0
+        });
+    }
+
+    pub fn add_label_from_picker(&mut self) -> bool {
         let Some(entry) = self.label_picker_entry().cloned() else {
             self.status_message = "No repository selected".to_string();
-            return Ok(false);
+            return false;
         };
-        self.add_label_to_issue(&entry).await
+        let Some(issue) = self.selected_issue() else {
+            self.status_message = "No issue selected".to_string();
+            return false;
+        };
+        let issue_key = issue.key.clone();
+        let labels = issue.labels();
+        let target_normalized = repos::normalize_label(&entry.label);
+        let already_has = labels
+            .iter()
+            .any(|l| repos::normalize_label(l) == target_normalized);
+        if already_has {
+            self.status_message = format!("{issue_key} already labeled with {}", entry.label);
+            return false;
+        }
+        actions::add_label::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            issue_key,
+            entry.label.clone(),
+            labels,
+        );
+        true
     }
 
     pub async fn open_selected_issue_in_browser(&mut self) -> Result<()> {
@@ -1058,29 +1186,7 @@ impl App {
         Ok(())
     }
 
-    async fn add_label_to_issue(&mut self, entry: &RepoEntry) -> Result<bool> {
-        let (issue_key, mut labels) = match self.selected_issue() {
-            Some(issue) => (issue.key.clone(), issue.labels()),
-            None => {
-                self.status_message = "No issue selected".to_string();
-                return Ok(false);
-            }
-        };
-        let target = entry.label.clone();
-        let target_normalized = repos::normalize_label(&target);
-        let has_label = labels
-            .iter()
-            .any(|label| repos::normalize_label(label) == target_normalized);
-        if has_label {
-            self.status_message = format!("{} already labeled with {}", issue_key, target);
-            return Ok(false);
-        }
-        labels.push(target.clone());
-        self.client.update_labels(&issue_key, &labels).await?;
-        self.status_message = format!("Added label {} to {}", target, issue_key);
-        self.refresh_issues().await?;
-        Ok(true)
-    }
+
 }
 
 async fn open_url_in_browser(url: &str) -> Result<()> {
@@ -1110,5 +1216,3 @@ async fn open_url_in_browser(url: &str) -> Result<()> {
 
     Err(eyre!(stderr))
 }
-
-

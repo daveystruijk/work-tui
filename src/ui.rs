@@ -17,17 +17,17 @@ use crate::{
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const TEXT: Color = Color::Rgb(230, 233, 240);
-const MUTED: Color = Color::Rgb(149, 157, 178);
-const ACCENT: Color = Color::Rgb(116, 167, 255);
-const ACCENT_SOFT: Color = Color::Rgb(124, 222, 201);
-const SURFACE: Color = Color::Rgb(24, 28, 38);
-const SURFACE_ALT: Color = Color::Rgb(31, 36, 48);
-const PANEL: Color = Color::Rgb(19, 22, 30);
-const SUCCESS: Color = Color::Rgb(126, 211, 135);
-const WARNING: Color = Color::Rgb(240, 198, 96);
-const ERROR: Color = Color::Rgb(255, 122, 122);
-const INFO: Color = Color::Rgb(122, 191, 255);
+const TEXT: Color = Color::White;
+const MUTED: Color = Color::DarkGray;
+const ACCENT: Color = Color::Blue;
+const ACCENT_SOFT: Color = Color::Cyan;
+const SURFACE: Color = Color::Reset;
+const SURFACE_ALT: Color = Color::DarkGray;
+const PANEL: Color = Color::Reset;
+const SUCCESS: Color = Color::Green;
+const WARNING: Color = Color::Yellow;
+const ERROR: Color = Color::Red;
+const INFO: Color = Color::LightBlue;
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     match app.screen {
@@ -178,6 +178,10 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     frame.render_widget(help_bar(help_text), chunks[2]);
 
     render_status_bar(app, frame, chunks[3]);
+
+    if app.label_picker_active() {
+        render_label_picker_modal(app, frame);
+    }
 }
 
 fn story_header_row(key: &str, summary: &str, idx: usize) -> Row<'static> {
@@ -268,6 +272,7 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
     } else {
         Style::default().fg(TEXT).bg(SURFACE)
     };
+    let is_highlighted = app.highlight_ticks.contains_key(&issue.key);
 
     let pr_cell = match app.github_prs.get(&issue.key) {
         Some(pr) => {
@@ -286,17 +291,28 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
 
     let key_prefix = if depth > 0 { "  ↳ " } else { "" };
     Row::new(vec![
-        Cell::from(Span::styled(
-            format!("{}{}", key_prefix, issue.key),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
+        Cell::from(Span::styled(format!("{}{}", key_prefix, issue.key), {
+            let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+            if is_highlighted {
+                style.add_modifier(Modifier::SLOW_BLINK)
+            } else {
+                style
+            }
+        })),
         pr_cell,
         Cell::from(Line::from(vec![
             Span::styled("●", status_style),
             Span::raw(" "),
             Span::styled(status_name, status_style),
         ])),
-        Cell::from(summary),
+        Cell::from(Span::styled(
+            summary,
+            if is_highlighted {
+                Style::default().fg(TEXT).add_modifier(Modifier::SLOW_BLINK)
+            } else {
+                Style::default().fg(TEXT)
+            },
+        )),
         Cell::from(format!("{} {}", issue_type_icon(&issue_type), issue_type)),
         Cell::from(Span::styled(assignee, Style::default().fg(MUTED))),
         Cell::from(Line::from(if is_active {
@@ -649,13 +665,20 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
     let inner = popup.inner(area);
     frame.render_widget(popup, area);
 
-    let items: Vec<ListItem> = if app.repo_entries.is_empty() {
+    let filtered = app.filtered_repo_entries();
+
+    let items: Vec<ListItem> = if filtered.is_empty() {
+        let msg = if app.repo_entries.is_empty() {
+            "No repositories available"
+        } else {
+            "No matches"
+        };
         vec![ListItem::new(Line::from(vec![Span::styled(
-            "No repositories available",
+            msg,
             Style::default().fg(MUTED),
         )]))]
     } else {
-        app.repo_entries
+        filtered
             .iter()
             .map(|entry| {
                 let path = entry.path.display().to_string();
@@ -671,7 +694,7 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
     };
 
     let mut state = ListState::default();
-    if !app.repo_entries.is_empty() {
+    if !filtered.is_empty() {
         state.select(Some(picker.selected));
     }
 
@@ -684,21 +707,52 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
         )
         .highlight_symbol("▸ ");
 
+    let filter_display = format!(
+        " {} ",
+        if picker.filter.is_empty() {
+            "Type to filter...".to_string()
+        } else {
+            picker.filter.clone()
+        }
+    );
+    let filter_style = if picker.filter.is_empty() {
+        Style::default().fg(MUTED)
+    } else {
+        Style::default().fg(TEXT)
+    };
+
     let modal_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
         .split(inner);
 
-    frame.render_stateful_widget(list, modal_layout[0], &mut state);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("/ ", Style::default().fg(ACCENT)),
+            Span::styled(filter_display, filter_style),
+        ]))
+        .block(
+            Block::bordered()
+                .style(Style::default().bg(SURFACE))
+                .border_style(Style::default().fg(ACCENT)),
+        ),
+        modal_layout[0],
+    );
+
+    frame.render_stateful_widget(list, modal_layout[1], &mut state);
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "j/k or arrows to move  •  Enter:Add  •  Esc:Cancel",
+            "↑/↓:Move  •  Enter:Add  •  Esc:Cancel",
             Style::default().fg(MUTED),
         )]))
         .alignment(Alignment::Center)
         .style(Style::default().bg(SURFACE)),
-        modal_layout[1],
+        modal_layout[2],
     );
 }
 
@@ -900,7 +954,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let is_loading = app.loading || app.github_loading;
+    let is_loading = app.loading || app.github_loading || !app.running_tasks.is_empty();
     // Progress messages (from actions) start with '[' — treat them as loading
     let is_progress = app.status_message.starts_with('[');
     let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
@@ -984,7 +1038,7 @@ fn status_color(status: &str) -> Style {
         return Style::default().fg(ACCENT);
     }
     if status.contains("proposed") || status.contains("plan") {
-        return Style::default().fg(Color::Rgb(170, 175, 190));
+        return Style::default().fg(MUTED);
     }
 
     Style::default().fg(TEXT)

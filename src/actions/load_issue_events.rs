@@ -28,13 +28,8 @@ pub fn spawn(
     gh_pr: Option<GithubStatus>,
     repo_path: Option<PathBuf>,
 ) {
-    let _ = tx.send(BgMsg::Progress(Progress {
-        action: "load_issue_events",
-        message: format!("Loading events for {issue_key}..."),
-        current: 1,
-        total: 2,
-    }));
-
+    let _ = tx.send(BgMsg::TaskStarted("Loading events"));
+    let tx = tx.clone();
     tokio::spawn(async move {
         let mut all_events = Vec::new();
 
@@ -42,6 +37,7 @@ pub fn spawn(
         match client.get_issue_events(&issue_key).await {
             Ok(events) => all_events.extend(events),
             Err(err) => {
+                let _ = tx.send(BgMsg::TaskFinished("Loading events"));
                 let _ = tx.send(BgMsg::IssueEvents(
                     issue_key,
                     EventLoadState::Error(err.to_string()),
@@ -67,6 +63,7 @@ pub fn spawn(
         }
 
         all_events.sort_by(|a, b| b.at.cmp(&a.at));
+        let _ = tx.send(BgMsg::TaskFinished("Loading events"));
         let _ = tx.send(BgMsg::IssueEvents(
             issue_key,
             EventLoadState::Loaded(all_events),

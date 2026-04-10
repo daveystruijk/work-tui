@@ -22,13 +22,8 @@ pub type IssueBranchData = (String, Vec<(String, PathBuf)>);
 /// Spawn active branch detection across all issue/repo combinations.
 pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_data: Vec<IssueBranchData>) {
     let total = issue_data.len();
-    let _ = tx.send(BgMsg::Progress(Progress {
-        action: "detect_active_branches",
-        message: "Scanning branches...".into(),
-        current: 0,
-        total,
-    }));
-
+    let _ = tx.send(BgMsg::TaskStarted("Scanning branches"));
+    let tx = tx.clone();
     tokio::spawn(async move {
         let mut active = HashMap::new();
         for (i, (issue_key, repos)) in issue_data.into_iter().enumerate() {
@@ -48,6 +43,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_data: Vec<IssueBranchData>)
                 }
             }
         }
+        let _ = tx.send(BgMsg::TaskFinished("Scanning branches"));
         let _ = tx.send(BgMsg::ActiveBranches(active));
     });
 }

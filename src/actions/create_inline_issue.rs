@@ -21,6 +21,7 @@ pub fn spawn(
     summary: String,
     parent_key: Option<String>,
 ) {
+    let _ = tx.send(BgMsg::TaskStarted("Creating issue"));
     let _ = tx.send(BgMsg::Progress(Progress {
         action: "create_inline_issue",
         message: "Creating issue...".into(),
@@ -38,6 +39,7 @@ pub fn spawn(
                 parent_key.as_deref(),
             )
             .await;
+        let _ = tx.send(BgMsg::TaskFinished("Creating issue"));
         let _ = tx.send(BgMsg::InlineCreated(result));
     });
 }

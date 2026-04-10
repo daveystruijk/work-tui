@@ -26,6 +26,8 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, to_label: Vec
     }
 
     let total = to_label.len();
+    let _ = tx.send(BgMsg::TaskStarted("Auto-labeling"));
+    let tx = tx.clone();
     tokio::spawn(async move {
         for (i, (issue_key, new_labels)) in to_label.into_iter().enumerate() {
             let _ = tx.send(BgMsg::Progress(Progress {
@@ -37,5 +39,6 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, to_label: Vec
             let result = client.update_labels(&issue_key, &new_labels).await;
             let _ = tx.send(BgMsg::AutoLabeled(issue_key, result.map(|_| ())));
         }
+        let _ = tx.send(BgMsg::TaskFinished("Auto-labeling"));
     });
 }

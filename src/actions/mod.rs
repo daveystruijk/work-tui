@@ -7,11 +7,11 @@
 //! Actions may send [`BgMsg::Progress`] messages at any time to update the
 //! status bar with step-by-step feedback.
 
+pub mod add_label;
 pub mod auto_label;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_github_prs;
-pub mod fetch_github_statuses;
 pub mod initialize;
 pub mod load_issue_events;
 pub mod pick_up;
