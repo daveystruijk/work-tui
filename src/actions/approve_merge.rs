@@ -29,10 +29,16 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_num
                 .output()
                 .await?;
             if !merge_output.status.success() {
-                let stderr = String::from_utf8_lossy(&merge_output.stderr).trim().to_string();
+                let stderr = String::from_utf8_lossy(&merge_output.stderr)
+                    .trim()
+                    .to_string();
                 return Err(eyre!(
                     "Failed to enable auto-merge on PR #{pr_number}: {}",
-                    if stderr.is_empty() { "unknown error" } else { &stderr }
+                    if stderr.is_empty() {
+                        "unknown error"
+                    } else {
+                        &stderr
+                    }
                 ));
             }
 
@@ -49,10 +55,16 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_num
                 .output()
                 .await?;
             if !approve_output.status.success() {
-                let stderr = String::from_utf8_lossy(&approve_output.stderr).trim().to_string();
+                let stderr = String::from_utf8_lossy(&approve_output.stderr)
+                    .trim()
+                    .to_string();
                 return Err(eyre!(
                     "Failed to approve PR #{pr_number}: {}",
-                    if stderr.is_empty() { "unknown error" } else { &stderr }
+                    if stderr.is_empty() {
+                        "unknown error"
+                    } else {
+                        &stderr
+                    }
                 ));
             }
 

@@ -24,7 +24,12 @@ fn parse_duration_secs(start: &str, end: &str) -> Option<u64> {
 /// Seconds elapsed since an ISO 8601 timestamp.
 fn elapsed_since_iso(ts: &str) -> Option<u64> {
     let started = ts.parse::<chrono::DateTime<chrono::Utc>>().ok()?;
-    Some(Utc::now().signed_duration_since(started).num_seconds().unsigned_abs())
+    Some(
+        Utc::now()
+            .signed_duration_since(started)
+            .num_seconds()
+            .unsigned_abs(),
+    )
 }
 
 /// Format seconds as a human-readable duration (e.g. "2m", "1m30s").
@@ -40,7 +45,6 @@ pub fn format_duration(secs: u64) -> String {
         format!("{m}m{s:02}s")
     }
 }
-
 
 /// A row in the display list — either a story header, an issue, or an inline-new placeholder.
 #[derive(Debug, Clone)]
@@ -81,6 +85,7 @@ pub enum Screen {
 pub enum InputMode {
     Normal,
     Editing,
+    Searching,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +142,8 @@ pub struct App {
     pub display_rows: Vec<DisplayRow>,
     /// Active inline new-issue editor, if any.
     pub inline_new: Option<InlineNewState>,
+    /// Current search/filter text for the issue list.
+    pub search_filter: String,
 
     /// Story keys that are currently collapsed (children hidden).
     pub collapsed_stories: HashSet<String>,
@@ -198,6 +205,7 @@ impl App {
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
+            search_filter: String::new(),
             collapsed_stories: HashSet::new(),
             github_repos,
             github_prs: HashMap::new(),
@@ -638,12 +646,47 @@ impl App {
     pub fn rebuild_display_rows(&mut self) {
         use std::collections::HashMap as StdMap;
 
+        // Apply search filter: collect indices of issues matching the query
+        let matching_indices: Option<HashSet<usize>> = if self.search_filter.is_empty() {
+            None
+        } else {
+            let query = self.search_filter.to_lowercase();
+            Some(
+                self.issues
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, issue)| {
+                        issue.key.to_lowercase().contains(&query)
+                            || issue
+                                .summary()
+                                .unwrap_or_default()
+                                .to_lowercase()
+                                .contains(&query)
+                            || issue
+                                .assignee()
+                                .map(|u| u.display_name.to_lowercase().contains(&query))
+                                .unwrap_or(false)
+                            || issue
+                                .status()
+                                .map(|s| s.name.to_lowercase().contains(&query))
+                                .unwrap_or(false)
+                    })
+                    .map(|(idx, _)| idx)
+                    .collect(),
+            )
+        };
+
         // Collect parent keys for issues that have a parent
         // parent_key -> (summary, Vec<issue_index>)
         let mut parent_groups: StdMap<String, (String, Vec<usize>)> = StdMap::new();
         let mut standalone_indices: Vec<usize> = Vec::new();
 
         for (idx, issue) in self.issues.iter().enumerate() {
+            if let Some(ref matching) = matching_indices {
+                if !matching.contains(&idx) {
+                    continue;
+                }
+            }
             if let Some(parent) = issue.parent() {
                 let parent_key = parent.key.clone();
                 let parent_summary = parent.summary().unwrap_or_default();
@@ -816,6 +859,9 @@ impl App {
         }
 
         self.display_rows = rows;
+        if !self.display_rows.is_empty() && self.selected_index >= self.display_rows.len() {
+            self.selected_index = self.display_rows.len() - 1;
+        }
     }
 
     pub async fn submit_new(&mut self) -> Result<String> {
@@ -1149,6 +1195,32 @@ impl App {
         };
         picker.filter.pop();
         picker.selected = 0;
+    }
+
+    pub fn start_search(&mut self) {
+        self.input_mode = InputMode::Searching;
+    }
+
+    pub fn confirm_search(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_filter.clear();
+        self.input_mode = InputMode::Normal;
+        self.rebuild_display_rows();
+    }
+
+    pub fn search_type_char(&mut self, ch: char) {
+        self.search_filter.push(ch);
+        self.selected_index = 0;
+        self.rebuild_display_rows();
+    }
+
+    pub fn search_backspace(&mut self) {
+        self.search_filter.pop();
+        self.selected_index = 0;
+        self.rebuild_display_rows();
     }
 
     pub fn repo_matches(&self, issue: &Issue) -> Vec<&RepoEntry> {

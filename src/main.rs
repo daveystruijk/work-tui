@@ -72,9 +72,7 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 
         // Auto-refresh: every 10s when CI checks are pending, every 60s otherwise
         if !app.is_busy() {
-            if app.has_pending_checks()
-                && app.last_ci_refresh.elapsed() >= CI_AUTO_REFRESH
-            {
+            if app.has_pending_checks() && app.last_ci_refresh.elapsed() >= CI_AUTO_REFRESH {
                 app.spawn_github_prs_active();
             } else if app.last_ci_refresh.elapsed() >= AUTO_REFRESH {
                 app.spawn_refresh();
@@ -104,6 +102,10 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
 }
 
 async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
+    if app.input_mode == app::InputMode::Searching {
+        handle_search(app, key_event);
+        return;
+    }
     if app.screen == Screen::List && app.inline_new_active() {
         handle_inline_new(app, key_event).await;
         return;
@@ -189,6 +191,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.status_message = "Finishing...".to_string();
                     app.spawn_finish();
                 }
+                '/' => app.start_search(),
                 'V' => {
                     app.status_message = "Approving & enabling auto-merge...".to_string();
                     app.spawn_approve_merge();
@@ -203,6 +206,12 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.enter_detail();
                     app.spawn_load_issue_events();
                 }
+            }
+        }
+        KeyCode::Esc => {
+            app.pending_g = false;
+            if !app.search_filter.is_empty() {
+                app.cancel_search();
             }
         }
         KeyCode::Down => {
@@ -254,6 +263,30 @@ async fn handle_inline_new(app: &mut App, key_event: KeyEvent) {
                 if let Some(state) = app.inline_new.as_mut() {
                     state.summary.push(c);
                 }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_search(app: &mut App, key_event: KeyEvent) {
+    if key_event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        app.cancel_search();
+        return;
+    }
+
+    match key_event.code {
+        KeyCode::Esc => app.cancel_search(),
+        KeyCode::Enter => app.confirm_search(),
+        KeyCode::Backspace => app.search_backspace(),
+        KeyCode::Char(c) => {
+            if !key_event
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                app.search_type_char(c);
             }
         }
         _ => {}

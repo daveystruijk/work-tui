@@ -106,11 +106,17 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     )
     .highlight_symbol("▸ ")
     .block({
+        let updated_ago = app.last_updated.map(|t| {
+            let secs = t.elapsed().as_secs();
+            format!(" • updated {} ago", crate::app::format_duration(secs))
+        });
         let title = if app.loading {
             format!(
                 " Assigned issues {} Loading… ",
                 SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()]
             )
+        } else if let Some(ago) = updated_ago {
+            format!(" Assigned issues{ago} ")
         } else {
             " Assigned issues ".to_string()
         };
@@ -125,12 +131,61 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     frame.render_stateful_widget(table, chunks[1], &mut state);
     app.list_scroll_offset = state.offset();
 
-    let help_text = if app.inline_new_active() {
-        "Esc:Cancel  Enter:Create  type summary…"
+    if app.input_mode == crate::app::InputMode::Searching {
+        let filter_display = if app.search_filter.is_empty() {
+            "Type to filter issues...".to_string()
+        } else {
+            app.search_filter.clone()
+        };
+        let filter_style = if app.search_filter.is_empty() {
+            Style::default().fg(MUTED)
+        } else {
+            Style::default().fg(TEXT)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("/ ", Style::default().fg(ACCENT)),
+                Span::styled(filter_display, filter_style),
+                Span::styled(
+                    "▏",
+                    Style::default()
+                        .fg(ACCENT)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
+            ]))
+            .block(
+                Block::bordered()
+                    .style(Style::default().bg(PANEL))
+                    .border_style(Style::default().fg(ACCENT)),
+            ),
+            chunks[2],
+        );
+    } else if !app.search_filter.is_empty() {
+        let count = app.display_rows.len();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("/ ", Style::default().fg(ACCENT)),
+                Span::styled(&app.search_filter, Style::default().fg(TEXT)),
+                Span::styled(
+                    format!("  ({count} results)  Press / to edit, Esc to clear"),
+                    Style::default().fg(MUTED),
+                ),
+            ]))
+            .block(
+                Block::bordered()
+                    .style(Style::default().bg(PANEL))
+                    .border_style(Style::default().fg(ACCENT)),
+            ),
+            chunks[2],
+        );
     } else {
-        "Ctrl+C:Quit  Enter:View  o:PR  t:Ticket  p:Pick up  f:Finish  n:New  a:Add label  r:Refresh"
-    };
-    frame.render_widget(help_bar(help_text), chunks[2]);
+        let help_text = if app.inline_new_active() {
+            "Esc:Cancel  Enter:Create  type summary…"
+        } else {
+            "Ctrl+C:Quit  Enter:View  /:Search  o:PR  t:Ticket  p:Pick up  f:Finish  n:New  a:Add label  r:Refresh"
+        };
+        frame.render_widget(help_bar(help_text), chunks[2]);
+    }
 
     render_status_bar(app, frame, chunks[3]);
 

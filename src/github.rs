@@ -138,7 +138,12 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
             errors.push(format!("{slug}: invalid repo slug"));
             continue;
         };
-        repo_queries.push((format!("repo_{idx}"), owner.to_string(), name.to_string(), slug.clone()));
+        repo_queries.push((
+            format!("repo_{idx}"),
+            owner.to_string(),
+            name.to_string(),
+            slug.clone(),
+        ));
     }
 
     if repo_queries.is_empty() {
@@ -224,10 +229,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
         }
     };
 
-    if let Some(graph_errors) = response
-        .get("errors")
-        .and_then(|errs| errs.as_array())
-    {
+    if let Some(graph_errors) = response.get("errors").and_then(|errs| errs.as_array()) {
         for err in graph_errors {
             let message = err
                 .get("message")
@@ -370,9 +372,9 @@ fn extract_check_rollups(pr_node: &Value) -> Vec<GhCheckRollup> {
         .and_then(|nodes| nodes.first())
         .and_then(|node| {
             node.get("commit").and_then(|commit| {
-                commit.get("statusCheckRollup").and_then(|status| {
-                    status.get("contexts").and_then(|ctx| ctx.get("nodes"))
-                })
+                commit
+                    .get("statusCheckRollup")
+                    .and_then(|status| status.get("contexts").and_then(|ctx| ctx.get("nodes")))
             })
         })
         .and_then(|nodes| nodes.as_array())

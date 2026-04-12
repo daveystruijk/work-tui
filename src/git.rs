@@ -68,6 +68,51 @@ pub async fn is_clean(repo_path: &Path) -> Result<bool> {
     Ok(output.stdout.is_empty())
 }
 
+/// Stage all changes and create a commit with the given message.
+pub async fn commit_all(repo_path: &Path, message: &str) -> Result<()> {
+    let add_output = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr)
+            .trim()
+            .to_string();
+        return Err(eyre!(
+            "git add failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
+    let commit_output = Command::new("git")
+        .args(["commit", "-m", message])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !commit_output.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_output.stderr)
+            .trim()
+            .to_string();
+        return Err(eyre!(
+            "git commit failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
+    Ok(())
+}
+
 /// Fetch from origin in the given repo.
 pub async fn fetch_origin(repo_path: &Path) -> Result<()> {
     let output = Command::new("git")

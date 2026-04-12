@@ -7,8 +7,8 @@
 //! Actions may send [`ActionMessage::Progress`] messages at any time to update the
 //! status bar with step-by-step feedback.
 
-pub mod approve_merge;
 pub mod add_label;
+pub mod approve_merge;
 pub mod auto_label;
 pub mod branch_diff;
 pub mod create_inline_issue;

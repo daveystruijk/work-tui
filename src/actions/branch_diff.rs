@@ -13,11 +13,7 @@ use tokio::sync::mpsc;
 use super::ActionMessage;
 use crate::git;
 
-pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
-    issue_key: String,
-    repo_path: PathBuf,
-) {
+pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_key: String, repo_path: PathBuf) {
     let tx = tx.clone();
     tokio::spawn(async move {
         let _ = tx.send(ActionMessage::TaskStarted("Opening diff"));

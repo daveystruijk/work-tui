@@ -55,7 +55,7 @@ async fn run(
         return Err(eyre!("Cannot finish: on {branch}, not a feature branch"));
     }
 
-    // Step 1: Check clean state
+    // Step 1: Commit uncommitted changes (if any)
     let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Checking working tree...".into(),
@@ -63,7 +63,8 @@ async fn run(
         total: 6,
     }));
     if !git::is_clean(repo_path).await? {
-        return Err(eyre!("Repo has uncommitted changes"));
+        let commit_message = format!("{issue_key} {issue_summary}");
+        git::commit_all(repo_path, &commit_message).await?;
     }
 
     // Step 2: Fetch origin
@@ -136,7 +137,7 @@ async fn generate_pr_summary(repo_path: &PathBuf) -> color_eyre::Result<String> 
     );
 
     let output = Command::new("opencode")
-        .args(["--print", "--prompt", &prompt])
+        .args(["run", &prompt])
         .current_dir(repo_path)
         .output()
         .await?;
