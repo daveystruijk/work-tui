@@ -1,10 +1,10 @@
-//! Background actions that run asynchronously and report results via [`BgMsg`].
+//! Background actions that run asynchronously and report results via [`ActionMessage`].
 //!
 //! Each action lives in its own module and exposes a `spawn()` function that
 //! accepts the minimal context it needs (cloned handles, data snapshots) plus
-//! an `mpsc::UnboundedSender<BgMsg>` to deliver results back to the main loop.
+//! an `mpsc::UnboundedSender<ActionMessage>` to deliver results back to the main loop.
 //!
-//! Actions may send [`BgMsg::Progress`] messages at any time to update the
+//! Actions may send [`ActionMessage::Progress`] messages at any time to update the
 //! status bar with step-by-step feedback.
 
 pub mod approve_merge;
@@ -20,7 +20,14 @@ pub mod load_issue_events;
 pub mod pick_up;
 pub mod refresh;
 
+use std::collections::HashMap;
 use std::fmt;
+
+use color_eyre::Result;
+
+use crate::events::EventLoadState;
+use crate::github::PrInfo;
+use crate::jira::Issue;
 
 /// Generic progress report sent by long-running actions.
 ///
@@ -49,4 +56,45 @@ impl fmt::Display for Progress {
             write!(f, "[{}] {}", self.action, self.message)
         }
     }
+}
+
+/// Messages sent from background actions back to the main event loop.
+///
+/// Each variant corresponds to a result produced by an action in [`crate::actions`].
+pub enum ActionMessage {
+    /// Current git branch resolved (from [`initialize`]).
+    CurrentBranch(String),
+    /// Jira user identity resolved (from [`initialize`]).
+    Myself(Result<String>),
+    /// Issues fetched from Jira (from [`initialize`] / [`refresh`]).
+    Issues(Result<Vec<Issue>>),
+    /// GitHub PRs fetched for all configured repos (from [`fetch_github_prs`]).
+    /// Carries (successful PRs, per-repo error messages).
+    GithubPrs(Vec<PrInfo>, Vec<String>),
+    /// Active branches resolved (from [`detect_active_branches`]).
+    ActiveBranches(HashMap<String, String>),
+    /// Issue events loaded for detail view (from [`load_issue_events`]).
+    IssueEvents(String, EventLoadState),
+    /// Pick-up completed (from [`pick_up`]).
+    PickedUp(Result<String>),
+    /// Branch diff opened (from [`branch_diff`]).
+    BranchDiffOpened(Result<String>),
+    /// PR approved and auto-merge enabled (from [`approve_merge`]).
+    ApproveAutoMerged(Result<u64>),
+    /// Finish completed — PR created (from [`finish`]).
+    Finished(Result<String>),
+    /// Inline new issue created (from [`create_inline_issue`]).
+    InlineCreated(Result<String>),
+    /// Labels updated for auto-labeling (from [`auto_label`]).
+    AutoLabeled(String, Result<()>),
+    /// Label added to an issue (from [`add_label`]).
+    LabelAdded(Result<(String, String)>),
+    /// A background task has started. The payload is the human-readable task name.
+    TaskStarted(&'static str),
+    /// A background task has finished. The payload is the human-readable task name.
+    TaskFinished(&'static str),
+    /// Generic progress update from any long-running action.
+    ///
+    /// Rendered in the status bar with step-by-step feedback.
+    Progress(Progress),
 }

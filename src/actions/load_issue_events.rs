@@ -4,15 +4,15 @@
 //! into a single sorted timeline for the detail view's activity panel.
 //!
 //! # Channel messages produced
-//! - [`BgMsg::Progress`]
-//! - [`BgMsg::IssueEvents`]
+//! - [`ActionMessage::Progress`]
+//! - [`ActionMessage::IssueEvents`]
 
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
+use super::ActionMessage;
 use crate::actions::Progress;
-use crate::app::BgMsg;
 use crate::events::EventLoadState;
 use crate::github::{self, GithubStatus};
 use crate::jira::JiraClient;
@@ -22,13 +22,13 @@ use crate::jira::JiraClient;
 /// `gh_pr` and `repo_path` are optional — when present, GitHub PR events are
 /// included in the timeline.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<BgMsg>,
+    tx: mpsc::UnboundedSender<ActionMessage>,
     client: JiraClient,
     issue_key: String,
     gh_pr: Option<GithubStatus>,
     repo_path: Option<PathBuf>,
 ) {
-    let _ = tx.send(BgMsg::TaskStarted("Loading events"));
+    let _ = tx.send(ActionMessage::TaskStarted("Loading events"));
     let tx = tx.clone();
     tokio::spawn(async move {
         let mut all_events = Vec::new();
@@ -37,8 +37,8 @@ pub fn spawn(
         match client.get_issue_events(&issue_key).await {
             Ok(events) => all_events.extend(events),
             Err(err) => {
-                let _ = tx.send(BgMsg::TaskFinished("Loading events"));
-                let _ = tx.send(BgMsg::IssueEvents(
+                let _ = tx.send(ActionMessage::TaskFinished("Loading events"));
+                let _ = tx.send(ActionMessage::IssueEvents(
                     issue_key,
                     EventLoadState::Error(err.to_string()),
                 ));
@@ -47,7 +47,7 @@ pub fn spawn(
         }
 
         // Step 2: GitHub PR events (if applicable)
-        let _ = tx.send(BgMsg::Progress(Progress {
+        let _ = tx.send(ActionMessage::Progress(Progress {
             action: "load_issue_events",
             message: format!("Loading GitHub events for {issue_key}..."),
             current: 2,
@@ -63,8 +63,8 @@ pub fn spawn(
         }
 
         all_events.sort_by(|a, b| b.at.cmp(&a.at));
-        let _ = tx.send(BgMsg::TaskFinished("Loading events"));
-        let _ = tx.send(BgMsg::IssueEvents(
+        let _ = tx.send(ActionMessage::TaskFinished("Loading events"));
+        let _ = tx.send(ActionMessage::IssueEvents(
             issue_key,
             EventLoadState::Loaded(all_events),
         ));

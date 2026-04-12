@@ -1,8 +1,8 @@
 //! **Branch Diff** — checks out an issue branch and opens a difftool against main.
 //!
 //! # Channel messages produced
-//! - [`BgMsg::TaskStarted`] / [`BgMsg::TaskFinished`]
-//! - [`BgMsg::BranchDiffOpened`]
+//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
+//! - [`ActionMessage::BranchDiffOpened`]
 
 use std::path::PathBuf;
 
@@ -10,13 +10,17 @@ use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::app::BgMsg;
+use super::ActionMessage;
 use crate::git;
 
-pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_key: String, repo_path: PathBuf) {
+pub fn spawn(
+    tx: mpsc::UnboundedSender<ActionMessage>,
+    issue_key: String,
+    repo_path: PathBuf,
+) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        let _ = tx.send(BgMsg::TaskStarted("Opening diff"));
+        let _ = tx.send(ActionMessage::TaskStarted("Opening diff"));
         let result = async {
             // Fetch first so remote-only branches are visible
             git::fetch_origin(&repo_path).await?;
@@ -87,7 +91,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_key: String, repo_path: Pat
             Ok(branch)
         }
         .await;
-        let _ = tx.send(BgMsg::TaskFinished("Opening diff"));
-        let _ = tx.send(BgMsg::BranchDiffOpened(result));
+        let _ = tx.send(ActionMessage::TaskFinished("Opening diff"));
+        let _ = tx.send(ActionMessage::BranchDiffOpened(result));
     });
 }

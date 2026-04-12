@@ -4,30 +4,30 @@
 //! starts with the issue key. Produces a map of `issue_key -> repo_label`.
 //!
 //! # Channel messages produced
-//! - [`BgMsg::Progress`]
-//! - [`BgMsg::ActiveBranches`]
+//! - [`ActionMessage::Progress`]
+//! - [`ActionMessage::ActiveBranches`]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
+use super::ActionMessage;
 use crate::actions::Progress;
-use crate::app::BgMsg;
 use crate::git;
 
 /// Per-issue data: `(issue_key, Vec<(repo_label, repo_path)>)`.
 pub type IssueBranchData = (String, Vec<(String, PathBuf)>);
 
 /// Spawn active branch detection across all issue/repo combinations.
-pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_data: Vec<IssueBranchData>) {
+pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_data: Vec<IssueBranchData>) {
     let total = issue_data.len();
-    let _ = tx.send(BgMsg::TaskStarted("Scanning branches"));
+    let _ = tx.send(ActionMessage::TaskStarted("Scanning branches"));
     let tx = tx.clone();
     tokio::spawn(async move {
         let mut active = HashMap::new();
         for (i, (issue_key, repos)) in issue_data.into_iter().enumerate() {
-            let _ = tx.send(BgMsg::Progress(Progress {
+            let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "detect_active_branches",
                 message: format!("Checking {issue_key}..."),
                 current: i + 1,
@@ -43,7 +43,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_data: Vec<IssueBranchData>)
                 }
             }
         }
-        let _ = tx.send(BgMsg::TaskFinished("Scanning branches"));
-        let _ = tx.send(BgMsg::ActiveBranches(active));
+        let _ = tx.send(ActionMessage::TaskFinished("Scanning branches"));
+        let _ = tx.send(ActionMessage::ActiveBranches(active));
     });
 }

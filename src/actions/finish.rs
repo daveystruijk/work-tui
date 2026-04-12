@@ -9,8 +9,8 @@
 //! 6. Transition the Jira issue to "Review" (if available)
 //!
 //! # Channel messages produced
-//! - [`BgMsg::Progress`] (per-step progress)
-//! - [`BgMsg::Finished`]
+//! - [`ActionMessage::Progress`] (per-step progress)
+//! - [`ActionMessage::Finished`]
 
 use std::path::PathBuf;
 
@@ -18,30 +18,30 @@ use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use super::ActionMessage;
 use crate::actions::Progress;
-use crate::app::BgMsg;
 use crate::git;
 use crate::github;
 use crate::jira::JiraClient;
 
 /// Spawn the finish workflow for a single issue.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<BgMsg>,
+    tx: mpsc::UnboundedSender<ActionMessage>,
     client: JiraClient,
     issue_key: String,
     issue_summary: String,
     repo_path: PathBuf,
 ) {
     tokio::spawn(async move {
-        let _ = tx.send(BgMsg::TaskStarted("Finishing"));
+        let _ = tx.send(ActionMessage::TaskStarted("Finishing"));
         let result = run(&tx, &client, &issue_key, &issue_summary, &repo_path).await;
-        let _ = tx.send(BgMsg::TaskFinished("Finishing"));
-        let _ = tx.send(BgMsg::Finished(result));
+        let _ = tx.send(ActionMessage::TaskFinished("Finishing"));
+        let _ = tx.send(ActionMessage::Finished(result));
     });
 }
 
 async fn run(
-    tx: &mpsc::UnboundedSender<BgMsg>,
+    tx: &mpsc::UnboundedSender<ActionMessage>,
     client: &JiraClient,
     issue_key: &str,
     issue_summary: &str,
@@ -56,7 +56,7 @@ async fn run(
     }
 
     // Step 1: Check clean state
-    let _ = tx.send(BgMsg::Progress(Progress {
+    let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Checking working tree...".into(),
         current: 1,
@@ -67,7 +67,7 @@ async fn run(
     }
 
     // Step 2: Fetch origin
-    let _ = tx.send(BgMsg::Progress(Progress {
+    let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Fetching origin...".into(),
         current: 2,
@@ -76,7 +76,7 @@ async fn run(
     git::fetch_origin(repo_path).await?;
 
     // Step 3: Generate PR summary via opencode
-    let _ = tx.send(BgMsg::Progress(Progress {
+    let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Generating PR summary...".into(),
         current: 3,
@@ -86,7 +86,7 @@ async fn run(
     let pr_body = generate_pr_summary(repo_path).await?;
 
     // Step 4: Push branch
-    let _ = tx.send(BgMsg::Progress(Progress {
+    let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Pushing branch...".into(),
         current: 4,
@@ -95,7 +95,7 @@ async fn run(
     git::push_branch(repo_path, &branch).await?;
 
     // Step 5: Create PR
-    let _ = tx.send(BgMsg::Progress(Progress {
+    let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Creating pull request...".into(),
         current: 5,
@@ -104,7 +104,7 @@ async fn run(
     let pr_url = github::create_pr(repo_path, &pr_title, &pr_body).await?;
 
     // Step 6: Transition to Review
-    let _ = tx.send(BgMsg::Progress(Progress {
+    let _ = tx.send(ActionMessage::Progress(Progress {
         action: "finish",
         message: "Transitioning to Review...".into(),
         current: 6,

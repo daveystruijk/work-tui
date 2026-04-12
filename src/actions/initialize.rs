@@ -6,24 +6,24 @@
 //! 3. Fetch the initial issue list
 //!
 //! # Channel messages produced
-//! - [`BgMsg::CurrentBranch`]
-//! - [`BgMsg::Myself`]
-//! - [`BgMsg::Issues`]
-//! - [`BgMsg::Progress`] (one per sub-task)
+//! - [`ActionMessage::CurrentBranch`]
+//! - [`ActionMessage::Myself`]
+//! - [`ActionMessage::Issues`]
+//! - [`ActionMessage::Progress`] (one per sub-task)
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use super::ActionMessage;
 use crate::actions::Progress;
-use crate::app::BgMsg;
 use crate::git;
 use crate::jira::JiraClient;
 
 /// Spawn all initialization tasks concurrently.
-pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, jql: String) {
-    let _ = tx.send(BgMsg::TaskStarted("Initializing"));
+pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: String) {
+    let _ = tx.send(ActionMessage::TaskStarted("Initializing"));
     let done = Arc::new(AtomicUsize::new(0));
 
     // 1. Resolve current git branch
@@ -31,7 +31,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, jql: String) 
         let tx = tx.clone();
         let done = Arc::clone(&done);
         tokio::spawn(async move {
-            let _ = tx.send(BgMsg::Progress(Progress {
+            let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "initialize",
                 message: "Resolving git branch...".into(),
                 current: 1,
@@ -40,9 +40,9 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, jql: String) 
             let branch = git::current_branch()
                 .await
                 .unwrap_or_else(|_| "(detached)".to_string());
-            let _ = tx.send(BgMsg::CurrentBranch(branch));
+            let _ = tx.send(ActionMessage::CurrentBranch(branch));
             if done.fetch_add(1, Ordering::Relaxed) == 2 {
-                let _ = tx.send(BgMsg::TaskFinished("Initializing"));
+                let _ = tx.send(ActionMessage::TaskFinished("Initializing"));
             }
         });
     }
@@ -53,7 +53,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, jql: String) 
         let client = client.clone();
         let done = Arc::clone(&done);
         tokio::spawn(async move {
-            let _ = tx.send(BgMsg::Progress(Progress {
+            let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "initialize",
                 message: "Fetching Jira identity...".into(),
                 current: 2,
@@ -63,9 +63,9 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, jql: String) 
                 .get_myself()
                 .await
                 .map(|u| u.account_id.unwrap_or_default());
-            let _ = tx.send(BgMsg::Myself(result));
+            let _ = tx.send(ActionMessage::Myself(result));
             if done.fetch_add(1, Ordering::Relaxed) == 2 {
-                let _ = tx.send(BgMsg::TaskFinished("Initializing"));
+                let _ = tx.send(ActionMessage::TaskFinished("Initializing"));
             }
         });
     }
@@ -75,16 +75,16 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, client: JiraClient, jql: String) 
         let tx = tx.clone();
         let done = Arc::clone(&done);
         tokio::spawn(async move {
-            let _ = tx.send(BgMsg::Progress(Progress {
+            let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "initialize",
                 message: "Fetching issues...".into(),
                 current: 3,
                 total: 3,
             }));
             let result = client.search(&jql).await;
-            let _ = tx.send(BgMsg::Issues(result));
+            let _ = tx.send(ActionMessage::Issues(result));
             if done.fetch_add(1, Ordering::Relaxed) == 2 {
-                let _ = tx.send(BgMsg::TaskFinished("Initializing"));
+                let _ = tx.send(ActionMessage::TaskFinished("Initializing"));
             }
         });
     }

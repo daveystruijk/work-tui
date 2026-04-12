@@ -1,19 +1,19 @@
 //! **Approve & Auto-Merge** — approves a PR and enables auto-merge (squash).
 //!
 //! # Channel messages produced
-//! - [`BgMsg::TaskStarted`] / [`BgMsg::TaskFinished`]
-//! - [`BgMsg::ApproveAutoMerged`]
+//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
+//! - [`ActionMessage::ApproveAutoMerged`]
 
 use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::app::BgMsg;
+use super::ActionMessage;
 
-pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, repo_slug: String, pr_number: u64) {
+pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_number: u64) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        let _ = tx.send(BgMsg::TaskStarted("Approving & merging"));
+        let _ = tx.send(ActionMessage::TaskStarted("Approving & merging"));
         let result = async {
             // Enable auto-merge
             let merge_output = Command::new("gh")
@@ -59,7 +59,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, repo_slug: String, pr_number: u64
             Ok(pr_number)
         }
         .await;
-        let _ = tx.send(BgMsg::TaskFinished("Approving & merging"));
-        let _ = tx.send(BgMsg::ApproveAutoMerged(result));
+        let _ = tx.send(ActionMessage::TaskFinished("Approving & merging"));
+        let _ = tx.send(ActionMessage::ApproveAutoMerged(result));
     });
 }

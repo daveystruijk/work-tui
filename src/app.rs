@@ -6,7 +6,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::{
-    actions::{self, Progress},
+    actions::{self, ActionMessage},
     cache::{self, Cache},
     events::{Event, EventLevel, EventLoadState, EventSource},
     github::{CheckStatus, GithubStatus, PrInfo},
@@ -41,46 +41,6 @@ pub fn format_duration(secs: u64) -> String {
     }
 }
 
-/// Messages sent from background actions back to the main event loop.
-///
-/// Each variant corresponds to a result produced by an action in [`crate::actions`].
-pub enum BgMsg {
-    /// Current git branch resolved (from [`actions::initialize`]).
-    CurrentBranch(String),
-    /// Jira user identity resolved (from [`actions::initialize`]).
-    Myself(Result<String>),
-    /// Issues fetched from Jira (from [`actions::initialize`] / [`actions::refresh`]).
-    Issues(Result<Vec<Issue>>),
-    /// GitHub PRs fetched for all configured repos (from [`actions::fetch_github_prs`]).
-    /// Carries (successful PRs, per-repo error messages).
-    GithubPrs(Vec<PrInfo>, Vec<String>),
-    /// Active branches resolved (from [`actions::detect_active_branches`]).
-    ActiveBranches(HashMap<String, String>),
-    /// Issue events loaded for detail view (from [`actions::load_issue_events`]).
-    IssueEvents(String, EventLoadState),
-    /// Pick-up completed (from [`actions::pick_up`]).
-    PickedUp(Result<String>),
-    /// Branch diff opened (from [`actions::branch_diff`]).
-    BranchDiffOpened(Result<String>),
-    /// PR approved and auto-merge enabled (from [`actions::approve_merge`]).
-    ApproveAutoMerged(Result<u64>),
-    /// Finish completed — PR created (from [`actions::finish`]).
-    Finished(Result<String>),
-    /// Inline new issue created (from [`actions::create_inline_issue`]).
-    InlineCreated(Result<String>),
-    /// Labels updated for auto-labeling (from [`actions::auto_label`]).
-    AutoLabeled(String, Result<()>),
-    /// Label added to an issue (from [`actions::add_label`]).
-    LabelAdded(Result<(String, String)>),
-    /// A background task has started. The payload is the human-readable task name.
-    TaskStarted(&'static str),
-    /// A background task has finished. The payload is the human-readable task name.
-    TaskFinished(&'static str),
-    /// Generic progress update from any long-running action.
-    ///
-    /// Rendered in the status bar with step-by-step feedback.
-    Progress(Progress),
-}
 
 /// A row in the display list — either a story header, an issue, or an inline-new placeholder.
 #[derive(Debug, Clone)]
@@ -191,9 +151,9 @@ pub struct App {
     /// Recently completed task names (for brief status display), with remaining ticks
     pub completed_tasks: VecDeque<(&'static str, usize)>,
     /// Sender for background tasks to deliver results
-    pub bg_tx: mpsc::UnboundedSender<BgMsg>,
+    pub bg_tx: mpsc::UnboundedSender<ActionMessage>,
     /// Receiver polled in the event loop
-    pub bg_rx: mpsc::UnboundedReceiver<BgMsg>,
+    pub bg_rx: mpsc::UnboundedReceiver<ActionMessage>,
     /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
     pub last_ci_refresh: std::time::Instant,
     /// Last time data was successfully received (for "updated X ago" display)
@@ -361,18 +321,18 @@ impl App {
     }
 
     /// Process a background message. Called from the event loop.
-    pub fn handle_bg_msg(&mut self, msg: BgMsg) {
+    pub fn handle_bg_msg(&mut self, msg: ActionMessage) {
         match msg {
-            BgMsg::CurrentBranch(branch) => {
+            ActionMessage::CurrentBranch(branch) => {
                 self.current_branch = branch;
             }
-            BgMsg::Myself(result) => match result {
+            ActionMessage::Myself(result) => match result {
                 Ok(account_id) => self.my_account_id = account_id,
                 Err(err) => {
                     self.status_message = format!("Failed to fetch user: {err}");
                 }
             },
-            BgMsg::Issues(result) => match result {
+            ActionMessage::Issues(result) => match result {
                 Ok(issues) => {
                     let selected_key = self.selected_issue().map(|i| i.key.clone());
                     self.issues = issues;
@@ -402,10 +362,10 @@ impl App {
                     self.status_message = format!("Failed to load issues: {err}");
                 }
             },
-            BgMsg::ActiveBranches(active) => {
+            ActionMessage::ActiveBranches(active) => {
                 self.active_branches = active;
             }
-            BgMsg::GithubPrs(all_prs, errors) => {
+            ActionMessage::GithubPrs(all_prs, errors) => {
                 self.github_prs.clear();
                 self.github_statuses.clear();
                 for issue in &self.issues {
@@ -431,10 +391,10 @@ impl App {
                     self.status_message = "Ready".into();
                 }
             }
-            BgMsg::IssueEvents(key, state) => {
+            ActionMessage::IssueEvents(key, state) => {
                 self.issue_events.insert(key, state);
             }
-            BgMsg::PickedUp(result) => match result {
+            ActionMessage::PickedUp(result) => match result {
                 Ok(branch) => {
                     self.current_branch = branch.clone();
                     self.status_message = format!("Picked up {branch}");
@@ -444,7 +404,7 @@ impl App {
                     self.status_message = format!("Failed to pick up issue: {err}");
                 }
             },
-            BgMsg::BranchDiffOpened(result) => match result {
+            ActionMessage::BranchDiffOpened(result) => match result {
                 Ok(branch) => {
                     self.status_message = format!("Opened diff for {branch}");
                 }
@@ -452,7 +412,7 @@ impl App {
                     self.status_message = format!("Branch diff failed: {err}");
                 }
             },
-            BgMsg::ApproveAutoMerged(result) => match result {
+            ActionMessage::ApproveAutoMerged(result) => match result {
                 Ok(pr_number) => {
                     self.status_message =
                         format!("Approved & auto-merge enabled for PR #{pr_number}");
@@ -461,7 +421,7 @@ impl App {
                     self.status_message = format!("Approve/merge failed: {err}");
                 }
             },
-            BgMsg::Finished(result) => match result {
+            ActionMessage::Finished(result) => match result {
                 Ok(pr_url) => {
                     self.status_message = format!("PR created: {pr_url}");
                     self.spawn_refresh();
@@ -470,7 +430,7 @@ impl App {
                     self.status_message = format!("Finish failed: {err}");
                 }
             },
-            BgMsg::InlineCreated(result) => match result {
+            ActionMessage::InlineCreated(result) => match result {
                 Ok(key) => {
                     self.status_message = format!("Created {key}");
                     self.input_mode = InputMode::Normal;
@@ -482,10 +442,10 @@ impl App {
                     self.cancel_inline_new();
                 }
             },
-            BgMsg::AutoLabeled(_key, _result) => {
+            ActionMessage::AutoLabeled(_key, _result) => {
                 // Silent — auto-labeling is best-effort
             }
-            BgMsg::LabelAdded(result) => match result {
+            ActionMessage::LabelAdded(result) => match result {
                 Ok((issue_key, label)) => {
                     self.status_message = format!("Added label {label} to {issue_key}");
                     self.spawn_refresh();
@@ -494,16 +454,16 @@ impl App {
                     self.status_message = format!("Failed to add label: {err}");
                 }
             },
-            BgMsg::TaskStarted(name) => {
+            ActionMessage::TaskStarted(name) => {
                 self.running_tasks.insert(name);
                 self.update_task_status();
             }
-            BgMsg::TaskFinished(name) => {
+            ActionMessage::TaskFinished(name) => {
                 self.running_tasks.remove(name);
                 self.completed_tasks.push_back((name, 50));
                 self.update_task_status();
             }
-            BgMsg::Progress(progress) => {
+            ActionMessage::Progress(progress) => {
                 self.status_message = progress.to_string();
             }
         }
