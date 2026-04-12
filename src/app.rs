@@ -196,6 +196,8 @@ pub struct App {
     pub bg_rx: mpsc::UnboundedReceiver<BgMsg>,
     /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
     pub last_ci_refresh: std::time::Instant,
+    /// Last time data was successfully received (for "updated X ago" display)
+    pub last_updated: Option<std::time::Instant>,
 }
 
 impl App {
@@ -245,6 +247,7 @@ impl App {
             bg_tx,
             bg_rx,
             last_ci_refresh: std::time::Instant::now(),
+            last_updated: None,
         };
 
         app.check_durations = cache::load().check_durations;
@@ -268,6 +271,19 @@ impl App {
     /// Spawn GitHub PR fetch for all configured repos.
     pub fn spawn_github_prs(&mut self) {
         actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.github_repos.clone());
+        self.last_ci_refresh = std::time::Instant::now();
+    }
+
+    /// Spawn GitHub PR fetch only for repos that currently have linked PRs.
+    pub fn spawn_github_prs_active(&mut self) {
+        let active_repos: Vec<String> = self
+            .github_prs
+            .values()
+            .map(|pr| pr.repo_slug.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        actions::fetch_github_prs::spawn(self.bg_tx.clone(), active_repos);
         self.last_ci_refresh = std::time::Instant::now();
     }
 
@@ -375,6 +391,7 @@ impl App {
                         next_index.min(self.display_rows.len() - 1)
                     };
                     self.loading = false;
+                    self.last_updated = Some(std::time::Instant::now());
                     self.issue_events.clear();
                     // Chain: fetch branches, PRs (existing PR data stays visible until new data arrives)
                     self.spawn_active_branches();
@@ -406,6 +423,7 @@ impl App {
                 self.save_cache();
                 self.spawn_auto_label();
                 self.github_loading = false;
+                self.last_updated = Some(std::time::Instant::now());
                 self.refresh_latest_activity();
                 if !errors.is_empty() {
                     self.status_message = format!("Failed: {}", errors.join("; "));

@@ -55,7 +55,8 @@ async fn main() -> Result<()> {
     app_result
 }
 
-const CI_AUTO_REFRESH: Duration = Duration::from_secs(30);
+const AUTO_REFRESH: Duration = Duration::from_secs(60);
+const CI_AUTO_REFRESH: Duration = Duration::from_secs(10);
 
 async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     while !app.should_quit {
@@ -69,13 +70,15 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             app.handle_bg_msg(msg);
         }
 
-        // Auto-refresh PRs when CI checks are pending
-        if app.has_pending_checks()
-            && app.last_ci_refresh.elapsed() >= CI_AUTO_REFRESH
-            && !app.is_busy()
-        {
-            app.spawn_github_prs();
-            app.last_ci_refresh = std::time::Instant::now();
+        // Auto-refresh: every 10s when CI checks are pending, every 60s otherwise
+        if !app.is_busy() {
+            if app.has_pending_checks()
+                && app.last_ci_refresh.elapsed() >= CI_AUTO_REFRESH
+            {
+                app.spawn_github_prs_active();
+            } else if app.last_ci_refresh.elapsed() >= AUTO_REFRESH {
+                app.spawn_refresh();
+            }
         }
 
         // Spin faster while background work or pending CI checks are active
