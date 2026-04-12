@@ -171,6 +171,10 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.status_message = "Finishing...".to_string();
                     app.spawn_finish();
                 }
+                'V' => {
+                    app.status_message = "Approving & enabling auto-merge...".to_string();
+                    app.spawn_approve_merge();
+                }
                 _ => {}
             }
         }
@@ -252,38 +256,44 @@ async fn handle_detail(app: &mut App, key_event: KeyEvent) {
 
     match key_event.code {
         KeyCode::Esc => app.back_to_list(),
-        KeyCode::Char(c) => match c.to_ascii_lowercase() {
-            'p' => {
-                app.status_message = "Picking up...".to_string();
-                app.spawn_pick_up();
+        KeyCode::Char(c) => match c {
+            'V' => {
+                app.status_message = "Approving & enabling auto-merge...".to_string();
+                app.spawn_approve_merge();
             }
-            'b' => {
-                app.status_message = "Opening diff...".to_string();
-                app.spawn_branch_diff();
-            }
-            'o' => match app.open_selected_pr_in_browser().await {
-                Ok(_) => {}
-                Err(err) => app.status_message = format!("{err}"),
-            },
-            't' => match app.open_selected_issue_in_browser().await {
-                Ok(_) => {}
-                Err(err) => app.status_message = format!("Failed to open issue: {err}"),
-            },
-            'a' => app.open_label_picker(),
-            'f' => {
-                app.status_message = "Finishing...".to_string();
-                app.spawn_finish();
-            }
-            'j' => app.detail_scroll = app.detail_scroll.saturating_add(1),
-            'k' => app.detail_scroll = app.detail_scroll.saturating_sub(1),
-            'r' => {
-                if let Some(issue) = app.selected_issue() {
-                    let key = issue.key.clone();
-                    app.issue_events.remove(&key);
+            _ => match c.to_ascii_lowercase() {
+                'p' => {
+                    app.status_message = "Picking up...".to_string();
+                    app.spawn_pick_up();
                 }
-                app.spawn_load_issue_events();
-            }
-            _ => {}
+                'b' => {
+                    app.status_message = "Opening diff...".to_string();
+                    app.spawn_branch_diff();
+                }
+                'o' => match app.open_selected_pr_in_browser().await {
+                    Ok(_) => {}
+                    Err(err) => app.status_message = format!("{err}"),
+                },
+                't' => match app.open_selected_issue_in_browser().await {
+                    Ok(_) => {}
+                    Err(err) => app.status_message = format!("Failed to open issue: {err}"),
+                },
+                'a' => app.open_label_picker(),
+                'f' => {
+                    app.status_message = "Finishing...".to_string();
+                    app.spawn_finish();
+                }
+                'j' => app.detail_scroll = app.detail_scroll.saturating_add(1),
+                'k' => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+                'r' => {
+                    if let Some(issue) = app.selected_issue() {
+                        let key = issue.key.clone();
+                        app.issue_events.remove(&key);
+                    }
+                    app.spawn_load_issue_events();
+                }
+                _ => {}
+            },
         },
         KeyCode::Down => app.detail_scroll = app.detail_scroll.saturating_add(1),
         KeyCode::Up => app.detail_scroll = app.detail_scroll.saturating_sub(1),

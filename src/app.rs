@@ -33,6 +33,8 @@ pub enum BgMsg {
     PickedUp(Result<String>),
     /// Branch diff opened (from [`actions::branch_diff`]).
     BranchDiffOpened(Result<String>),
+    /// PR approved and auto-merge enabled (from [`actions::approve_merge`]).
+    ApproveAutoMerged(Result<u64>),
     /// Finish completed — PR created (from [`actions::finish`]).
     Finished(Result<String>),
     /// Inline new issue created (from [`actions::create_inline_issue`]).
@@ -438,6 +440,15 @@ impl App {
                     self.status_message = format!("Branch diff failed: {err}");
                 }
             },
+            BgMsg::ApproveAutoMerged(result) => match result {
+                Ok(pr_number) => {
+                    self.status_message =
+                        format!("Approved & auto-merge enabled for PR #{pr_number}");
+                }
+                Err(err) => {
+                    self.status_message = format!("Approve/merge failed: {err}");
+                }
+            },
             BgMsg::Finished(result) => match result {
                 Ok(pr_url) => {
                     self.status_message = format!("PR created: {pr_url}");
@@ -540,6 +551,20 @@ impl App {
         }
 
         actions::branch_diff::spawn(self.bg_tx.clone(), issue_key, repos[0].path.clone());
+    }
+
+    /// Spawn approve + auto-merge for the selected issue's PR.
+    pub fn spawn_approve_merge(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let Some(pr) = self.github_prs.get(&issue_key) else {
+            self.status_message = format!("No PR found for {issue_key}");
+            return;
+        };
+
+        actions::approve_merge::spawn(self.bg_tx.clone(), pr.repo_slug.clone(), pr.number);
     }
 
     /// Spawn finish workflow in background.
