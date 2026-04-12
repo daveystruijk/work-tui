@@ -8,7 +8,7 @@ use tokio::process::Command;
 
 use crate::events::{Event, EventLevel, EventSource};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CheckStatus {
     Pending,
     Pass,
@@ -18,12 +18,14 @@ pub enum CheckStatus {
 #[derive(Debug, Clone)]
 pub struct PrInfo {
     pub number: u64,
+    pub title: String,
     pub state: String,
     pub checks: CheckStatus,
     pub url: String,
     pub head_branch: String,
     /// The repo slug (owner/repo) this PR belongs to
     pub repo_slug: String,
+    pub body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -37,12 +39,16 @@ pub enum GithubStatus {
 #[derive(Deserialize)]
 struct GhPrWithBranch {
     number: u64,
+    #[serde(default)]
+    title: String,
     state: String,
     url: String,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
     #[serde(rename = "statusCheckRollup", default)]
     status_check_rollup: Option<Vec<GhCheckRollup>>,
+    #[serde(default)]
+    body: String,
 }
 
 /// Fetch all PRs for a given `owner/repo` in a single `gh` call.
@@ -57,7 +63,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
             "--state",
             "open",
             "--json",
-            "number,state,url,headRefName,statusCheckRollup",
+            "number,title,state,url,headRefName,statusCheckRollup,body",
             "--limit",
             "100",
         ])
@@ -86,11 +92,13 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
             let checks = aggregate_check_status(&pr.status_check_rollup);
             PrInfo {
                 number: pr.number,
+                title: pr.title,
                 state: pr.state,
                 checks,
                 url: pr.url,
                 head_branch: pr.head_ref_name,
                 repo_slug: slug.clone(),
+                body: pr.body,
             }
         })
         .collect())

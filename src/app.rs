@@ -6,12 +6,24 @@ use tokio::sync::mpsc;
 
 use crate::{
     actions::{self, poll_ci_status::CiChange, Progress},
+    cache::{self, Cache, IssueSnapshot},
     events::{Event, EventLevel, EventLoadState, EventSource},
     github::{CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
     notify,
     repos::{self, RepoEntry},
 };
+
+/// Tracks which columns changed for a given issue key.
+#[derive(Debug, Clone, Default)]
+pub struct NewFields {
+    /// The issue key itself is new (not seen before).
+    pub key: bool,
+    /// The Jira status changed.
+    pub status: bool,
+    /// The PR CI check status changed.
+    pub pr: bool,
+}
 
 /// Messages sent from background actions back to the main event loop.
 ///
@@ -150,10 +162,12 @@ pub struct App {
     pub display_rows: Vec<DisplayRow>,
     /// Active inline new-issue editor, if any.
     pub inline_new: Option<InlineNewState>,
-    /// Snapshot of issue keys → status names from the previous fetch, used to detect changes.
-    pub prev_issue_snapshot: HashMap<String, String>,
+    /// Per-issue snapshot from the previous fetch (or loaded from disk cache), used to detect changes.
+    pub prev_snapshot: HashMap<String, IssueSnapshot>,
     /// Issue keys that should blink because they are new or changed. Value = remaining ticks.
     pub highlight_ticks: HashMap<String, usize>,
+    /// Per-issue map of which columns changed since the last refresh. Cleared on next fetch.
+    pub new_fields: HashMap<String, NewFields>,
     /// Story keys that are currently collapsed (children hidden).
     pub collapsed_stories: HashSet<String>,
     /// Configured GitHub repos to scan for PRs (from GITHUB_REPOS env var)
@@ -208,8 +222,9 @@ impl App {
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
-            prev_issue_snapshot: HashMap::new(),
+            prev_snapshot: cache::load().snapshots,
             highlight_ticks: HashMap::new(),
+            new_fields: HashMap::new(),
             collapsed_stories: HashSet::new(),
             github_repos,
             github_prs: HashMap::new(),
@@ -335,40 +350,36 @@ impl App {
             },
             BgMsg::Issues(result) => match result {
                 Ok(issues) => {
-                    let prev_snapshot = self
-                        .issues
-                        .iter()
-                        .map(|i| {
-                            let status = i.status().map(|s| s.name).unwrap_or_default();
-                            (i.key.clone(), status)
-                        })
-                        .collect::<HashMap<_, _>>();
                     let selected_key = self.selected_issue().map(|i| i.key.clone());
                     self.issues = issues;
                     self.rebuild_display_rows();
-                    if !prev_snapshot.is_empty() {
+                    self.new_fields.clear();
+                    if !self.prev_snapshot.is_empty() {
                         for issue in &self.issues {
                             let key = &issue.key;
                             let current_status = issue.status().map(|s| s.name).unwrap_or_default();
-                            match prev_snapshot.get(key) {
+                            match self.prev_snapshot.get(key) {
                                 None => {
                                     self.highlight_ticks.insert(key.clone(), 75);
+                                    self.new_fields.insert(key.clone(), NewFields { key: true, ..Default::default() });
                                 }
-                                Some(old_status) if *old_status != current_status => {
+                                Some(old) if old.status != current_status => {
                                     self.highlight_ticks.insert(key.clone(), 75);
+                                    let fields = self.new_fields.entry(key.clone()).or_default();
+                                    fields.status = true;
                                 }
                                 _ => {}
                             }
                         }
                     }
-                    self.prev_issue_snapshot = self
-                        .issues
-                        .iter()
-                        .map(|i| {
-                            let status = i.status().map(|s| s.name).unwrap_or_default();
-                            (i.key.clone(), status)
-                        })
-                        .collect();
+                    // Update snapshot with current statuses (preserve pr_checks from prev)
+                    for issue in &self.issues {
+                        let key = &issue.key;
+                        let current_status = issue.status().map(|s| s.name).unwrap_or_default();
+                        let pr_checks = self.prev_snapshot.get(key).and_then(|s| s.pr_checks.clone());
+                        self.prev_snapshot.insert(key.clone(), IssueSnapshot { status: current_status, pr_checks });
+                    }
+                    cache::save(&Cache { snapshots: self.prev_snapshot.clone() });
                     let next_index = selected_key
                         .and_then(|key| {
                             self.display_rows.iter().position(|row| match row {
@@ -399,7 +410,7 @@ impl App {
                 self.active_branches = active;
             }
             BgMsg::GithubPrs(all_prs) => {
-                self.github_prs.clear();
+                let prev_prs = std::mem::take(&mut self.github_prs);
                 self.github_statuses.clear();
                 for issue in &self.issues {
                     let key_lower = issue.key.to_lowercase();
@@ -410,8 +421,24 @@ impl App {
                         self.github_prs.insert(issue.key.clone(), pr.clone());
                         self.github_statuses
                             .insert(issue.key.clone(), GithubStatus::Found(pr.clone()));
+                        // Compare against both in-memory prev_prs and persisted snapshot
+                        let prev_checks = prev_prs
+                            .get(&issue.key)
+                            .map(|p| &p.checks)
+                            .or_else(|| self.prev_snapshot.get(&issue.key)?.pr_checks.as_ref());
+                        let changed = prev_checks.map_or(true, |old| *old != pr.checks);
+                        if changed {
+                            let fields = self.new_fields.entry(issue.key.clone()).or_default();
+                            fields.pr = true;
+                            self.highlight_ticks.insert(issue.key.clone(), 75);
+                        }
+                        // Update snapshot with current PR check status
+                        if let Some(snap) = self.prev_snapshot.get_mut(&issue.key) {
+                            snap.pr_checks = Some(pr.checks.clone());
+                        }
                     }
                 }
+                cache::save(&Cache { snapshots: self.prev_snapshot.clone() });
                 self.spawn_auto_label();
                 self.github_loading = false;
                 self.refresh_latest_activity();
@@ -508,7 +535,23 @@ impl App {
                             change.pr_number, change.head_branch, status_label
                         ),
                     );
+                    // Mark the matching issue's PR column as changed
+                    let branch_lower = change.head_branch.to_lowercase();
+                    if let Some(issue_key) = self.issues.iter().find_map(|i| {
+                        branch_lower
+                            .starts_with(&i.key.to_lowercase())
+                            .then(|| i.key.clone())
+                    }) {
+                        let fields = self.new_fields.entry(issue_key.clone()).or_default();
+                        fields.pr = true;
+                        self.highlight_ticks.insert(issue_key.clone(), 75);
+                        // Update snapshot
+                        if let Some(snap) = self.prev_snapshot.get_mut(&issue_key) {
+                            snap.pr_checks = Some(change.new_status.clone());
+                        }
+                    }
                 }
+                cache::save(&Cache { snapshots: self.prev_snapshot.clone() });
             }
         }
     }

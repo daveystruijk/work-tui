@@ -41,7 +41,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Percentage(20),
             Constraint::Min(1),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -51,58 +51,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     // Store visible list height (minus borders and header row) for half-page scrolling
     app.list_area_height = chunks[1].height.saturating_sub(4);
 
-    frame.render_widget(
-        Block::bordered()
-            .style(Style::default().bg(PANEL))
-            .border_style(Style::default().fg(ACCENT_SOFT)),
-        chunks[0],
-    );
-
-    let header_inner = Block::bordered().inner(chunks[0]);
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(header_inner);
-
-    let selected_count = if app.display_rows.is_empty() {
-        "0/0".to_string()
-    } else {
-        format!("{}/{}", app.selected_index + 1, app.display_rows.len())
-    };
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "◆ ",
-                Style::default()
-                    .fg(ACCENT_SOFT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "work-tui",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("assigned issues", Style::default().fg(MUTED)),
-            Span::raw("  "),
-            Span::styled(selected_count, Style::default().fg(ACCENT)),
-        ]))
-        .style(Style::default().bg(PANEL)),
-        top_chunks[0],
-    );
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("⎇ ", Style::default().fg(ACCENT)),
-            Span::styled(
-                app.current_branch.clone(),
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .style(Style::default().bg(PANEL))
-        .alignment(Alignment::Right),
-        top_chunks[1],
-    );
+    render_info_panel(app, frame, chunks[0]);
 
     let rows: Vec<Row> = app
         .display_rows
@@ -184,6 +133,91 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     if app.label_picker_active() {
         render_label_picker_modal(app, frame);
     }
+}
+
+fn render_info_panel(app: &App, frame: &mut Frame, area: Rect) {
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let issue = app.selected_issue();
+
+    // Pane 1: Jira Description
+    let jira_content: Text = match issue {
+        Some(i) => {
+            let summary = i.summary().unwrap_or_default();
+            let description = i
+                .description()
+                .unwrap_or_else(|| "No description".to_string());
+            Text::from(vec![
+                Line::from(Span::styled(
+                    summary,
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(description, Style::default().fg(TEXT))),
+            ])
+        }
+        None => Text::from(Span::styled(
+            "No issue selected",
+            Style::default().fg(MUTED),
+        )),
+    };
+    frame.render_widget(
+        Paragraph::new(jira_content)
+            .style(Style::default().fg(TEXT).bg(SURFACE))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::bordered()
+                    .title(Span::styled(
+                        " Jira Description ",
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ))
+                    .style(Style::default().bg(SURFACE))
+                    .border_style(Style::default().fg(ACCENT_SOFT)),
+            ),
+        panes[0],
+    );
+
+    // Pane 2: GitHub PR Description
+    let pr_content: Text = match issue.and_then(|i| app.github_prs.get(&i.key)) {
+        Some(pr) => {
+            let title_line = Line::from(Span::styled(
+                format!("#{} {}", pr.number, pr.title),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ));
+            if pr.body.is_empty() {
+                Text::from(vec![
+                    title_line,
+                    Line::from(""),
+                    Line::from(Span::styled("No description", Style::default().fg(MUTED))),
+                ])
+            } else {
+                Text::from(vec![
+                    title_line,
+                    Line::from(""),
+                    Line::from(Span::styled(pr.body.clone(), Style::default().fg(TEXT))),
+                ])
+            }
+        }
+        None => Text::from(Span::styled("No linked PR", Style::default().fg(MUTED))),
+    };
+    frame.render_widget(
+        Paragraph::new(pr_content)
+            .style(Style::default().fg(TEXT).bg(SURFACE))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::bordered()
+                    .title(Span::styled(
+                        " PR Description ",
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ))
+                    .style(Style::default().bg(SURFACE))
+                    .border_style(Style::default().fg(ACCENT_SOFT)),
+            ),
+        panes[1],
+    );
 }
 
 fn story_header_row(key: &str, summary: &str, idx: usize, collapsed: bool) -> Row<'static> {
@@ -276,6 +310,7 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
         Style::default().fg(TEXT).bg(SURFACE)
     };
     let is_highlighted = app.highlight_ticks.contains_key(&issue.key);
+    let new = app.new_fields.get(&issue.key);
 
     let pr_cell = match app.github_prs.get(&issue.key) {
         Some(pr) => {
@@ -284,30 +319,53 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
                 CheckStatus::Fail => ("✗", ERROR),
                 CheckStatus::Pending => ("●", WARNING),
             };
-            Cell::from(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::default().fg(color)),
-                Span::styled(format!("#{}", pr.number), Style::default().fg(INFO)),
-            ]))
+            let mut spans = Vec::new();
+            if new.is_some_and(|f| f.pr) {
+                spans.push(Span::styled("★ ", Style::default().fg(WARNING)));
+            }
+            spans.push(Span::styled(format!("{icon} "), Style::default().fg(color)));
+            spans.push(Span::styled(
+                format!("#{}", pr.number),
+                Style::default().fg(INFO),
+            ));
+            Cell::from(Line::from(spans))
         }
         None => Cell::from(""),
     };
 
     let key_prefix = if depth > 0 { "  ↳ " } else { "" };
-    Row::new(vec![
-        Cell::from(Span::styled(format!("{}{}", key_prefix, issue.key), {
-            let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-            if is_highlighted {
-                style.add_modifier(Modifier::SLOW_BLINK)
-            } else {
-                style
-            }
-        })),
-        pr_cell,
+    let key_style = {
+        let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+        if is_highlighted {
+            style.add_modifier(Modifier::SLOW_BLINK)
+        } else {
+            style
+        }
+    };
+    let key_cell = if new.is_some_and(|f| f.key) {
         Cell::from(Line::from(vec![
-            Span::styled("●", status_style),
-            Span::raw(" "),
-            Span::styled(status_name, status_style),
-        ])),
+            Span::styled("★ ", Style::default().fg(WARNING)),
+            Span::styled(format!("{}{}", key_prefix, issue.key), key_style),
+        ]))
+    } else {
+        Cell::from(Span::styled(
+            format!("{}{}", key_prefix, issue.key),
+            key_style,
+        ))
+    };
+
+    let mut status_spans = Vec::new();
+    if new.is_some_and(|f| f.status) {
+        status_spans.push(Span::styled("★ ", Style::default().fg(WARNING)));
+    }
+    status_spans.push(Span::styled("●", status_style));
+    status_spans.push(Span::raw(" "));
+    status_spans.push(Span::styled(status_name, status_style));
+
+    Row::new(vec![
+        key_cell,
+        pr_cell,
+        Cell::from(Line::from(status_spans)),
         Cell::from(Span::styled(
             summary,
             if is_highlighted {

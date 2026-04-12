@@ -1,5 +1,6 @@
 mod actions;
 mod app;
+mod cache;
 mod events;
 mod git;
 mod github;

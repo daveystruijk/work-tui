@@ -74,7 +74,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<BgMsg>, issue_key: String, repo_path: Pat
                 return Err(eyre!("Failed to create tmux window: {stderr}"));
             }
 
-            let difftool_cmd = "git diff origin/main";
+            let difftool_cmd = "git diff origin/main...HEAD";
             let send_keys = Command::new("tmux")
                 .args(["send-keys", difftool_cmd, "Enter"])
                 .output()
