@@ -315,22 +315,13 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
     } else {
         Style::default().fg(TEXT).bg(SURFACE)
     };
-    let is_highlighted = app.highlight_ticks.contains_key(&issue.key);
-    let new = app.new_fields.get(&issue.key);
-
     let (pr_cell, ci_cell) = match app.github_prs.get(&issue.key) {
         Some(pr) => {
-            // PR cell: just the PR number
-            let mut pr_spans = Vec::new();
-            if new.is_some_and(|f| f.pr) {
-                pr_spans.push(Span::styled("★ ", Style::default().fg(WARNING)));
-            }
-            pr_spans.push(Span::styled(
+            let pr_cell = Cell::from(Span::styled(
                 format!("#{}", pr.number),
                 Style::default().fg(INFO),
             ));
 
-            // CI cell: per-step icons + spinner + ETA
             let mut ci_spans = Vec::new();
             for run in &pr.check_runs {
                 let (icon, color) = match run.status {
@@ -351,56 +342,27 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
                 }
             }
 
-            (
-                Cell::from(Line::from(pr_spans)),
-                Cell::from(Line::from(ci_spans)),
-            )
+            (pr_cell, Cell::from(Line::from(ci_spans)))
         }
         None => (Cell::from(""), Cell::from("")),
     };
 
     let key_prefix = if depth > 0 { "  ↳ " } else { "" };
-    let key_style = {
-        let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-        if is_highlighted {
-            style.add_modifier(Modifier::SLOW_BLINK)
-        } else {
-            style
-        }
-    };
-    let key_cell = if new.is_some_and(|f| f.key) {
-        Cell::from(Line::from(vec![
-            Span::styled("★ ", Style::default().fg(WARNING)),
-            Span::styled(format!("{}{}", key_prefix, issue.key), key_style),
-        ]))
-    } else {
-        Cell::from(Span::styled(
-            format!("{}{}", key_prefix, issue.key),
-            key_style,
-        ))
-    };
-
-    let mut status_spans = Vec::new();
-    if new.is_some_and(|f| f.status) {
-        status_spans.push(Span::styled("★ ", Style::default().fg(WARNING)));
-    }
-    status_spans.push(Span::styled("●", status_style));
-    status_spans.push(Span::raw(" "));
-    status_spans.push(Span::styled(status_name, status_style));
+    let key_cell = Cell::from(Span::styled(
+        format!("{}{}", key_prefix, issue.key),
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ));
 
     Row::new(vec![
         key_cell,
         pr_cell,
         ci_cell,
-        Cell::from(Line::from(status_spans)),
-        Cell::from(Span::styled(
-            summary,
-            if is_highlighted {
-                Style::default().fg(TEXT).add_modifier(Modifier::SLOW_BLINK)
-            } else {
-                Style::default().fg(TEXT)
-            },
-        )),
+        Cell::from(Line::from(vec![
+            Span::styled("●", status_style),
+            Span::raw(" "),
+            Span::styled(status_name, status_style),
+        ])),
+        Cell::from(Span::styled(summary, Style::default().fg(TEXT))),
         Cell::from(format!("{} {}", issue_type_icon(&issue_type), issue_type)),
         Cell::from(Span::styled(assignee, Style::default().fg(MUTED))),
         Cell::from(Line::from(if is_active {

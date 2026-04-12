@@ -7,23 +7,12 @@ use tokio::sync::mpsc;
 
 use crate::{
     actions::{self, Progress},
-    cache::{self, Cache, IssueSnapshot},
+    cache::{self, Cache},
     events::{Event, EventLevel, EventLoadState, EventSource},
     github::{CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
     repos::{self, RepoEntry},
 };
-
-/// Tracks which columns changed for a given issue key.
-#[derive(Debug, Clone, Default)]
-pub struct NewFields {
-    /// The issue key itself is new (not seen before).
-    pub key: bool,
-    /// The Jira status changed.
-    pub status: bool,
-    /// The PR CI check status changed.
-    pub pr: bool,
-}
 
 /// Compute duration in seconds between two ISO 8601 timestamps.
 fn parse_duration_secs(start: &str, end: &str) -> Option<u64> {
@@ -188,12 +177,7 @@ pub struct App {
     pub display_rows: Vec<DisplayRow>,
     /// Active inline new-issue editor, if any.
     pub inline_new: Option<InlineNewState>,
-    /// Per-issue snapshot from the previous fetch (or loaded from disk cache), used to detect changes.
-    pub prev_snapshot: HashMap<String, IssueSnapshot>,
-    /// Issue keys that should blink because they are new or changed. Value = remaining ticks.
-    pub highlight_ticks: HashMap<String, usize>,
-    /// Per-issue map of which columns changed since the last refresh. Cleared on next fetch.
-    pub new_fields: HashMap<String, NewFields>,
+
     /// Story keys that are currently collapsed (children hidden).
     pub collapsed_stories: HashSet<String>,
     /// Configured GitHub repos to scan for PRs (from GITHUB_REPOS env var)
@@ -210,6 +194,8 @@ pub struct App {
     pub bg_tx: mpsc::UnboundedSender<BgMsg>,
     /// Receiver polled in the event loop
     pub bg_rx: mpsc::UnboundedReceiver<BgMsg>,
+    /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
+    pub last_ci_refresh: std::time::Instant,
 }
 
 impl App {
@@ -250,9 +236,6 @@ impl App {
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
-            prev_snapshot: HashMap::new(),
-            highlight_ticks: HashMap::new(),
-            new_fields: HashMap::new(),
             collapsed_stories: HashSet::new(),
             github_repos,
             github_prs: HashMap::new(),
@@ -261,11 +244,10 @@ impl App {
             completed_tasks: VecDeque::new(),
             bg_tx,
             bg_rx,
+            last_ci_refresh: std::time::Instant::now(),
         };
 
-        let cached = cache::load();
-        app.prev_snapshot = cached.snapshots;
-        app.check_durations = cached.check_durations;
+        app.check_durations = cache::load().check_durations;
 
         app.reload_repo_entries();
 
@@ -278,13 +260,15 @@ impl App {
     }
 
     /// Spawn a full refresh (issues + PRs + statuses).
-    pub fn spawn_refresh(&self) {
+    pub fn spawn_refresh(&mut self) {
         actions::refresh::spawn(self.bg_tx.clone(), self.client.clone(), self.jql.clone());
+        self.last_ci_refresh = std::time::Instant::now();
     }
 
     /// Spawn GitHub PR fetch for all configured repos.
-    pub fn spawn_github_prs(&self) {
+    pub fn spawn_github_prs(&mut self) {
         actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.github_repos.clone());
+        self.last_ci_refresh = std::time::Instant::now();
     }
 
     /// Spawn active branch detection for all issues.
@@ -377,33 +361,6 @@ impl App {
                     let selected_key = self.selected_issue().map(|i| i.key.clone());
                     self.issues = issues;
                     self.rebuild_display_rows();
-                    self.new_fields.clear();
-                    if !self.prev_snapshot.is_empty() {
-                        for issue in &self.issues {
-                            let key = &issue.key;
-                            let current_status = issue.status().map(|s| s.name).unwrap_or_default();
-                            match self.prev_snapshot.get(key) {
-                                None => {
-                                    self.highlight_ticks.insert(key.clone(), 75);
-                                    self.new_fields.insert(key.clone(), NewFields { key: true, ..Default::default() });
-                                }
-                                Some(old) if old.status != current_status => {
-                                    self.highlight_ticks.insert(key.clone(), 75);
-                                    let fields = self.new_fields.entry(key.clone()).or_default();
-                                    fields.status = true;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    // Update snapshot with current statuses (preserve pr_checks from prev)
-                    for issue in &self.issues {
-                        let key = &issue.key;
-                        let current_status = issue.status().map(|s| s.name).unwrap_or_default();
-                        let pr_checks = self.prev_snapshot.get(key).and_then(|s| s.pr_checks.clone());
-                        self.prev_snapshot.insert(key.clone(), IssueSnapshot { status: current_status, pr_checks });
-                    }
-                    self.save_cache();
                     let next_index = selected_key
                         .and_then(|key| {
                             self.display_rows.iter().position(|row| match row {
@@ -418,10 +375,8 @@ impl App {
                         next_index.min(self.display_rows.len() - 1)
                     };
                     self.loading = false;
-                    self.github_statuses.clear();
                     self.issue_events.clear();
-                    self.github_prs.clear();
-                    // Chain: fetch branches, PRs, statuses
+                    // Chain: fetch branches, PRs (existing PR data stays visible until new data arrives)
                     self.spawn_active_branches();
                     self.spawn_github_prs();
                 }
@@ -434,7 +389,7 @@ impl App {
                 self.active_branches = active;
             }
             BgMsg::GithubPrs(all_prs, errors) => {
-                let prev_prs = std::mem::take(&mut self.github_prs);
+                self.github_prs.clear();
                 self.github_statuses.clear();
                 for issue in &self.issues {
                     let key_lower = issue.key.to_lowercase();
@@ -445,21 +400,6 @@ impl App {
                         self.github_prs.insert(issue.key.clone(), pr.clone());
                         self.github_statuses
                             .insert(issue.key.clone(), GithubStatus::Found(pr.clone()));
-                        // Compare against both in-memory prev_prs and persisted snapshot
-                        let prev_checks = prev_prs
-                            .get(&issue.key)
-                            .map(|p| &p.checks)
-                            .or_else(|| self.prev_snapshot.get(&issue.key)?.pr_checks.as_ref());
-                        let changed = prev_checks.map_or(true, |old| *old != pr.checks);
-                        if changed {
-                            let fields = self.new_fields.entry(issue.key.clone()).or_default();
-                            fields.pr = true;
-                            self.highlight_ticks.insert(issue.key.clone(), 75);
-                        }
-                        // Update snapshot with current PR check status
-                        if let Some(snap) = self.prev_snapshot.get_mut(&issue.key) {
-                            snap.pr_checks = Some(pr.checks.clone());
-                        }
                     }
                 }
                 self.record_check_durations();
@@ -1257,10 +1197,6 @@ impl App {
     /// UI can show incremental progress.
     pub fn tick_spinner(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
-        self.highlight_ticks.retain(|_, ticks| {
-            *ticks = ticks.saturating_sub(1);
-            *ticks > 0
-        });
     }
 
     /// Returns `true` when any background work is in progress.
@@ -1281,7 +1217,6 @@ impl App {
     /// Build a Cache from current app state and save to disk.
     fn save_cache(&self) {
         cache::save(&Cache {
-            snapshots: self.prev_snapshot.clone(),
             check_durations: self.check_durations.clone(),
         });
     }

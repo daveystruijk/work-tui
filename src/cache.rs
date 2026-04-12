@@ -4,19 +4,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::github::CheckStatus;
-
-/// Per-issue snapshot persisted to disk, used to detect changes across restarts.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IssueSnapshot {
-    pub status: String,
-    pub pr_checks: Option<CheckStatus>,
-}
-
 /// Full cache file contents.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cache {
-    pub snapshots: HashMap<String, IssueSnapshot>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
     /// Stores the most recent completed duration for ETA estimation.
     #[serde(default)]

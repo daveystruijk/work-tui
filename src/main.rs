@@ -55,6 +55,8 @@ async fn main() -> Result<()> {
     app_result
 }
 
+const CI_AUTO_REFRESH: Duration = Duration::from_secs(30);
+
 async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::render(&mut app, frame))?;
@@ -65,6 +67,15 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
         // Drain all pending background messages (non-blocking)
         while let Ok(msg) = app.bg_rx.try_recv() {
             app.handle_bg_msg(msg);
+        }
+
+        // Auto-refresh PRs when CI checks are pending
+        if app.has_pending_checks()
+            && app.last_ci_refresh.elapsed() >= CI_AUTO_REFRESH
+            && !app.is_busy()
+        {
+            app.spawn_github_prs();
+            app.last_ci_refresh = std::time::Instant::now();
         }
 
         // Spin faster while background work or pending CI checks are active
