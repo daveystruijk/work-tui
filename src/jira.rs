@@ -136,7 +136,6 @@ impl JiraClient {
         Ok(())
     }
 
-
     pub async fn update_labels(&self, issue_key: &str, labels: &[String]) -> Result<()> {
         let values = labels.iter().cloned().map(Value::String).collect();
         let mut fields = BTreeMap::new();

@@ -31,6 +31,8 @@ pub enum BgMsg {
     IssueEvents(String, EventLoadState),
     /// Pick-up completed (from [`actions::pick_up`]).
     PickedUp(Result<String>),
+    /// Branch diff opened (from [`actions::branch_diff`]).
+    BranchDiffOpened(Result<String>),
     /// Finish completed — PR created (from [`actions::finish`]).
     Finished(Result<String>),
     /// Inline new issue created (from [`actions::create_inline_issue`]).
@@ -428,6 +430,14 @@ impl App {
                     self.status_message = format!("Failed to pick up issue: {err}");
                 }
             },
+            BgMsg::BranchDiffOpened(result) => match result {
+                Ok(branch) => {
+                    self.status_message = format!("Opened diff for {branch}");
+                }
+                Err(err) => {
+                    self.status_message = format!("Branch diff failed: {err}");
+                }
+            },
             BgMsg::Finished(result) => match result {
                 Ok(pr_url) => {
                     self.status_message = format!("PR created: {pr_url}");
@@ -515,6 +525,21 @@ impl App {
             repos[0].path.clone(),
             self.my_account_id.clone(),
         );
+    }
+
+    /// Spawn branch diff in background: checkout branch and open difftool in tmux.
+    pub fn spawn_branch_diff(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let repos = self.repo_matches(issue);
+        if repos.is_empty() {
+            self.status_message = format!("Cannot open diff for {issue_key}: no linked repo");
+            return;
+        }
+
+        actions::branch_diff::spawn(self.bg_tx.clone(), issue_key, repos[0].path.clone());
     }
 
     /// Spawn finish workflow in background.
@@ -655,7 +680,10 @@ impl App {
             children.sort_by(|a, b| {
                 status_rank(&self.issues[*a])
                     .cmp(&status_rank(&self.issues[*b]))
-                    .then_with(|| issue_created_str(&self.issues[*b]).cmp(&issue_created_str(&self.issues[*a])))
+                    .then_with(|| {
+                        issue_created_str(&self.issues[*b])
+                            .cmp(&issue_created_str(&self.issues[*a]))
+                    })
             });
         }
 
@@ -708,9 +736,9 @@ impl App {
         top_levels.sort_by(|a, b| {
             let rank_a = top_level_status_rank(a, &self.issues);
             let rank_b = top_level_status_rank(b, &self.issues);
-            rank_a
-                .cmp(&rank_b)
-                .then_with(|| top_level_created(b, &self.issues).cmp(&top_level_created(a, &self.issues)))
+            rank_a.cmp(&rank_b).then_with(|| {
+                top_level_created(b, &self.issues).cmp(&top_level_created(a, &self.issues))
+            })
         });
 
         fn top_level_created(entry: &TopLevel, issues: &[Issue]) -> String {
@@ -721,12 +749,17 @@ impl App {
                     children,
                     ..
                 } => {
-                    let parent_created = parent_issue_idx.map(|idx| issue_created_str(&issues[idx]));
+                    let parent_created =
+                        parent_issue_idx.map(|idx| issue_created_str(&issues[idx]));
                     let child_max = children
                         .iter()
                         .map(|idx| issue_created_str(&issues[*idx]))
                         .max();
-                    parent_created.into_iter().chain(child_max).max().unwrap_or_default()
+                    parent_created
+                        .into_iter()
+                        .chain(child_max)
+                        .max()
+                        .unwrap_or_default()
                 }
             }
         }
@@ -919,7 +952,6 @@ impl App {
             );
         }
     }
-
 
     pub async fn enter_new(&mut self) -> Result<()> {
         let project_key = self.derive_project_key();

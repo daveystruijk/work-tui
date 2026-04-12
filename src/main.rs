@@ -79,8 +79,6 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
                 continue;
             }
             handle_key_event(&mut app, key_event).await;
-
-
         }
     }
 
@@ -135,6 +133,10 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
             app.pending_g = false;
 
             match c {
+                'b' => {
+                    app.status_message = "Opening diff...".to_string();
+                    app.spawn_branch_diff();
+                }
                 'j' => move_selection_down(app),
                 'k' => move_selection_up(app),
                 'G' => move_selection_to_end(app),
@@ -254,6 +256,10 @@ async fn handle_detail(app: &mut App, key_event: KeyEvent) {
             'p' => {
                 app.status_message = "Picking up...".to_string();
                 app.spawn_pick_up();
+            }
+            'b' => {
+                app.status_message = "Opening diff...".to_string();
+                app.spawn_branch_diff();
             }
             'o' => match app.open_selected_pr_in_browser().await {
                 Ok(_) => {}

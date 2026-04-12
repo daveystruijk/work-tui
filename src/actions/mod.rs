@@ -9,6 +9,7 @@
 
 pub mod add_label;
 pub mod auto_label;
+pub mod branch_diff;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_github_prs;
