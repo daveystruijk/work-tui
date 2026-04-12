@@ -1,16 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use chrono::Utc;
 use color_eyre::{eyre::eyre, Result};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::{
-    actions::{self, poll_ci_status::CiChange, Progress},
+    actions::{self, Progress},
     cache::{self, Cache, IssueSnapshot},
     events::{Event, EventLevel, EventLoadState, EventSource},
     github::{CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
-    notify,
     repos::{self, RepoEntry},
 };
 
@@ -25,6 +25,33 @@ pub struct NewFields {
     pub pr: bool,
 }
 
+/// Compute duration in seconds between two ISO 8601 timestamps.
+fn parse_duration_secs(start: &str, end: &str) -> Option<u64> {
+    let s = start.parse::<chrono::DateTime<chrono::Utc>>().ok()?;
+    let e = end.parse::<chrono::DateTime<chrono::Utc>>().ok()?;
+    Some(e.signed_duration_since(s).num_seconds().unsigned_abs())
+}
+
+/// Seconds elapsed since an ISO 8601 timestamp.
+fn elapsed_since_iso(ts: &str) -> Option<u64> {
+    let started = ts.parse::<chrono::DateTime<chrono::Utc>>().ok()?;
+    Some(Utc::now().signed_duration_since(started).num_seconds().unsigned_abs())
+}
+
+/// Format seconds as a human-readable duration (e.g. "2m", "1m30s").
+pub fn format_duration(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let m = secs / 60;
+    let s = secs % 60;
+    if s == 0 {
+        format!("{m}m")
+    } else {
+        format!("{m}m{s:02}s")
+    }
+}
+
 /// Messages sent from background actions back to the main event loop.
 ///
 /// Each variant corresponds to a result produced by an action in [`crate::actions`].
@@ -36,7 +63,8 @@ pub enum BgMsg {
     /// Issues fetched from Jira (from [`actions::initialize`] / [`actions::refresh`]).
     Issues(Result<Vec<Issue>>),
     /// GitHub PRs fetched for all configured repos (from [`actions::fetch_github_prs`]).
-    GithubPrs(Vec<PrInfo>),
+    /// Carries (successful PRs, per-repo error messages).
+    GithubPrs(Vec<PrInfo>, Vec<String>),
     /// Active branches resolved (from [`actions::detect_active_branches`]).
     ActiveBranches(HashMap<String, String>),
     /// Issue events loaded for detail view (from [`actions::load_issue_events`]).
@@ -63,8 +91,6 @@ pub enum BgMsg {
     ///
     /// Rendered in the status bar with step-by-step feedback.
     Progress(Progress),
-    /// One or more PR CI statuses changed (from [`actions::poll_ci_status`]).
-    CiStatusChanged(Vec<CiChange>),
 }
 
 /// A row in the display list — either a story header, an issue, or an inline-new placeholder.
@@ -174,6 +200,8 @@ pub struct App {
     pub github_repos: Vec<String>,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
+    /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
+    pub check_durations: HashMap<String, u64>,
     /// Currently running background task names
     pub running_tasks: HashSet<&'static str>,
     /// Recently completed task names (for brief status display), with remaining ticks
@@ -222,17 +250,22 @@ impl App {
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
-            prev_snapshot: cache::load().snapshots,
+            prev_snapshot: HashMap::new(),
             highlight_ticks: HashMap::new(),
             new_fields: HashMap::new(),
             collapsed_stories: HashSet::new(),
             github_repos,
             github_prs: HashMap::new(),
+            check_durations: HashMap::new(),
             running_tasks: HashSet::new(),
             completed_tasks: VecDeque::new(),
             bg_tx,
             bg_rx,
         };
+
+        let cached = cache::load();
+        app.prev_snapshot = cached.snapshots;
+        app.check_durations = cached.check_durations;
 
         app.reload_repo_entries();
 
@@ -252,15 +285,6 @@ impl App {
     /// Spawn GitHub PR fetch for all configured repos.
     pub fn spawn_github_prs(&self) {
         actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.github_repos.clone());
-    }
-
-    /// Spawn the periodic CI status polling loop (every 10s).
-    pub fn spawn_poll_ci_status(&self) {
-        actions::poll_ci_status::spawn(
-            self.bg_tx.clone(),
-            self.github_repos.clone(),
-            std::time::Duration::from_secs(10),
-        );
     }
 
     /// Spawn active branch detection for all issues.
@@ -379,7 +403,7 @@ impl App {
                         let pr_checks = self.prev_snapshot.get(key).and_then(|s| s.pr_checks.clone());
                         self.prev_snapshot.insert(key.clone(), IssueSnapshot { status: current_status, pr_checks });
                     }
-                    cache::save(&Cache { snapshots: self.prev_snapshot.clone() });
+                    self.save_cache();
                     let next_index = selected_key
                         .and_then(|key| {
                             self.display_rows.iter().position(|row| match row {
@@ -409,7 +433,7 @@ impl App {
             BgMsg::ActiveBranches(active) => {
                 self.active_branches = active;
             }
-            BgMsg::GithubPrs(all_prs) => {
+            BgMsg::GithubPrs(all_prs, errors) => {
                 let prev_prs = std::mem::take(&mut self.github_prs);
                 self.github_statuses.clear();
                 for issue in &self.issues {
@@ -438,11 +462,14 @@ impl App {
                         }
                     }
                 }
-                cache::save(&Cache { snapshots: self.prev_snapshot.clone() });
+                self.record_check_durations();
+                self.save_cache();
                 self.spawn_auto_label();
                 self.github_loading = false;
                 self.refresh_latest_activity();
-                if self.running_tasks.is_empty() {
+                if !errors.is_empty() {
+                    self.status_message = format!("Failed: {}", errors.join("; "));
+                } else if self.running_tasks.is_empty() {
                     self.status_message = "Ready".into();
                 }
             }
@@ -520,38 +547,6 @@ impl App {
             }
             BgMsg::Progress(progress) => {
                 self.status_message = progress.to_string();
-            }
-            BgMsg::CiStatusChanged(changes) => {
-                for change in &changes {
-                    let status_label = match &change.new_status {
-                        CheckStatus::Pass => "passed ✓",
-                        CheckStatus::Fail => "failed ✗",
-                        CheckStatus::Pending => "running",
-                    };
-                    notify::send(
-                        "CI Status Changed",
-                        &format!(
-                            "PR #{} ({}) — CI {}",
-                            change.pr_number, change.head_branch, status_label
-                        ),
-                    );
-                    // Mark the matching issue's PR column as changed
-                    let branch_lower = change.head_branch.to_lowercase();
-                    if let Some(issue_key) = self.issues.iter().find_map(|i| {
-                        branch_lower
-                            .starts_with(&i.key.to_lowercase())
-                            .then(|| i.key.clone())
-                    }) {
-                        let fields = self.new_fields.entry(issue_key.clone()).or_default();
-                        fields.pr = true;
-                        self.highlight_ticks.insert(issue_key.clone(), 75);
-                        // Update snapshot
-                        if let Some(snap) = self.prev_snapshot.get_mut(&issue_key) {
-                            snap.pr_checks = Some(change.new_status.clone());
-                        }
-                    }
-                }
-                cache::save(&Cache { snapshots: self.prev_snapshot.clone() });
             }
         }
     }
@@ -1274,6 +1269,66 @@ impl App {
             || self.github_loading
             || !self.running_tasks.is_empty()
             || self.status_message.starts_with('[')
+    }
+
+    /// Returns `true` when any tracked PR has pending CI checks.
+    pub fn has_pending_checks(&self) -> bool {
+        self.github_prs
+            .values()
+            .any(|pr| pr.checks == CheckStatus::Pending)
+    }
+
+    /// Build a Cache from current app state and save to disk.
+    fn save_cache(&self) {
+        cache::save(&Cache {
+            snapshots: self.prev_snapshot.clone(),
+            check_durations: self.check_durations.clone(),
+        });
+    }
+
+    /// Record durations of completed check runs into the history cache.
+    fn record_check_durations(&mut self) {
+        for pr in self.github_prs.values() {
+            for run in &pr.check_runs {
+                let (Some(started), Some(completed)) = (&run.started_at, &run.completed_at) else {
+                    continue;
+                };
+                let Some(duration) = parse_duration_secs(started, completed) else {
+                    continue;
+                };
+                let cache_key = format!("{}/{}", pr.repo_slug, run.name);
+                self.check_durations.insert(cache_key, duration);
+            }
+        }
+    }
+
+    /// Compute the ETA string for a PR's pending checks.
+    /// Returns e.g. "~3m" based on historical durations minus elapsed time.
+    pub fn pr_eta(&self, pr: &PrInfo) -> Option<String> {
+        let pending_runs: Vec<_> = pr
+            .check_runs
+            .iter()
+            .filter(|r| r.status == CheckStatus::Pending)
+            .collect();
+        if pending_runs.is_empty() {
+            return None;
+        }
+        // Find the maximum remaining time across all pending checks
+        let mut max_remaining: Option<u64> = None;
+        for run in &pending_runs {
+            let cache_key = format!("{}/{}", pr.repo_slug, run.name);
+            let Some(&historical) = self.check_durations.get(&cache_key) else {
+                continue;
+            };
+            let elapsed = run
+                .started_at
+                .as_deref()
+                .and_then(elapsed_since_iso)
+                .unwrap_or(0);
+            let remaining = historical.saturating_sub(elapsed);
+            max_remaining = Some(max_remaining.map_or(remaining, |cur: u64| cur.max(remaining)));
+        }
+        max_remaining.map(|r| format!("~{}", format_duration(r)))
     }
 
     /// Compose `status_message` from currently running and recently completed tasks.

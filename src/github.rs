@@ -4,6 +4,7 @@ use std::path::Path;
 
 use color_eyre::{eyre::eyre, Result};
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::process::Command;
 
 use crate::events::{Event, EventLevel, EventSource};
@@ -15,12 +16,22 @@ pub enum CheckStatus {
     Fail,
 }
 
+/// A single CI check run with timing info for ETA estimation.
+#[derive(Debug, Clone)]
+pub struct CheckRun {
+    pub name: String,
+    pub status: CheckStatus,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PrInfo {
     pub number: u64,
     pub title: String,
     pub state: String,
     pub checks: CheckStatus,
+    pub check_runs: Vec<CheckRun>,
     pub url: String,
     pub head_branch: String,
     /// The repo slug (owner/repo) this PR belongs to
@@ -90,11 +101,25 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
         .into_iter()
         .map(|pr| {
             let checks = aggregate_check_status(&pr.status_check_rollup);
+            let check_runs = pr
+                .status_check_rollup
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|c| !c.name.is_empty())
+                .map(|c| CheckRun {
+                    name: c.name.clone(),
+                    status: check_run_status(c),
+                    started_at: c.started_at.clone(),
+                    completed_at: c.completed_at.clone(),
+                })
+                .collect();
             PrInfo {
                 number: pr.number,
                 title: pr.title,
                 state: pr.state,
                 checks,
+                check_runs,
                 url: pr.url,
                 head_branch: pr.head_ref_name,
                 repo_slug: slug.clone(),
@@ -102,6 +127,216 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
             }
         })
         .collect())
+}
+
+pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut repo_queries: Vec<(String, String, String, String)> = Vec::new();
+
+    for (idx, slug) in repo_slugs.iter().enumerate() {
+        let Some((owner, name)) = slug.split_once('/') else {
+            errors.push(format!("{slug}: invalid repo slug"));
+            continue;
+        };
+        repo_queries.push((format!("repo_{idx}"), owner.to_string(), name.to_string(), slug.clone()));
+    }
+
+    if repo_queries.is_empty() {
+        return (Vec::new(), errors);
+    }
+
+    let mut query = String::from("{");
+    for (alias, owner, name, _) in &repo_queries {
+        query.push_str(&format!(
+            r#"
+            {alias}: repository(owner: "{owner}", name: "{name}") {{
+                nameWithOwner
+                pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+                    nodes {{
+                        number
+                        title
+                        state
+                        url
+                        headRefName
+                        body
+                        statusCheckRollup: commits(last: 1) {{
+                            nodes {{
+                                commit {{
+                                    statusCheckRollup {{
+                                        contexts(first: 100) {{
+                                            nodes {{
+                                                __typename
+                                                ... on CheckRun {{
+                                                    name
+                                                    status
+                                                    conclusion
+                                                    startedAt
+                                                    completedAt
+                                                }}
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+            "#,
+            alias = alias,
+            owner = owner,
+            name = name,
+        ));
+    }
+    query.push_str("\n}");
+
+    let output = match Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={query}")])
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(err) => {
+            errors.push(format!("gh api graphql failed: {err}"));
+            return (Vec::new(), errors);
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        errors.push(format!(
+            "gh api graphql failed: {}",
+            if stderr.is_empty() {
+                "unknown error".to_string()
+            } else {
+                stderr
+            }
+        ));
+        return (Vec::new(), errors);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: Value = match serde_json::from_str(&stdout) {
+        Ok(value) => value,
+        Err(err) => {
+            errors.push(format!("Failed to parse GraphQL response: {err}"));
+            return (Vec::new(), errors);
+        }
+    };
+
+    if let Some(graph_errors) = response
+        .get("errors")
+        .and_then(|errs| errs.as_array())
+    {
+        for err in graph_errors {
+            let message = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            errors.push(format!("GraphQL error: {message}"));
+        }
+    }
+
+    let Some(data_obj) = response.get("data").and_then(|d| d.as_object()) else {
+        return (Vec::new(), errors);
+    };
+
+    let mut all_prs = Vec::new();
+
+    for (alias, _owner, _name, slug) in repo_queries {
+        let Some(repo_value) = data_obj.get(&alias) else {
+            errors.push(format!("{slug}: missing repository data"));
+            continue;
+        };
+
+        if repo_value.is_null() {
+            errors.push(format!("{slug}: repository not found"));
+            continue;
+        }
+
+        let repo_slug = repo_value
+            .get("nameWithOwner")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&slug)
+            .to_string();
+
+        let Some(pr_nodes) = repo_value
+            .get("pullRequests")
+            .and_then(|prs| prs.get("nodes"))
+            .and_then(|nodes| nodes.as_array())
+        else {
+            continue;
+        };
+
+        for pr in pr_nodes {
+            let Some(number) = pr.get("number").and_then(|n| n.as_u64()) else {
+                errors.push(format!("{repo_slug}: missing PR number"));
+                continue;
+            };
+
+            let title = pr
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let state = pr
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let url = pr
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let head_branch = pr
+                .get("headRefName")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let body = pr
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let mut rollup_option = {
+                let rollups = extract_check_rollups(pr);
+                if rollups.is_empty() {
+                    None
+                } else {
+                    Some(rollups)
+                }
+            };
+
+            let checks = aggregate_check_status(&rollup_option);
+            let check_rollup_vec = rollup_option.take().unwrap_or_default();
+            let check_runs = check_rollup_vec
+                .iter()
+                .filter(|c| !c.name.is_empty())
+                .map(|c| CheckRun {
+                    name: c.name.clone(),
+                    status: check_run_status(c),
+                    started_at: c.started_at.clone(),
+                    completed_at: c.completed_at.clone(),
+                })
+                .collect();
+
+            all_prs.push(PrInfo {
+                number,
+                title,
+                state,
+                checks,
+                check_runs,
+                url,
+                head_branch,
+                repo_slug: repo_slug.clone(),
+                body,
+            });
+        }
+    }
+
+    (all_prs, errors)
 }
 
 /// Create a pull request using `gh pr create` and return the PR URL.
@@ -125,6 +360,66 @@ pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<Stri
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn extract_check_rollups(pr_node: &Value) -> Vec<GhCheckRollup> {
+    let Some(contexts) = pr_node
+        .get("statusCheckRollup")
+        .and_then(|rollup| rollup.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+        .and_then(|nodes| nodes.first())
+        .and_then(|node| {
+            node.get("commit").and_then(|commit| {
+                commit.get("statusCheckRollup").and_then(|status| {
+                    status.get("contexts").and_then(|ctx| ctx.get("nodes"))
+                })
+            })
+        })
+        .and_then(|nodes| nodes.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let mut rollups = Vec::new();
+    for context in contexts {
+        let typename = context
+            .get("__typename")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default();
+        if typename != "CheckRun" {
+            continue;
+        }
+        let name = context
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        rollups.push(GhCheckRollup {
+            name,
+            status: context
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            conclusion: context
+                .get("conclusion")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            started_at: context
+                .get("startedAt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            completed_at: context
+                .get("completedAt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        });
+    }
+
+    rollups
 }
 
 fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {
@@ -288,9 +583,28 @@ struct GhAuthor {
 
 #[derive(Deserialize)]
 struct GhCheckRollup {
+    #[serde(default)]
     name: String,
     conclusion: Option<String>,
+    #[serde(default)]
     status: String,
+    #[serde(rename = "startedAt")]
+    started_at: Option<String>,
     #[serde(rename = "completedAt")]
     completed_at: Option<String>,
+}
+
+fn check_run_status(c: &GhCheckRollup) -> CheckStatus {
+    let is_fail = c
+        .conclusion
+        .as_deref()
+        .map(|s| s.eq_ignore_ascii_case("failure") || s.eq_ignore_ascii_case("cancelled"))
+        .unwrap_or(false);
+    if is_fail {
+        return CheckStatus::Fail;
+    }
+    if !c.status.eq_ignore_ascii_case("completed") {
+        return CheckStatus::Pending;
+    }
+    CheckStatus::Pass
 }

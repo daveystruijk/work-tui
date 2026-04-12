@@ -17,6 +17,10 @@ pub struct IssueSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cache {
     pub snapshots: HashMap<String, IssueSnapshot>,
+    /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
+    /// Stores the most recent completed duration for ETA estimation.
+    #[serde(default)]
+    pub check_durations: HashMap<String, u64>,
 }
 
 fn cache_path() -> Option<PathBuf> {

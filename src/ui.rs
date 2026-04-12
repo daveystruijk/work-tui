@@ -79,6 +79,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
             Constraint::Length(16),
             Constraint::Length(8),
             Constraint::Length(14),
+            Constraint::Length(14),
             Constraint::Min(10),
             Constraint::Length(10),
             Constraint::Length(20),
@@ -86,7 +87,10 @@ fn render_list(app: &mut App, frame: &mut Frame) {
         ],
     )
     .header(
-        Row::new(["Key", "PR", "Status", "Summary", "Type", "Assignee", "Repo"]).style(
+        Row::new([
+            "Key", "PR", "CI", "Status", "Summary", "Type", "Assignee", "Repo",
+        ])
+        .style(
             Style::default()
                 .fg(ACCENT_SOFT)
                 .bg(SURFACE)
@@ -238,6 +242,7 @@ fn story_header_row(key: &str, summary: &str, idx: usize, collapsed: bool) -> Ro
                 .add_modifier(Modifier::BOLD),
         )),
         Cell::from(""), // PR
+        Cell::from(""), // CI
         Cell::from(""), // Status
         Cell::from(Span::styled(
             first_line,
@@ -268,6 +273,7 @@ fn inline_new_row(state: Option<&InlineNewState>, idx: usize, depth: u8) -> Row<
             Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
         )),
         Cell::from(""), // PR
+        Cell::from(""), // CI
         Cell::from(""), // Status
         Cell::from(Line::from(vec![
             Span::styled(summary_text.to_string(), Style::default().fg(TEXT)),
@@ -312,25 +318,45 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
     let is_highlighted = app.highlight_ticks.contains_key(&issue.key);
     let new = app.new_fields.get(&issue.key);
 
-    let pr_cell = match app.github_prs.get(&issue.key) {
+    let (pr_cell, ci_cell) = match app.github_prs.get(&issue.key) {
         Some(pr) => {
-            let (icon, color) = match pr.checks {
-                CheckStatus::Pass => ("✓", SUCCESS),
-                CheckStatus::Fail => ("✗", ERROR),
-                CheckStatus::Pending => ("●", WARNING),
-            };
-            let mut spans = Vec::new();
+            // PR cell: just the PR number
+            let mut pr_spans = Vec::new();
             if new.is_some_and(|f| f.pr) {
-                spans.push(Span::styled("★ ", Style::default().fg(WARNING)));
+                pr_spans.push(Span::styled("★ ", Style::default().fg(WARNING)));
             }
-            spans.push(Span::styled(format!("{icon} "), Style::default().fg(color)));
-            spans.push(Span::styled(
+            pr_spans.push(Span::styled(
                 format!("#{}", pr.number),
                 Style::default().fg(INFO),
             ));
-            Cell::from(Line::from(spans))
+
+            // CI cell: per-step icons + spinner + ETA
+            let mut ci_spans = Vec::new();
+            for run in &pr.check_runs {
+                let (icon, color) = match run.status {
+                    CheckStatus::Pass => ("✓", SUCCESS),
+                    CheckStatus::Fail => ("✗", ERROR),
+                    CheckStatus::Pending => ("●", WARNING),
+                };
+                ci_spans.push(Span::styled(icon, Style::default().fg(color)));
+            }
+            if pr.checks == CheckStatus::Pending {
+                let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+                ci_spans.push(Span::styled(
+                    format!(" {spinner}"),
+                    Style::default().fg(WARNING),
+                ));
+                if let Some(eta) = app.pr_eta(pr) {
+                    ci_spans.push(Span::styled(format!(" {eta}"), Style::default().fg(MUTED)));
+                }
+            }
+
+            (
+                Cell::from(Line::from(pr_spans)),
+                Cell::from(Line::from(ci_spans)),
+            )
         }
-        None => Cell::from(""),
+        None => (Cell::from(""), Cell::from("")),
     };
 
     let key_prefix = if depth > 0 { "  ↳ " } else { "" };
@@ -365,6 +391,7 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
     Row::new(vec![
         key_cell,
         pr_cell,
+        ci_cell,
         Cell::from(Line::from(status_spans)),
         Cell::from(Span::styled(
             summary,

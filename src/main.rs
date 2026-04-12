@@ -41,7 +41,6 @@ async fn main() -> Result<()> {
     terminal.draw(|frame| ui::render(&mut app, frame))?;
 
     app.spawn_initialize();
-    app.spawn_poll_ci_status();
 
     let app_result = run_app(&mut terminal, app).await;
 
@@ -68,8 +67,12 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
             app.handle_bg_msg(msg);
         }
 
-        // Spin faster while background work is active for snappier feedback
-        let poll_ms = if app.is_busy() { 40 } else { 100 };
+        // Spin faster while background work or pending CI checks are active
+        let poll_ms = if app.is_busy() || app.has_pending_checks() {
+            40
+        } else {
+            100
+        };
         if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
         }
