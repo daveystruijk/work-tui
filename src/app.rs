@@ -147,8 +147,6 @@ pub struct App {
 
     /// Story keys that are currently collapsed (children hidden).
     pub collapsed_stories: HashSet<String>,
-    /// Configured GitHub repos to scan for PRs (from GITHUB_REPOS env var)
-    pub github_repos: Vec<String>,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
@@ -173,8 +171,6 @@ impl App {
         let jira_base_url = config.base_url.trim_end_matches('/').to_string();
         let client = JiraClient::new(&config)?;
         let jql = config.default_jql.clone();
-        let github_repos = config.github_repos.clone();
-
         let (bg_tx, bg_rx) = mpsc::unbounded_channel();
         let mut app = Self {
             should_quit: false,
@@ -207,7 +203,6 @@ impl App {
             inline_new: None,
             search_filter: String::new(),
             collapsed_stories: HashSet::new(),
-            github_repos,
             github_prs: HashMap::new(),
             check_durations: HashMap::new(),
             running_tasks: HashSet::new(),
@@ -236,9 +231,22 @@ impl App {
         self.last_ci_refresh = std::time::Instant::now();
     }
 
-    /// Spawn GitHub PR fetch for all configured repos.
+    /// Collect unique GitHub slugs from repos that match current issue labels.
+    fn matched_repo_slugs(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        for issue in &self.issues {
+            for entry in self.repo_matches(issue) {
+                if let Some(slug) = &entry.github_slug {
+                    seen.insert(slug.clone());
+                }
+            }
+        }
+        seen.into_iter().collect()
+    }
+
+    /// Spawn GitHub PR fetch for repos matching current issue labels.
     pub fn spawn_github_prs(&mut self) {
-        actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.github_repos.clone());
+        actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.matched_repo_slugs());
         self.last_ci_refresh = std::time::Instant::now();
     }
 

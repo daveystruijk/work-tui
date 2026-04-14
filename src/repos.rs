@@ -1,4 +1,8 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use color_eyre::{eyre::eyre, Result};
 
@@ -7,6 +11,7 @@ pub struct RepoEntry {
     pub label: String,
     pub normalized: String,
     pub path: PathBuf,
+    pub github_slug: Option<String>,
 }
 
 pub fn scan_repos() -> Result<Vec<RepoEntry>> {
@@ -26,15 +31,51 @@ pub fn scan_repos() -> Result<Vec<RepoEntry>> {
         };
         let label = name.to_string();
         let normalized = normalize_label(&label);
+        let github_slug = extract_github_slug(&path);
         repos.push(RepoEntry {
             label,
             normalized,
             path,
+            github_slug,
         });
     }
 
     repos.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
     Ok(repos)
+}
+
+fn extract_github_slug(repo_path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("remote")
+        .arg("get-url")
+        .arg("origin")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8(output.stdout).ok()?;
+    let url = url.trim();
+    let pos = url.find("github.com")?;
+    let remainder = &url[pos + "github.com".len()..];
+    let remainder = remainder.trim_start_matches(|c| c == ':' || c == '/');
+    if remainder.is_empty() {
+        return None;
+    }
+
+    let slug = remainder
+        .split(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        .next()?;
+    let slug = slug.trim_end_matches('/').trim_end_matches(".git");
+    if slug.is_empty() || !slug.contains('/') {
+        return None;
+    }
+
+    Some(slug.to_string())
 }
 
 fn repos_dir() -> Result<PathBuf> {

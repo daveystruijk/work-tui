@@ -21,7 +21,6 @@ pub struct JiraConfig {
     pub email: String,
     pub api_token: String,
     pub default_jql: String,
-    pub github_repos: Vec<String>,
 }
 
 impl JiraConfig {
@@ -34,26 +33,11 @@ impl JiraConfig {
         let email = required("JIRA_EMAIL")?;
         let api_token = required("JIRA_API_TOKEN")?;
         let default_jql = required("JIRA_JQL")?;
-        let github_repos_raw = required("GITHUB_REPOS")?;
-
-        let github_repos: Vec<String> = github_repos_raw
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if github_repos.is_empty() {
-            return Err(eyre!(
-                "GITHUB_REPOS must contain at least one owner/repo entry (comma-separated)"
-            ));
-        }
-
         Ok(Self {
             base_url,
             email,
             api_token,
             default_jql,
-            github_repos,
         })
     }
 }
@@ -237,26 +221,17 @@ impl JiraClient {
         Ok(created.key)
     }
 
-    pub async fn get_issue_types(&self, _project_key: &str) -> Result<Vec<IssueType>> {
-        // gouqi does not expose the create-meta endpoint yet, so we return a small set
-        // of common issue types as a temporary workaround.
-        Ok(vec![
-            make_issue_type("10001", "Task"),
-            make_issue_type("10002", "Bug"),
-            make_issue_type("10003", "Story"),
-            make_issue_type("10004", "Epic"),
-        ])
-    }
-}
-
-fn make_issue_type(id: &str, name: &str) -> IssueType {
-    IssueType {
-        description: String::new(),
-        icon_url: String::new(),
-        id: id.to_string(),
-        name: name.to_string(),
-        self_link: String::new(),
-        subtask: false,
+    pub async fn get_issue_types(&self, project_key: &str) -> Result<Vec<IssueType>> {
+        let path = format!("/project/{project_key}");
+        let value: Value = self.jira.get("api", &path).await?;
+        let types = value
+            .get("issueTypes")
+            .and_then(|v| serde_json::from_value::<Vec<IssueType>>(v.clone()).ok())
+            .unwrap_or_default();
+        if types.is_empty() {
+            return Err(eyre!("No issue types found for project {project_key}"));
+        }
+        Ok(types)
     }
 }
 
