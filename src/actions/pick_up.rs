@@ -54,14 +54,14 @@ pub fn spawn(
             }));
             git::fetch_origin(&repo_path).await?;
 
-            // Step 3: Create branch
+            // Step 3: Create or reuse branch
             let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "pick_up",
-                message: "Creating branch...".into(),
+                message: "Creating or reusing branch...".into(),
                 current: 3,
                 total: 6,
             }));
-            let branch =
+            let branch_setup =
                 git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
 
             // Step 4: Assign issue
@@ -73,14 +73,13 @@ pub fn spawn(
             }));
             client.assign_issue(&issue_key, &my_account_id).await?;
 
-            // Step 5: Move issue onto active board and transition to In Progress
+            // Step 5: Transition to In Progress and ensure board visibility
             let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "pick_up",
-                message: "Moving issue to board and transitioning to In Progress...".into(),
+                message: "Transitioning to In Progress and moving issue to board...".into(),
                 current: 5,
                 total: 6,
             }));
-            client.move_issue_to_active_board(&issue_key).await?;
             let transitions = client.get_transitions(&issue_key).await?;
             let progress = transitions
                 .into_iter()
@@ -88,8 +87,10 @@ pub fn spawn(
             if let Some(t) = progress {
                 client.transition_issue(&issue_key, &t.id).await?;
             }
+            client.move_issue_to_active_board(&issue_key).await?;
 
-            if !has_uncommitted_changes {
+            let should_open_opencode = branch_setup.reused_existing || !has_uncommitted_changes;
+            if should_open_opencode {
                 let _ = tx.send(ActionMessage::Progress(Progress {
                     action: "pick_up",
                     message: "Opening opencode session...".into(),
@@ -121,8 +122,8 @@ pub fn spawn(
             }
 
             Ok(PickUpResult {
-                branch,
-                skipped_opencode: has_uncommitted_changes,
+                branch: branch_setup.branch_name,
+                skipped_opencode: has_uncommitted_changes && !branch_setup.reused_existing,
             })
         }
         .await;

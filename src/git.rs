@@ -3,6 +3,11 @@ use std::path::Path;
 use color_eyre::{eyre::eyre, Result};
 use tokio::process::Command;
 
+pub struct BranchCheckoutResult {
+    pub branch_name: String,
+    pub reused_existing: bool,
+}
+
 pub fn slugify(summary: &str) -> String {
     let mut slug = String::with_capacity(summary.len());
     let mut last_was_dash = false;
@@ -141,7 +146,7 @@ pub async fn create_branch_from_origin_main(
     repo_path: &Path,
     issue_key: &str,
     summary: &str,
-) -> Result<String> {
+) -> Result<BranchCheckoutResult> {
     let slug = slugify(summary);
     let branch_name = format_branch_name(issue_key, &slug);
 
@@ -152,10 +157,88 @@ pub async fn create_branch_from_origin_main(
         .await?;
 
     if output.status.success() {
-        return Ok(branch_name);
+        return Ok(BranchCheckoutResult {
+            branch_name,
+            reused_existing: false,
+        });
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stderr_lower = stderr.to_lowercase();
+
+    if stderr_lower.contains("already exists") {
+        let branch_ref = format!("refs/heads/{branch_name}");
+        let existing_rev = Command::new("git")
+            .args(["rev-parse", &branch_ref])
+            .current_dir(repo_path)
+            .output()
+            .await?;
+
+        if !existing_rev.status.success() {
+            let rev_stderr = String::from_utf8_lossy(&existing_rev.stderr).trim().to_string();
+            return Err(eyre!(
+                "{}",
+                if rev_stderr.is_empty() {
+                    "git rev-parse failed".to_string()
+                } else {
+                    rev_stderr
+                }
+            ));
+        }
+
+        let origin_rev = Command::new("git")
+            .args(["rev-parse", "origin/main"])
+            .current_dir(repo_path)
+            .output()
+            .await?;
+
+        if !origin_rev.status.success() {
+            let rev_stderr = String::from_utf8_lossy(&origin_rev.stderr).trim().to_string();
+            return Err(eyre!(
+                "{}",
+                if rev_stderr.is_empty() {
+                    "git rev-parse failed".to_string()
+                } else {
+                    rev_stderr
+                }
+            ));
+        }
+
+        let existing_hash = String::from_utf8_lossy(&existing_rev.stdout).trim().to_string();
+        let origin_hash = String::from_utf8_lossy(&origin_rev.stdout).trim().to_string();
+
+        if existing_hash == origin_hash {
+            let checkout_existing = Command::new("git")
+                .args(["checkout", &branch_name])
+                .current_dir(repo_path)
+                .output()
+                .await?;
+
+            if checkout_existing.status.success() {
+                return Ok(BranchCheckoutResult {
+                    branch_name,
+                    reused_existing: true,
+                });
+            }
+
+            let checkout_stderr = String::from_utf8_lossy(&checkout_existing.stderr)
+                .trim()
+                .to_string();
+            return Err(eyre!(
+                "{}",
+                if checkout_stderr.is_empty() {
+                    "git checkout failed".to_string()
+                } else {
+                    checkout_stderr
+                }
+            ));
+        }
+
+        return Err(eyre!(format!(
+            "Branch {branch_name} already exists and differs from origin/main"
+        )));
+    }
+
     Err(eyre!(
         "{}",
         if stderr.is_empty() {

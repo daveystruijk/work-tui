@@ -131,26 +131,9 @@ impl JiraClient {
             return Err(eyre!("No Jira boards found for project {project_key}"));
         }
 
-        let exact_matches: Vec<Board> = boards
-            .iter()
-            .filter(|board| {
-                board
-                    .location
-                    .as_ref()
-                    .and_then(|loc| loc.project_key.as_deref())
-                    == Some(project_key.as_str())
-            })
-            .cloned()
-            .collect();
-        let matching_boards = if exact_matches.is_empty() {
-            boards
-        } else {
-            exact_matches
-        };
-
         let mut scrum_boards = Vec::new();
         let mut flow_boards = Vec::new();
-        for board in matching_boards {
+        for board in boards {
             if board.type_name.eq_ignore_ascii_case("scrum") {
                 scrum_boards.push(board);
             } else {
@@ -166,7 +149,9 @@ impl JiraClient {
         }
 
         if scrum_with_active.is_empty() {
-            if !flow_boards.is_empty() {
+            let flow_board = Self::select_flow_board(&project_key, &flow_boards)?;
+            if let Some(board) = flow_board {
+                self.move_issue_to_flow_board(&board, issue_key).await?;
                 return Ok(());
             }
             let names = scrum_boards
@@ -241,6 +226,61 @@ impl JiraClient {
             start_at += max_results;
         }
         Ok(None)
+    }
+
+    fn select_flow_board(project_key: &str, boards: &[Board]) -> Result<Option<Board>> {
+        if boards.is_empty() {
+            return Ok(None);
+        }
+        if boards.len() == 1 {
+            return Ok(Some(boards[0].clone()));
+        }
+
+        let mut matching = boards
+            .iter()
+            .filter(|board| {
+                board
+                    .location
+                    .as_ref()
+                    .and_then(|location| location.project_key.as_deref())
+                    .map(|key| key.eq_ignore_ascii_case(project_key))
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() == 1 {
+            return Ok(matching.pop().cloned());
+        }
+
+        let names = boards
+            .iter()
+            .map(|board| board.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(eyre!("Multiple flow boards for {project_key}: {names}"))
+    }
+
+    async fn move_issue_to_flow_board(&self, board: &Board, issue_key: &str) -> Result<()> {
+        let path = format!("/board/{}/issue?maxResults=1", board.id);
+        let response = self.jira.get::<Value>("agile", &path).await?;
+        let anchor_key = response
+            .get("issues")
+            .and_then(|issues| issues.as_array())
+            .and_then(|issues| issues.first())
+            .and_then(|issue| issue.get("key"))
+            .and_then(|key| key.as_str())
+            .map(|key| key.to_string());
+        let Some(anchor) = anchor_key else {
+            return Ok(());
+        };
+
+        let payload = json!({
+            "issues": [issue_key],
+            "rankBeforeIssue": anchor,
+        });
+        self.jira
+            .put::<(), _>("agile", "/issue/rank", payload)
+            .await?;
+        Ok(())
     }
 
     pub async fn update_labels(&self, issue_key: &str, labels: &[String]) -> Result<()> {
