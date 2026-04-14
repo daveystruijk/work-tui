@@ -58,6 +58,12 @@ impl fmt::Display for Progress {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PickUpResult {
+    pub branch: String,
+    pub skipped_opencode: bool,
+}
+
 /// Messages sent from background actions back to the main event loop.
 ///
 /// Each variant corresponds to a result produced by an action in [`crate::actions`].
@@ -76,7 +82,7 @@ pub enum ActionMessage {
     /// Issue events loaded for detail view (from [`load_issue_events`]).
     IssueEvents(String, EventLoadState),
     /// Pick-up completed (from [`pick_up`]).
-    PickedUp(Result<String>),
+    PickedUp(Result<PickUpResult>),
     /// Branch diff opened (from [`branch_diff`]).
     BranchDiffOpened(Result<String>),
     /// PR approved and auto-merge enabled (from [`approve_merge`]).

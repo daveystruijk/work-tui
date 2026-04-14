@@ -411,9 +411,14 @@ impl App {
                 self.issue_events.insert(key, state);
             }
             ActionMessage::PickedUp(result) => match result {
-                Ok(branch) => {
-                    self.current_branch = branch.clone();
-                    self.status_message = format!("Picked up {branch}");
+                Ok(pickup) => {
+                    self.current_branch = pickup.branch.clone();
+                    let skipped_note = if pickup.skipped_opencode {
+                        " (skipped opencode: uncommitted changes)"
+                    } else {
+                        ""
+                    };
+                    self.status_message = format!("Picked up {}{}", pickup.branch, skipped_note);
                     self.spawn_active_branches();
                 }
                 Err(err) => {

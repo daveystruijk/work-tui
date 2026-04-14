@@ -1,7 +1,7 @@
 //! **Pick Up** — claims an issue and creates a feature branch.
 //!
 //! Performs the full "pick up" workflow:
-//! 1. Verify the repo working tree is clean
+//! 1. Note whether the working tree has local changes
 //! 2. Fetch from origin
 //! 3. Create a new branch off `origin/main`
 //! 4. Assign the issue to the current user
@@ -14,11 +14,10 @@
 
 use std::path::PathBuf;
 
-use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::{ActionMessage, PickUpResult};
 use crate::actions::Progress;
 use crate::git;
 use crate::jira::JiraClient;
@@ -37,16 +36,14 @@ pub fn spawn(
     tokio::spawn(async move {
         let _ = tx.send(ActionMessage::TaskStarted("Picking up"));
         let result = async {
-            // Step 1: Check clean state
+            // Step 1: Check working tree state
             let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "pick_up",
-                message: "Checking working tree...".into(),
+                message: "Inspecting working tree...".into(),
                 current: 1,
                 total: 6,
             }));
-            if !git::is_clean(&repo_path).await? {
-                return Err(eyre!("Repo has uncommitted changes"));
-            }
+            let has_uncommitted_changes = !git::is_clean(&repo_path).await?;
 
             // Step 2: Fetch origin
             let _ = tx.send(ActionMessage::Progress(Progress {
@@ -76,13 +73,14 @@ pub fn spawn(
             }));
             client.assign_issue(&issue_key, &my_account_id).await?;
 
-            // Step 5: Transition to In Progress
+            // Step 5: Move issue onto active board and transition to In Progress
             let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "pick_up",
-                message: "Transitioning to In Progress...".into(),
+                message: "Moving issue to board and transitioning to In Progress...".into(),
                 current: 5,
                 total: 6,
             }));
+            client.move_issue_to_active_board(&issue_key).await?;
             let transitions = client.get_transitions(&issue_key).await?;
             let progress = transitions
                 .into_iter()
@@ -91,30 +89,41 @@ pub fn spawn(
                 client.transition_issue(&issue_key, &t.id).await?;
             }
 
-            // Step 6: Open tmux pane with opencode session
-            let _ = tx.send(ActionMessage::Progress(Progress {
-                action: "pick_up",
-                message: "Opening opencode session...".into(),
-                current: 6,
-                total: 6,
-            }));
-            let prompt = format!("{issue_summary}\n\n{issue_description}");
-            let escaped_prompt = prompt.replace('\'', "'\\''");
-            let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
-            let repo_dir = repo_path.display().to_string();
+            if !has_uncommitted_changes {
+                let _ = tx.send(ActionMessage::Progress(Progress {
+                    action: "pick_up",
+                    message: "Opening opencode session...".into(),
+                    current: 6,
+                    total: 6,
+                }));
+                let prompt = format!("{issue_summary}\n\n{issue_description}");
+                let escaped_prompt = prompt.replace('\'', "'\\''");
+                let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
+                let repo_dir = repo_path.display().to_string();
 
-            // Create a new tmux tab (window) in the repo directory, then
-            // split it and run opencode in the new pane.
-            let _ = Command::new("tmux")
-                .args(["new-window", "-c", &repo_dir])
-                .output()
-                .await;
-            let _ = Command::new("tmux")
-                .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
-                .output()
-                .await;
+                // Create a new tmux tab (window) in the repo directory, then
+                // split it and run opencode in the new pane.
+                let _ = Command::new("tmux")
+                    .args(["new-window", "-c", &repo_dir])
+                    .output()
+                    .await;
+                let _ = Command::new("tmux")
+                    .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
+                    .output()
+                    .await;
+            } else {
+                let _ = tx.send(ActionMessage::Progress(Progress {
+                    action: "pick_up",
+                    message: "Skipping opencode (uncommitted changes)...".into(),
+                    current: 6,
+                    total: 6,
+                }));
+            }
 
-            Ok(branch)
+            Ok(PickUpResult {
+                branch,
+                skipped_opencode: has_uncommitted_changes,
+            })
         }
         .await;
         let _ = tx.send(ActionMessage::TaskFinished("Picking up"));

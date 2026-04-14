@@ -6,7 +6,7 @@ use gouqi::{
     issues::{CreateResponse, EditIssue},
     r#async::Jira as GouqiJira,
     users::UserSearchOptions,
-    Credentials, SearchOptions, TransitionTriggerOptions, User,
+    Board, Credentials, SearchOptions, Sprint, TransitionTriggerOptions, User,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -118,6 +118,129 @@ impl JiraClient {
         let options = TransitionTriggerOptions::builder(transition_id).build();
         self.jira.transitions(issue_key).trigger(options).await?;
         Ok(())
+    }
+
+    pub async fn move_issue_to_active_board(&self, issue_key: &str) -> Result<()> {
+        let Some((project_part, _)) = issue_key.split_once('-') else {
+            return Err(eyre!("Issue key {issue_key} is missing a project prefix"));
+        };
+        let project_key = project_part.to_uppercase();
+
+        let boards = self.collect_project_boards(&project_key).await?;
+        if boards.is_empty() {
+            return Err(eyre!("No Jira boards found for project {project_key}"));
+        }
+
+        let exact_matches: Vec<Board> = boards
+            .iter()
+            .filter(|board| {
+                board
+                    .location
+                    .as_ref()
+                    .and_then(|loc| loc.project_key.as_deref())
+                    == Some(project_key.as_str())
+            })
+            .cloned()
+            .collect();
+        let matching_boards = if exact_matches.is_empty() {
+            boards
+        } else {
+            exact_matches
+        };
+
+        let mut scrum_boards = Vec::new();
+        let mut flow_boards = Vec::new();
+        for board in matching_boards {
+            if board.type_name.eq_ignore_ascii_case("scrum") {
+                scrum_boards.push(board);
+            } else {
+                flow_boards.push(board);
+            }
+        }
+
+        let mut scrum_with_active = Vec::new();
+        for board in &scrum_boards {
+            if let Some(sprint) = self.find_active_sprint(board).await? {
+                scrum_with_active.push((board.clone(), sprint));
+            }
+        }
+
+        if scrum_with_active.is_empty() {
+            if !flow_boards.is_empty() {
+                return Ok(());
+            }
+            let names = scrum_boards
+                .into_iter()
+                .map(|board| board.name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(eyre!("No active sprint found for scrum boards: {names}"));
+        }
+
+        if scrum_with_active.len() > 1 {
+            let names = scrum_with_active
+                .iter()
+                .map(|(board, _)| board.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(eyre!("Multiple scrum boards have active sprints: {names}"));
+        }
+
+        let (_board, sprint) = scrum_with_active.into_iter().next().unwrap();
+        self.jira
+            .sprints()
+            .move_issues(sprint.id, vec![issue_key.to_string()])
+            .await?;
+        Ok(())
+    }
+
+    async fn collect_project_boards(&self, project_key: &str) -> Result<Vec<Board>> {
+        let mut collected = Vec::new();
+        let mut start_at = 0;
+        loop {
+            let options = SearchOptions::builder()
+                .project_key_or_id(project_key)
+                .max_results(50)
+                .start_at(start_at)
+                .build();
+            let page = self.jira.boards().list(&options).await?;
+            let is_last = page.is_last;
+            let max_results = page.max_results;
+            collected.extend(page.values);
+            start_at += max_results;
+            if is_last {
+                break;
+            }
+        }
+        Ok(collected)
+    }
+
+    async fn find_active_sprint(&self, board: &Board) -> Result<Option<Sprint>> {
+        let mut start_at = 0;
+        loop {
+            let options = SearchOptions::builder()
+                .state("active")
+                .max_results(50)
+                .start_at(start_at)
+                .build();
+            let page = self.jira.sprints().list(board, &options).await?;
+            let is_last = page.is_last;
+            let max_results = page.max_results;
+            if let Some(active) = page.values.into_iter().find(|sprint| {
+                sprint
+                    .state
+                    .as_deref()
+                    .map(|state| state.eq_ignore_ascii_case("active"))
+                    .unwrap_or(false)
+            }) {
+                return Ok(Some(active));
+            }
+            if is_last {
+                break;
+            }
+            start_at += max_results;
+        }
+        Ok(None)
     }
 
     pub async fn update_labels(&self, issue_key: &str, labels: &[String]) -> Result<()> {
