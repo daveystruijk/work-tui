@@ -23,7 +23,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_key: String, repo_p
 
             // Search local and remote branches for one matching the issue key
             let branch_output = Command::new("git")
-                .args(["branch", "--all", "--list"])
+                .args(["branch", "--all", "--sort=-committerdate"])
                 .current_dir(&repo_path)
                 .output()
                 .await?;
