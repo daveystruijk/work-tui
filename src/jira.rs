@@ -8,10 +8,7 @@ use gouqi::{
     users::UserSearchOptions,
     Board, Credentials, SearchOptions, Sprint, TransitionTriggerOptions, User,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
-
-use crate::events::{Event, EventLevel, EventSource};
 
 pub use gouqi::{Issue, IssueType, TransitionOption};
 
@@ -292,72 +289,6 @@ impl JiraClient {
         Ok(())
     }
 
-    pub async fn get_issue_events(&self, issue_key: &str) -> Result<Vec<Event>> {
-        let path = format!("/issue/{issue_key}?expand=changelog&fields=status,assignee,comment");
-        let value = self.jira.get::<Value>("api", &path).await?;
-        let response: ChangelogResponse = serde_json::from_value(value)?;
-
-        let mut events = Vec::new();
-        let Some(wrapper) = response.changelog else {
-            return Ok(events);
-        };
-
-        for history in wrapper.histories {
-            for item in history.items {
-                let field = item.field.to_lowercase();
-                let title;
-                let level;
-                let detail;
-
-                if field == "status" {
-                    let to_value = item.to_string.clone().unwrap_or_default();
-                    let to_lower = to_value.to_lowercase();
-                    level = if to_lower.contains("done") {
-                        EventLevel::Success
-                    } else if to_lower.contains("progress") {
-                        EventLevel::Warning
-                    } else if to_lower.contains("review") {
-                        EventLevel::Info
-                    } else if to_lower.contains("blocked") {
-                        EventLevel::Error
-                    } else {
-                        EventLevel::Neutral
-                    };
-                    title = format!("Status → {to_value}");
-                    detail = item.from_string.clone();
-                } else if field == "assignee" {
-                    level = EventLevel::Info;
-                    let to_value = item
-                        .to_string
-                        .clone()
-                        .unwrap_or_else(|| "Unassigned".into());
-                    title = format!("Assigned to {to_value}");
-                    detail = item.from_string.clone();
-                } else {
-                    level = EventLevel::Neutral;
-                    let to_value = item.to_string.clone().unwrap_or_default();
-                    title = format!("{field} updated");
-                    detail = if to_value.is_empty() {
-                        item.from_string.clone()
-                    } else {
-                        Some(to_value)
-                    };
-                }
-
-                events.push(Event {
-                    at: history.created.clone(),
-                    source: EventSource::Jira,
-                    level,
-                    title,
-                    detail,
-                });
-            }
-        }
-
-        events.sort_by(|a, b| b.at.cmp(&a.at));
-        Ok(events)
-    }
-
     pub async fn create_issue(
         &self,
         project_key: &str,
@@ -396,29 +327,4 @@ impl JiraClient {
         }
         Ok(types)
     }
-}
-
-#[derive(Deserialize)]
-struct ChangelogResponse {
-    changelog: Option<ChangelogWrapper>,
-}
-
-#[derive(Deserialize)]
-struct ChangelogWrapper {
-    histories: Vec<ChangelogHistory>,
-}
-
-#[derive(Deserialize)]
-struct ChangelogHistory {
-    created: String,
-    items: Vec<ChangelogItem>,
-}
-
-#[derive(Deserialize)]
-struct ChangelogItem {
-    field: String,
-    #[serde(rename = "fromString")]
-    from_string: Option<String>,
-    #[serde(rename = "toString")]
-    to_string: Option<String>,
 }

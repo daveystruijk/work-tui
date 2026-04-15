@@ -10,7 +10,6 @@ use ratatui::{
 
 use crate::{
     app::{App, DisplayRow, InlineNewState, Screen},
-    events::{EventLevel, EventLoadState, EventSource},
     github::CheckStatus,
     jira::Issue,
 };
@@ -32,7 +31,6 @@ const INFO: Color = Color::LightBlue;
 pub fn render(app: &mut App, frame: &mut Frame) {
     match app.screen {
         Screen::List => render_list(app, frame),
-        Screen::Detail => render_detail(app, frame),
         Screen::New => render_new(app, frame),
     }
 }
@@ -81,16 +79,12 @@ fn render_list(app: &mut App, frame: &mut Frame) {
             Constraint::Length(14),
             Constraint::Length(14),
             Constraint::Min(10),
-            Constraint::Length(10),
             Constraint::Length(20),
             Constraint::Length(24),
         ],
     )
     .header(
-        Row::new([
-            "Key", "PR", "CI", "Status", "Summary", "Type", "Assignee", "Repo",
-        ])
-        .style(
+        Row::new(["Key", "PR", "CI", "Status", "Summary", "Assignee", "Repo"]).style(
             Style::default()
                 .fg(ACCENT_SOFT)
                 .bg(SURFACE)
@@ -299,12 +293,11 @@ fn story_header_row(key: &str, summary: &str, idx: usize, collapsed: bool) -> Ro
         Cell::from(""), // CI
         Cell::from(""), // Status
         Cell::from(Span::styled(
-            first_line,
+            format!("§ {}", first_line),
             Style::default()
                 .fg(ACCENT_SOFT)
                 .add_modifier(Modifier::BOLD),
         )),
-        Cell::from(""), // Type
         Cell::from(""), // Assignee
         Cell::from(""), // Repo
     ])
@@ -330,6 +323,7 @@ fn inline_new_row(state: Option<&InlineNewState>, idx: usize, depth: u8) -> Row<
         Cell::from(""), // CI
         Cell::from(""), // Status
         Cell::from(Line::from(vec![
+            Span::styled("◦ ", Style::default().fg(MUTED)),
             Span::styled(summary_text.to_string(), Style::default().fg(TEXT)),
             Span::styled(
                 "▏".to_string(),
@@ -338,7 +332,6 @@ fn inline_new_row(state: Option<&InlineNewState>, idx: usize, depth: u8) -> Row<
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ])),
-        Cell::from(Span::styled("◦ Task", Style::default().fg(MUTED))),
         Cell::from(""), // Assignee
         Cell::from(""), // Repo
     ])
@@ -416,8 +409,10 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
             Span::raw(" "),
             Span::styled(status_name, status_style),
         ])),
-        Cell::from(Span::styled(summary, Style::default().fg(TEXT))),
-        Cell::from(format!("{} {}", issue_type_icon(&issue_type), issue_type)),
+        Cell::from(Span::styled(
+            format!("{} {}", issue_type_icon(&issue_type), summary),
+            Style::default().fg(TEXT),
+        )),
         Cell::from(Span::styled(assignee, Style::default().fg(MUTED))),
         Cell::from(Line::from(if is_active {
             vec![
@@ -429,329 +424,6 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
         })),
     ])
     .style(row_style)
-}
-
-fn render_detail(app: &App, frame: &mut Frame) {
-    let issue = match app.selected_issue() {
-        Some(issue) => issue,
-        None => return,
-    };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Min(5),
-            Constraint::Length(3),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
-
-    // Split the main content area between description and activity
-    let body_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[3]);
-
-    let title = Line::from(vec![
-        Span::styled(
-            format!(" {} ", issue.key),
-            Style::default()
-                .fg(PANEL)
-                .bg(ACCENT_SOFT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            issue.summary().unwrap_or_default(),
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(title)
-            .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        " Issue details ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(PANEL))
-                    .border_style(Style::default().fg(ACCENT_SOFT)),
-            )
-            .style(Style::default().bg(PANEL)),
-        chunks[0],
-    );
-
-    let info_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
-    let status = issue
-        .status()
-        .map(|s| s.name)
-        .unwrap_or_else(|| "None".to_string());
-    let status_style = status_color(&status);
-    let priority = issue
-        .priority()
-        .map(|p| p.name)
-        .unwrap_or_else(|| "None".to_string());
-
-    frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled("● ", status_style),
-                Span::styled(status, status_style),
-            ]),
-            Line::from(vec![
-                Span::styled("Priority  ", Style::default().fg(MUTED)),
-                Span::styled(priority, Style::default().fg(TEXT)),
-            ]),
-        ]))
-        .block(
-            Block::bordered()
-                .title(Span::styled(
-                    " Status ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ))
-                .style(Style::default().bg(SURFACE))
-                .border_style(Style::default().fg(status_style.fg.unwrap_or(INFO))),
-        ),
-        info_chunks[0],
-    );
-
-    let assignee = issue
-        .assignee()
-        .map(|u| u.display_name)
-        .unwrap_or_else(|| "Unassigned".to_string());
-    let issue_type = issue
-        .issue_type()
-        .map(|ty| ty.name)
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled("Owner     ", Style::default().fg(MUTED)),
-                Span::styled(assignee, Style::default().fg(TEXT)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    format!("{} ", issue_type_icon(&issue_type)),
-                    Style::default().fg(ACCENT_SOFT),
-                ),
-                Span::styled(issue_type, Style::default().fg(TEXT)),
-            ]),
-        ]))
-        .block(
-            Block::bordered()
-                .title(Span::styled(
-                    " Ownership ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ))
-                .style(Style::default().bg(SURFACE))
-                .border_style(Style::default().fg(ACCENT_SOFT)),
-        ),
-        info_chunks[1],
-    );
-
-    render_repo_panel(app, issue, frame, chunks[2]);
-
-    let description = issue
-        .description()
-        .unwrap_or_else(|| "No description".to_string());
-
-    frame.render_widget(
-        Paragraph::new(description)
-            .style(Style::default().fg(TEXT).bg(SURFACE))
-            .wrap(Wrap { trim: false })
-            .scroll((app.detail_scroll, 0))
-            .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        format!(
-                            " Description • line {} ",
-                            app.detail_scroll.saturating_add(1)
-                        ),
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(SURFACE))
-                    .border_style(Style::default().fg(ACCENT_SOFT)),
-            ),
-        body_chunks[0],
-    );
-
-    render_activity_panel(app, &issue.key, frame, body_chunks[1]);
-
-    frame.render_widget(
-        help_bar(
-            "Esc:Back  o:PR  t:Ticket  p:Pick up  f:Finish  a:Add label  r:Refresh  j/k:Scroll",
-        ),
-        chunks[4],
-    );
-
-    render_status_bar(app, frame, chunks[5]);
-
-    if app.label_picker_active() {
-        render_label_picker_modal(app, frame);
-    }
-}
-
-fn render_repo_panel(app: &App, issue: &Issue, frame: &mut Frame, area: Rect) {
-    let labels = issue.labels();
-    let label_text = if labels.is_empty() {
-        "None".to_string()
-    } else {
-        labels.join(", ")
-    };
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Labels     ", Style::default().fg(MUTED)),
-        Span::styled(label_text, Style::default().fg(TEXT)),
-    ])];
-
-    if let Some(error) = &app.repo_error {
-        lines.push(Line::from(vec![
-            Span::styled("⚠ ", Style::default().fg(WARNING)),
-            Span::styled(error.as_str(), Style::default().fg(WARNING)),
-        ]));
-    } else if app.repo_entries.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            "No repositories found in REPOS_DIR",
-            Style::default().fg(MUTED),
-        )]));
-    } else {
-        let matches = app.repo_matches(issue);
-        if matches.is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                "No linked repositories. Press 'a' to add.",
-                Style::default().fg(MUTED),
-            )]));
-        } else {
-            for entry in matches {
-                let path_text = entry.path.display().to_string();
-                lines.push(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(ACCENT_SOFT)),
-                    Span::styled(
-                        entry.label.as_str(),
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(path_text, Style::default().fg(TEXT)),
-                ]));
-            }
-        }
-    }
-
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        " Linked repositories ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(SURFACE))
-                    .border_style(Style::default().fg(ACCENT_SOFT)),
-            )
-            .style(Style::default().fg(TEXT).bg(SURFACE)),
-        area,
-    );
-}
-
-fn render_activity_panel(app: &App, issue_key: &str, frame: &mut Frame, area: Rect) {
-    let state = app.issue_events.get(issue_key);
-
-    let (title_suffix, lines) = match state {
-        None | Some(EventLoadState::NotLoaded) => (
-            "".to_string(),
-            vec![Line::from(Span::styled(
-                "Press Enter to load events",
-                Style::default().fg(MUTED),
-            ))],
-        ),
-        Some(EventLoadState::Loading) => {
-            let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
-            (
-                format!(" {spinner} Loading…"),
-                vec![Line::from(Span::styled(
-                    "Loading events…",
-                    Style::default().fg(MUTED),
-                ))],
-            )
-        }
-        Some(EventLoadState::Error(err)) => (
-            "".to_string(),
-            vec![Line::from(vec![
-                Span::styled("⚠ ", Style::default().fg(ERROR)),
-                Span::styled(err.as_str(), Style::default().fg(ERROR)),
-            ])],
-        ),
-        Some(EventLoadState::Loaded(events)) => {
-            if events.is_empty() {
-                (
-                    "".to_string(),
-                    vec![Line::from(Span::styled(
-                        "No events found",
-                        Style::default().fg(MUTED),
-                    ))],
-                )
-            } else {
-                let event_lines: Vec<Line> = events
-                    .iter()
-                    .flat_map(|event| {
-                        let (icon, color) = event_level_style(&event.level);
-                        let source_icon = match event.source {
-                            EventSource::GitHub => "  ",
-                            EventSource::Jira => "  ",
-                        };
-
-                        let timestamp = if event.at.len() >= 16 {
-                            &event.at[..16]
-                        } else {
-                            &event.at
-                        };
-
-                        let mut result = vec![Line::from(vec![
-                            Span::styled(format!("{icon} "), Style::default().fg(color)),
-                            Span::styled(
-                                event.title.clone(),
-                                Style::default().fg(color).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(source_icon.to_string(), Style::default().fg(MUTED)),
-                            Span::styled(timestamp.to_string(), Style::default().fg(MUTED)),
-                        ])];
-
-                        if let Some(detail) = &event.detail {
-                            result.push(Line::from(vec![
-                                Span::raw("  "),
-                                Span::styled(detail.clone(), Style::default().fg(MUTED)),
-                            ]));
-                        }
-
-                        result
-                    })
-                    .collect();
-                (format!(" • {} events", events.len()), event_lines)
-            }
-        }
-    };
-
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .scroll((app.detail_scroll, 0))
-            .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        format!(" Activity{title_suffix} "),
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(SURFACE))
-                    .border_style(Style::default().fg(ACCENT)),
-            )
-            .style(Style::default().fg(TEXT).bg(SURFACE)),
-        area,
-    );
 }
 
 fn render_label_picker_modal(app: &App, frame: &mut Frame) {
@@ -1112,23 +784,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
-fn event_level_style(level: &EventLevel) -> (&'static str, Color) {
-    match level {
-        EventLevel::Success => ("✔", SUCCESS),
-        EventLevel::Error => ("✖", ERROR),
-        EventLevel::Warning => ("◌", WARNING),
-        EventLevel::Info => ("↺", INFO),
-        EventLevel::Neutral => ("•", MUTED),
-    }
-}
-
 fn issue_type_icon(issue_type: &str) -> &'static str {
     let issue_type = issue_type.to_lowercase();
     if issue_type.contains("bug") {
-        return "◉";
+        return "¤";
     }
     if issue_type.contains("story") || issue_type.contains("epic") {
-        return "📖";
+        return "§";
     }
     if issue_type.contains("sub") {
         return "↳";

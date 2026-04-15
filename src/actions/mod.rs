@@ -16,7 +16,6 @@ pub mod detect_active_branches;
 pub mod fetch_github_prs;
 pub mod finish;
 pub mod initialize;
-pub mod load_issue_events;
 pub mod pick_up;
 pub mod refresh;
 
@@ -25,7 +24,6 @@ use std::fmt;
 
 use color_eyre::Result;
 
-use crate::events::EventLoadState;
 use crate::github::PrInfo;
 use crate::jira::Issue;
 
@@ -79,8 +77,6 @@ pub enum ActionMessage {
     GithubPrs(Vec<PrInfo>, Vec<String>),
     /// Active branches resolved (from [`detect_active_branches`]).
     ActiveBranches(HashMap<String, String>),
-    /// Issue events loaded for detail view (from [`load_issue_events`]).
-    IssueEvents(String, EventLoadState),
     /// Pick-up completed (from [`pick_up`]).
     PickedUp(Result<PickUpResult>),
     /// Branch diff opened (from [`branch_diff`]).

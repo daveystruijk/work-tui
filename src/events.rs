@@ -34,12 +34,3 @@ pub struct Event {
     pub title: String,
     pub detail: Option<String>,
 }
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum EventLoadState {
-    NotLoaded,
-    Loading,
-    Loaded(Vec<Event>),
-    Error(String),
-}

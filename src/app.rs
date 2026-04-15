@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use crate::{
     actions::{self, ActionMessage},
     cache::{self, Cache},
-    events::{Event, EventLevel, EventLoadState, EventSource},
+    events::{Event, EventLevel, EventSource},
     github::{CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
     repos::{self, RepoEntry},
@@ -77,7 +77,6 @@ pub struct InlineNewState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     List,
-    Detail,
     New,
 }
 
@@ -112,7 +111,6 @@ pub struct App {
     pub issues: Vec<Issue>,
     pub selected_index: usize,
     pub jql: String,
-    pub detail_scroll: u16,
     pub new_form: Option<NewForm>,
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
@@ -134,8 +132,6 @@ pub struct App {
     pub github_loading: bool,
     /// Spinner tick counter for animated loading indicators
     pub spinner_tick: usize,
-    /// Maps issue key -> loaded event history for detail view
-    pub issue_events: HashMap<String, EventLoadState>,
     /// Maps issue key -> latest synthesized activity for overview
     pub latest_activity: HashMap<String, Event>,
     /// Flattened display rows (story headers + issue rows) for the list view
@@ -179,7 +175,6 @@ impl App {
             issues: Vec::new(),
             selected_index: 0,
             jql,
-            detail_scroll: 0,
             new_form: None,
             repo_entries: Vec::new(),
             repo_error: None,
@@ -197,7 +192,6 @@ impl App {
             github_statuses: HashMap::new(),
             github_loading: false,
             spinner_tick: 0,
-            issue_events: HashMap::new(),
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
@@ -281,36 +275,6 @@ impl App {
         actions::detect_active_branches::spawn(self.bg_tx.clone(), issue_data);
     }
 
-    /// Spawn loading issue events for the detail view.
-    pub fn spawn_load_issue_events(&mut self) {
-        let Some(issue) = self.selected_issue() else {
-            return;
-        };
-        let issue_key = issue.key.clone();
-
-        if matches!(
-            self.issue_events.get(&issue_key),
-            Some(EventLoadState::Loaded(_) | EventLoadState::Loading)
-        ) {
-            return;
-        }
-
-        let gh_pr = self.github_statuses.get(&issue_key).cloned();
-        let repo_path = self.repo_matches(issue).first().map(|r| r.path.clone());
-
-        // Mark as loading immediately
-        self.issue_events
-            .insert(issue_key.clone(), EventLoadState::Loading);
-
-        actions::load_issue_events::spawn(
-            self.bg_tx.clone(),
-            self.client.clone(),
-            issue_key,
-            gh_pr,
-            repo_path,
-        );
-    }
-
     /// Spawn auto-labeling for issues with matched PRs but missing repo labels.
     fn spawn_auto_label(&self) {
         let to_label: Vec<_> = self
@@ -368,7 +332,6 @@ impl App {
                     };
                     self.loading = false;
                     self.last_updated = Some(std::time::Instant::now());
-                    self.issue_events.clear();
                     // Chain: fetch branches, PRs (existing PR data stays visible until new data arrives)
                     self.spawn_active_branches();
                     self.spawn_github_prs();
@@ -406,9 +369,6 @@ impl App {
                 } else if self.running_tasks.is_empty() {
                     self.status_message = "Ready".into();
                 }
-            }
-            ActionMessage::IssueEvents(key, state) => {
-                self.issue_events.insert(key, state);
             }
             ActionMessage::PickedUp(result) => match result {
                 Ok(pickup) => {
@@ -612,7 +572,6 @@ impl App {
         };
 
         self.github_statuses.clear();
-        self.issue_events.clear();
         self.github_prs.clear();
         self.latest_activity.clear();
         Ok(())
@@ -905,11 +864,6 @@ impl App {
         Ok(issue_key)
     }
 
-    pub fn enter_detail(&mut self) {
-        self.detail_scroll = 0;
-        self.screen = Screen::Detail;
-    }
-
     pub fn refresh_latest_activity(&mut self) {
         self.latest_activity.clear();
         for issue in &self.issues {
@@ -1021,25 +975,25 @@ impl App {
     }
 
     /// Start an inline new-issue row. If inside a story group, it becomes a
-    /// subtask of that story. Otherwise falls back to the full-screen form.
+    /// subtask of that story. Otherwise creates a top-level issue.
     pub fn start_inline_new(&mut self) -> bool {
         let story_key = self.enclosing_story_key();
-        let Some(parent_key) = story_key else {
-            return false; // not inside a story — caller should fall back to enter_new()
-        };
-
         let project_key = self.derive_project_key();
 
-        // Find the end of the current story group to insert the new row there
-        let insert_at = self.find_story_group_end(self.selected_index) + 1;
-        let depth = 1u8;
+        let (insert_at, depth, parent_key) = if let Some(parent) = story_key {
+            let at = self.find_story_group_end(self.selected_index) + 1;
+            (at, 1u8, Some(parent))
+        } else {
+            let at = self.selected_index + 1;
+            (at, 0u8, None)
+        };
 
         self.display_rows
             .insert(insert_at, DisplayRow::InlineNew { depth });
 
         let state = InlineNewState {
             summary: String::new(),
-            parent_key: Some(parent_key),
+            parent_key,
             project_key,
             row_index: insert_at,
         };

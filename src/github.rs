@@ -7,8 +7,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::process::Command;
 
-use crate::events::{Event, EventLevel, EventSource};
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CheckStatus {
     Pending,
@@ -447,113 +445,6 @@ fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {
         return CheckStatus::Pending;
     }
     CheckStatus::Pass
-}
-
-pub async fn get_pr_events(repo_path: &Path, pr_number: u64) -> Result<Vec<Event>> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "createdAt,mergedAt,closedAt,state,reviews,statusCheckRollup",
-        ])
-        .current_dir(repo_path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(eyre!(
-            "gh pr view failed: {}",
-            if stderr.is_empty() {
-                "unknown error"
-            } else {
-                &stderr
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail: GhPrDetail = serde_json::from_str(&stdout)?;
-
-    let mut events = Vec::new();
-
-    events.push(Event {
-        at: detail.created_at.clone(),
-        source: EventSource::GitHub,
-        level: EventLevel::Info,
-        title: "PR opened".to_string(),
-        detail: Some(format!("#{pr_number}")),
-    });
-
-    if let Some(merged_at) = detail.merged_at.clone() {
-        events.push(Event {
-            at: merged_at,
-            source: EventSource::GitHub,
-            level: EventLevel::Success,
-            title: "PR merged".to_string(),
-            detail: Some(format!("#{pr_number}")),
-        });
-    } else if let Some(closed_at) = detail.closed_at.clone() {
-        events.push(Event {
-            at: closed_at,
-            source: EventSource::GitHub,
-            level: EventLevel::Warning,
-            title: "PR closed".to_string(),
-            detail: Some(format!("#{pr_number}")),
-        });
-    }
-
-    if let Some(reviews) = detail.reviews {
-        for review in reviews {
-            let Some(at) = review.submitted_at else {
-                continue;
-            };
-            let (level, title) = match review.state.to_uppercase().as_str() {
-                "APPROVED" => (EventLevel::Success, "Review approved".to_string()),
-                "CHANGES_REQUESTED" => (EventLevel::Error, "Changes requested".to_string()),
-                "COMMENTED" => (EventLevel::Info, "Review commented".to_string()),
-                _ => (EventLevel::Neutral, format!("Review {}", review.state)),
-            };
-            let detail = review
-                .author
-                .as_ref()
-                .map(|author| format!("by {}", author.login.clone()));
-            events.push(Event {
-                at,
-                source: EventSource::GitHub,
-                level,
-                title,
-                detail,
-            });
-        }
-    }
-
-    if let Some(checks) = detail.status_check_rollup {
-        for check in checks {
-            let Some(at) = check.completed_at else {
-                continue;
-            };
-            let conclusion = check.conclusion.unwrap_or_else(|| check.status.clone());
-            let upper = conclusion.to_uppercase();
-            let level = match upper.as_str() {
-                "SUCCESS" | "COMPLETED" => EventLevel::Success,
-                "FAILURE" | "FAILED" | "TIMED_OUT" | "CANCELLED" => EventLevel::Error,
-                _ => EventLevel::Warning,
-            };
-            events.push(Event {
-                at,
-                source: EventSource::GitHub,
-                level,
-                title: format!("CI: {}", check.name),
-                detail: Some(conclusion),
-            });
-        }
-    }
-
-    events.sort_by(|a, b| b.at.cmp(&a.at));
-    Ok(events)
 }
 
 #[derive(Deserialize)]
