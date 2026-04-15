@@ -104,7 +104,6 @@ fn render_list(app: &mut App, frame: &mut Frame) {
             .bg(SURFACE_ALT)
             .add_modifier(Modifier::BOLD),
     )
-    .highlight_symbol("▸ ")
     .block({
         let updated_ago = app.last_updated.map(|t| {
             let secs = t.elapsed().as_secs();
@@ -805,14 +804,12 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
         state.select(Some(picker.selected));
     }
 
-    let list = List::new(items)
-        .highlight_style(
-            Style::default()
-                .fg(PANEL)
-                .bg(ACCENT_SOFT)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .fg(PANEL)
+            .bg(ACCENT_SOFT)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let filter_display = format!(
         " {} ",
