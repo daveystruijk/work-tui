@@ -1153,10 +1153,33 @@ fn render_command_bar(app: &App, frame: &mut Frame, area: Rect) {
         Line::from(spans)
     };
 
+    let updated_text = app.last_updated.map(|last_updated| {
+        format!(
+            "updated {} ago  ",
+            crate::app::format_duration(last_updated.elapsed().as_secs())
+        )
+    });
+    let right_width = updated_text.as_ref().map_or(0, |t| t.len() as u16);
+    let bar_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(right_width)])
+        .split(area);
+
     frame.render_widget(
         Paragraph::new(line).style(Style::default().bg(Theme::Panel)),
-        area,
+        bar_layout[0],
     );
+    if let Some(text) = updated_text {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default().fg(Theme::Muted),
+            )))
+            .alignment(Alignment::Right)
+            .style(Style::default().bg(Theme::Panel)),
+            bar_layout[1],
+        );
+    }
 }
 
 fn status_color(status: &str) -> Style {
