@@ -6,11 +6,11 @@ use gouqi::{
     issues::{CreateResponse, EditIssue},
     r#async::Jira as GouqiJira,
     users::UserSearchOptions,
-    Board, Credentials, SearchOptions, Sprint, TransitionTriggerOptions, User,
+    Board, Credentials, SearchOptions, Sprint, TransitionTriggerOptions,
 };
 use serde_json::{json, Value};
 
-pub use gouqi::{Issue, IssueType, TransitionOption};
+pub use gouqi::{Issue, IssueType, TransitionOption, User};
 
 #[derive(Clone, Debug)]
 pub struct JiraConfig {
@@ -71,6 +71,7 @@ impl JiraClient {
                 "labels",
                 "parent",
                 "created",
+                "creator",
             ])
             .build();
 

@@ -21,6 +21,34 @@ pub struct CheckRun {
     pub status: CheckStatus,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    pub details_url: String,
+    pub summary: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrComment {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewComment {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub path: Option<String>,
+    pub line: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewThread {
+    pub is_resolved: bool,
+    pub resolved_by: Option<String>,
+    pub comments: Vec<ReviewComment>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +62,37 @@ pub struct PrInfo {
     pub head_branch: String,
     /// The repo slug (owner/repo) this PR belongs to
     pub repo_slug: String,
-    pub body: String,
+    pub comments: Vec<PrComment>,
+    pub review_threads: Vec<ReviewThread>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrDetail {
+    pub checks: CheckStatus,
+    pub check_runs: Vec<CheckRun>,
+    pub comments: Vec<PrComment>,
+    pub review_threads: Vec<ReviewThread>,
+}
+
+impl PrInfo {
+    pub fn apply_detail(&mut self, detail: PrDetail) {
+        self.checks = detail.checks;
+        self.check_runs = detail.check_runs;
+        self.comments = detail.comments;
+        self.review_threads = detail.review_threads;
+    }
+
+    pub fn latest_failed_check(&self) -> Option<&CheckRun> {
+        self.check_runs
+            .iter()
+            .filter(|run| run.status == CheckStatus::Fail)
+            .max_by_key(|run| {
+                run.completed_at
+                    .as_deref()
+                    .or(run.started_at.as_deref())
+                    .unwrap_or_default()
+            })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,8 +114,6 @@ struct GhPrWithBranch {
     head_ref_name: String,
     #[serde(rename = "statusCheckRollup", default)]
     status_check_rollup: Option<Vec<GhCheckRollup>>,
-    #[serde(default)]
-    body: String,
 }
 
 /// Fetch all PRs for a given `owner/repo` in a single `gh` call.
@@ -72,7 +128,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
             "--state",
             "open",
             "--json",
-            "number,title,state,url,headRefName,statusCheckRollup,body",
+            "number,title,state,url,headRefName,statusCheckRollup",
             "--limit",
             "100",
         ])
@@ -110,6 +166,9 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                     status: check_run_status(c),
                     started_at: c.started_at.clone(),
                     completed_at: c.completed_at.clone(),
+                    details_url: String::new(),
+                    summary: String::new(),
+                    text: String::new(),
                 })
                 .collect();
             PrInfo {
@@ -121,7 +180,8 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                 url: pr.url,
                 head_branch: pr.head_ref_name,
                 repo_slug: slug.clone(),
-                body: pr.body,
+                comments: Vec::new(),
+                review_threads: Vec::new(),
             }
         })
         .collect())
@@ -161,7 +221,6 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         state
                         url
                         headRefName
-                        body
                         statusCheckRollup: commits(last: 1) {{
                             nodes {{
                                 commit {{
@@ -294,12 +353,6 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let body = pr
-                .get("body")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
             let mut rollup_option = {
                 let rollups = extract_check_rollups(pr);
                 if rollups.is_empty() {
@@ -319,6 +372,9 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                     status: check_run_status(c),
                     started_at: c.started_at.clone(),
                     completed_at: c.completed_at.clone(),
+                    details_url: String::new(),
+                    summary: String::new(),
+                    text: String::new(),
                 })
                 .collect();
 
@@ -331,12 +387,150 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 url,
                 head_branch,
                 repo_slug: repo_slug.clone(),
-                body,
+                comments: Vec::new(),
+                review_threads: Vec::new(),
             });
         }
     }
 
     (all_prs, errors)
+}
+
+pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail> {
+    let Some((owner, name)) = repo_slug.split_once('/') else {
+        return Err(eyre!("invalid repo slug: {repo_slug}"));
+    };
+
+    let query = format!(
+        r#"query {{
+            repository(owner: "{owner}", name: "{name}") {{
+                pullRequest(number: {pr_number}) {{
+                    comments(first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+                        nodes {{
+                            body
+                            createdAt
+                            updatedAt
+                            url
+                            author {{
+                                login
+                            }}
+                        }}
+                    }}
+                    reviewThreads(first: 20) {{
+                        nodes {{
+                            isResolved
+                            resolvedBy {{
+                                login
+                            }}
+                            comments(first: 20) {{
+                                nodes {{
+                                    body
+                                    createdAt
+                                    path
+                                    line
+                                    author {{
+                                        login
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                    statusCheckRollup: commits(last: 1) {{
+                        nodes {{
+                            commit {{
+                                statusCheckRollup {{
+                                    contexts(first: 100) {{
+                                        nodes {{
+                                            __typename
+                                            ... on CheckRun {{
+                                                name
+                                                status
+                                                conclusion
+                                                startedAt
+                                                completedAt
+                                                detailsUrl
+                                                summary
+                                                text
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }}"#,
+    );
+
+    let output = Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={query}")])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(eyre!(
+            "gh api graphql failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: Value = serde_json::from_str(&stdout)?;
+
+    if let Some(graph_errors) = response.get("errors").and_then(|value| value.as_array()) {
+        let messages = graph_errors
+            .iter()
+            .filter_map(|error| error.get("message").and_then(|value| value.as_str()))
+            .collect::<Vec<_>>();
+        if !messages.is_empty() {
+            return Err(eyre!(messages.join("; ")));
+        }
+    }
+
+    let pr_node = response
+        .get("data")
+        .and_then(|value| value.get("repository"))
+        .and_then(|value| value.get("pullRequest"))
+        .ok_or_else(|| eyre!("missing pull request detail for {repo_slug}#{pr_number}"))?;
+
+    let mut rollup_option = {
+        let rollups = extract_check_rollups(pr_node);
+        if rollups.is_empty() {
+            None
+        } else {
+            Some(rollups)
+        }
+    };
+
+    let checks = aggregate_check_status(&rollup_option);
+    let check_runs = rollup_option
+        .take()
+        .unwrap_or_default()
+        .iter()
+        .filter(|check| !check.name.is_empty())
+        .map(|check| CheckRun {
+            name: check.name.clone(),
+            status: check_run_status(check),
+            started_at: check.started_at.clone(),
+            completed_at: check.completed_at.clone(),
+            details_url: check.details_url.clone(),
+            summary: check.summary.clone(),
+            text: check.text.clone(),
+        })
+        .collect();
+
+    Ok(PrDetail {
+        checks,
+        check_runs,
+        comments: extract_issue_comments(pr_node),
+        review_threads: extract_review_threads(pr_node),
+    })
 }
 
 /// Create a pull request using `gh pr create` and return the PR URL.
@@ -416,10 +610,120 @@ fn extract_check_rollups(pr_node: &Value) -> Vec<GhCheckRollup> {
                 .get("completedAt")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            details_url: context
+                .get("detailsUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            summary: context
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            text: context
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
         });
     }
 
     rollups
+}
+
+fn extract_issue_comments(pr_node: &Value) -> Vec<PrComment> {
+    let Some(comment_nodes) = pr_node
+        .get("comments")
+        .and_then(|comments| comments.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+    else {
+        return Vec::new();
+    };
+
+    comment_nodes
+        .iter()
+        .map(|comment| PrComment {
+            author: extract_author_login(comment.get("author")),
+            body: comment
+                .get("body")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            created_at: comment
+                .get("createdAt")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            updated_at: comment
+                .get("updatedAt")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            url: comment
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .collect()
+}
+
+fn extract_review_threads(pr_node: &Value) -> Vec<ReviewThread> {
+    let Some(thread_nodes) = pr_node
+        .get("reviewThreads")
+        .and_then(|threads| threads.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+    else {
+        return Vec::new();
+    };
+
+    thread_nodes
+        .iter()
+        .map(|thread| ReviewThread {
+            is_resolved: thread
+                .get("isResolved")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            resolved_by: thread
+                .get("resolvedBy")
+                .map(|value| extract_author_login(Some(value)))
+                .filter(|login| !login.is_empty()),
+            comments: thread
+                .get("comments")
+                .and_then(|comments| comments.get("nodes"))
+                .and_then(|nodes| nodes.as_array())
+                .into_iter()
+                .flatten()
+                .map(|comment| ReviewComment {
+                    author: extract_author_login(comment.get("author")),
+                    body: comment
+                        .get("body")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    created_at: comment
+                        .get("createdAt")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    path: comment
+                        .get("path")
+                        .and_then(|value| value.as_str())
+                        .map(ToString::to_string),
+                    line: comment.get("line").and_then(|value| value.as_i64()),
+                })
+                .collect(),
+        })
+        .filter(|thread| !thread.comments.is_empty())
+        .collect()
+}
+
+fn extract_author_login(author: Option<&Value>) -> String {
+    author
+        .and_then(|value| value.get("login"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("github")
+        .to_string()
 }
 
 fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {
@@ -448,33 +752,6 @@ fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {
 }
 
 #[derive(Deserialize)]
-struct GhPrDetail {
-    #[serde(rename = "createdAt")]
-    created_at: String,
-    #[serde(rename = "mergedAt")]
-    merged_at: Option<String>,
-    #[serde(rename = "closedAt")]
-    closed_at: Option<String>,
-    state: String,
-    reviews: Option<Vec<GhReview>>,
-    #[serde(rename = "statusCheckRollup")]
-    status_check_rollup: Option<Vec<GhCheckRollup>>,
-}
-
-#[derive(Deserialize)]
-struct GhReview {
-    #[serde(rename = "submittedAt")]
-    submitted_at: Option<String>,
-    state: String,
-    author: Option<GhAuthor>,
-}
-
-#[derive(Deserialize)]
-struct GhAuthor {
-    login: String,
-}
-
-#[derive(Deserialize)]
 struct GhCheckRollup {
     #[serde(default)]
     name: String,
@@ -485,6 +762,12 @@ struct GhCheckRollup {
     started_at: Option<String>,
     #[serde(rename = "completedAt")]
     completed_at: Option<String>,
+    #[serde(rename = "detailsUrl", default)]
+    details_url: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    text: String,
 }
 
 fn check_run_status(c: &GhCheckRollup) -> CheckStatus {

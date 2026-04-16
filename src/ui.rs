@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
+use chrono::DateTime;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table, TableState,
-        Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table,
+        TableState, Wrap,
     },
     Frame,
 };
@@ -14,11 +15,12 @@ use ratatui::{
 use crate::theme::Theme;
 use crate::{
     app::{App, DisplayRow, InlineNewState, Screen},
-    github::CheckStatus,
-    jira::Issue,
+    github::{CheckStatus, PrInfo},
+    jira::{Issue, User},
 };
 
 const COLUMNS: &[&str] = &["Key", "Summary", "PR", "CI", "Status", "Assignee", "Repo"];
+const SIDEBAR_SECTION_MARGIN: u16 = 1;
 
 type CellMap<'a> = HashMap<&'static str, Line<'a>>;
 
@@ -130,257 +132,445 @@ fn render_list(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
-    let issue = app.selected_issue();
+    let sidebar = Block::default()
+        .padding(Padding::new(1, 1, 1, 0))
+        .style(Style::default().bg(Theme::SidebarBg));
+    let inner = sidebar.inner(area);
+    frame.render_widget(sidebar, area);
 
-    let mut lines: Vec<Line> = Vec::new();
-
-    match issue {
-        Some(issue) => {
-            let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
-            let icon = issue_type_icon(&issue_type);
-            lines.push(Line::from(vec![Span::styled(
-                format!("{icon} {}", issue.key),
-                Style::default()
-                    .fg(Theme::Accent)
-                    .add_modifier(Modifier::BOLD),
-            )]));
-            lines.push(Line::from(Span::styled(
-                issue_type,
+    let Some(issue) = app.selected_issue() else {
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled(
+                "No issue selected",
                 Style::default().fg(Theme::Muted),
-            )));
+            ))])
+            .style(Style::default().bg(Theme::SidebarBg)),
+            inner,
+        );
+        return;
+    };
 
-            lines.push(Line::from(""));
+    let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
+    let icon = issue_type_icon(&issue_type);
+    let summary = issue.summary().unwrap_or_default();
 
-            let summary = issue.summary().unwrap_or_default();
-            lines.push(Line::from(Span::styled(
-                summary,
-                Style::default()
-                    .fg(Theme::Text)
-                    .add_modifier(Modifier::BOLD),
-            )));
+    let header_line = Line::from(vec![
+        Span::styled(
+            format!("{icon} {}", issue.key),
+            Style::default()
+                .fg(Theme::Accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            summary.clone(),
+            Style::default()
+                .fg(Theme::Text)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let header_height = wrapped_line_count(
+        &format!("{icon} {} {summary}", issue.key),
+        inner.width as usize,
+    ) as u16;
 
-            lines.push(Line::from(""));
+    let mut jira_lines = Vec::new();
+    let status_name = issue.status().map(|status| status.name).unwrap_or_default();
+    let status_style = status_color(&status_name);
+    jira_lines.push(Line::from(vec![
+        Span::styled("Status    ", Style::default().fg(Theme::Muted)),
+        Span::styled("●", status_style),
+        Span::raw(" "),
+        Span::styled(status_name, status_style),
+    ]));
 
-            let status_name = issue.status().map(|s| s.name).unwrap_or_default();
-            let status_style = status_color(&status_name);
-            lines.push(Line::from(vec![
-                Span::styled("Status    ", Style::default().fg(Theme::Muted)),
-                Span::styled("●", status_style),
-                Span::raw(" "),
-                Span::styled(status_name, status_style),
-            ]));
+    let assignee = issue
+        .assignee()
+        .map(|user| user.display_name)
+        .unwrap_or_else(|| "Unassigned".to_string());
+    jira_lines.push(labeled_text_line("Assignee", assignee, Theme::Text));
 
-            if let Some(priority) = issue.priority() {
-                let priority_style = priority_color(&priority.name);
-                lines.push(Line::from(vec![
-                    Span::styled("Priority  ", Style::default().fg(Theme::Muted)),
-                    Span::styled(priority.name.clone(), priority_style),
-                ]));
-            }
+    if let Some(author) = issue_author(issue) {
+        jira_lines.push(labeled_text_line("Author", author, Theme::Text));
+    }
 
-            let assignee = issue
-                .assignee()
-                .map(|u| u.display_name)
-                .unwrap_or_else(|| "Unassigned".to_string());
-            lines.push(Line::from(vec![
-                Span::styled("Assignee  ", Style::default().fg(Theme::Muted)),
-                Span::styled(assignee, Style::default().fg(Theme::Text)),
-            ]));
+    if let Some(reporter) = issue.reporter() {
+        jira_lines.push(labeled_text_line(
+            "Reporter",
+            reporter.display_name,
+            Theme::Text,
+        ));
+    }
 
-            if let Some(reporter) = issue.reporter() {
-                lines.push(Line::from(vec![
-                    Span::styled("Reporter  ", Style::default().fg(Theme::Muted)),
-                    Span::styled(reporter.display_name, Style::default().fg(Theme::Text)),
-                ]));
-            }
+    if let Some(created) = issue_created_at(issue) {
+        jira_lines.push(labeled_text_line(
+            "Created",
+            format_timestamp(&created),
+            Theme::Text,
+        ));
+    }
 
-            let labels = issue.labels();
-            if !labels.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("Labels    ", Style::default().fg(Theme::Muted)),
-                    Span::styled(labels.join(", "), Style::default().fg(Theme::AccentSoft)),
-                ]));
-            }
+    if let Some(description) = issue.description() {
+        jira_lines.push(Line::from(""));
+        push_wrapped_block(
+            &mut jira_lines,
+            &description,
+            inner.width.saturating_sub(6) as usize,
+            8,
+            Theme::Text,
+            "",
+        );
+    }
 
-            if let Some(parent) = issue.parent() {
-                let parent_summary = parent.summary().unwrap_or_default();
-                lines.push(Line::from(vec![
-                    Span::styled("Parent    ", Style::default().fg(Theme::Muted)),
-                    Span::styled(parent.key, Style::default().fg(Theme::AccentSoft)),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::styled("          ", Style::default().fg(Theme::Muted)),
-                    Span::styled(parent_summary, Style::default().fg(Theme::Muted)),
-                ]));
-            }
+    let mut github_lines = Vec::new();
+    let mut ci_lines = Vec::new();
+    let error_panel = app.selected_issue().and_then(|selected_issue| {
+        app.github_prs.get(&selected_issue.key).and_then(|pr| {
+            ci_error_panel(
+                pr,
+                app.github_pr_detail_loading.contains(&selected_issue.key),
+                app.github_pr_detail_errors
+                    .get(&selected_issue.key)
+                    .map(String::as_str),
+                inner.width.saturating_sub(6),
+            )
+        })
+    });
 
-            let repos = app
-                .repo_matches(issue)
-                .into_iter()
-                .map(|entry| entry.label.as_str())
-                .collect::<Vec<_>>();
-            let is_active = app.active_branches.contains_key(&issue.key);
-            if !repos.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("Repo      ", Style::default().fg(Theme::Muted)),
-                    if is_active {
-                        Span::styled(
-                            format!("⎇ {}", repos.join(", ")),
-                            Style::default().fg(Theme::Accent),
-                        )
-                    } else {
-                        Span::styled(repos.join(", "), Style::default().fg(Theme::AccentSoft))
-                    },
-                ]));
-            }
+    match app.github_prs.get(&issue.key) {
+        Some(pr) => {
+            let detail_loading = app.github_pr_detail_loading.contains(&issue.key);
+            let detail_error = app.github_pr_detail_errors.get(&issue.key);
+            let detail_loaded = app.github_pr_detail_loaded.contains(&issue.key);
+            let pr_state_color = if pr.state.eq_ignore_ascii_case("open") {
+                Theme::Success
+            } else if pr.state.eq_ignore_ascii_case("merged") {
+                Theme::Accent
+            } else {
+                Theme::Muted
+            };
 
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "─".repeat(area.width.saturating_sub(2) as usize),
-                Style::default().fg(Theme::SurfaceAlt),
-            )));
-            lines.push(Line::from(""));
-
-            match app.github_prs.get(&issue.key) {
-                Some(pr) => {
-                    lines.push(Line::from(vec![
-                        Span::styled("PR ", Style::default().fg(Theme::Muted)),
-                        Span::styled(
-                            format!("#{}", pr.number),
-                            Style::default()
-                                .fg(Theme::Info)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(" "),
-                        Span::styled(
-                            &pr.state,
-                            Style::default().fg(if pr.state == "OPEN" || pr.state == "open" {
-                                Theme::Success
-                            } else if pr.state == "MERGED" || pr.state == "merged" {
-                                Theme::Accent
-                            } else {
-                                Theme::Muted
-                            }),
-                        ),
-                    ]));
-
-                    lines.push(Line::from(Span::styled(
-                        &pr.title,
-                        Style::default().fg(Theme::Text),
-                    )));
-
-                    lines.push(Line::from(""));
-
-                    if !pr.check_runs.is_empty() {
-                        lines.push(Line::from(Span::styled(
-                            "CI Checks",
-                            Style::default()
-                                .fg(Theme::Muted)
-                                .add_modifier(Modifier::BOLD),
-                        )));
-                        for run in &pr.check_runs {
-                            let (icon, color) = match run.status {
-                                CheckStatus::Pass => ("✓", Theme::Success),
-                                CheckStatus::Fail => ("✗", Theme::Error),
-                                CheckStatus::Pending => ("●", Theme::Warning),
-                            };
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!(" {icon} "),
-                                    Style::default().fg(color),
-                                ),
-                                Span::styled(&run.name, Style::default().fg(Theme::Text)),
-                            ]));
-                        }
-
-                        if pr.checks == CheckStatus::Pending {
-                            if let Some(eta) = app.pr_eta(pr) {
-                                lines.push(Line::from(Span::styled(
-                                    format!("   ETA: {eta}"),
-                                    Style::default().fg(Theme::Muted),
-                                )));
-                            }
-                        }
-                    }
-
-                    if !pr.body.is_empty() {
-                        lines.push(Line::from(""));
-                        lines.push(Line::from(Span::styled(
-                            "─".repeat(area.width.saturating_sub(2) as usize),
-                            Style::default().fg(Theme::SurfaceAlt),
-                        )));
-                        lines.push(Line::from(""));
-                        for body_line in pr.body.lines().take(10) {
-                            lines.push(Line::from(Span::styled(
-                                body_line,
-                                Style::default().fg(Theme::Muted),
-                            )));
-                        }
-                        let line_count = pr.body.lines().count();
-                        if line_count > 10 {
-                            lines.push(Line::from(Span::styled(
-                                format!("  … +{} more lines", line_count - 10),
-                                Style::default().fg(Theme::SurfaceAlt),
-                            )));
-                        }
-                    }
-                }
-                None => {
-                    lines.push(Line::from(Span::styled(
-                        "No linked PR",
-                        Style::default().fg(Theme::Muted),
-                    )));
-                }
-            }
-
-            let description = issue.description();
-            if let Some(desc) = description {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "─".repeat(area.width.saturating_sub(2) as usize),
-                    Style::default().fg(Theme::SurfaceAlt),
-                )));
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    "Description",
+            github_lines.push(Line::from(vec![
+                Span::styled("PR        ", Style::default().fg(Theme::Muted)),
+                Span::styled(
+                    format!("#{}", pr.number),
                     Style::default()
-                        .fg(Theme::Muted)
+                        .fg(Theme::Info)
                         .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(&pr.state, Style::default().fg(pr_state_color)),
+            ]));
+
+            if !pr.title.is_empty() {
+                push_wrapped_block(
+                    &mut github_lines,
+                    &pr.title,
+                    inner.width.saturating_sub(6) as usize,
+                    2,
+                    Theme::Text,
+                    "",
+                );
+            }
+
+            let comments_value = if detail_loading && !detail_loaded {
+                "Loading…".to_string()
+            } else if detail_error.is_some() {
+                "Unavailable".to_string()
+            } else {
+                let (unresolved, resolved) = comment_counts(pr);
+                format!("{unresolved} unresolved · {resolved} resolved")
+            };
+            github_lines.push(labeled_text_line("Comments", comments_value, Theme::Text));
+
+            if !pr.check_runs.is_empty() {
+                for run in &pr.check_runs {
+                    let (icon, color) = match run.status {
+                        CheckStatus::Pass => ("✓", Theme::Success),
+                        CheckStatus::Fail => ("✗", Theme::Error),
+                        CheckStatus::Pending => ("●", Theme::Warning),
+                    };
+                    ci_lines.push(Line::from(vec![
+                        Span::styled(format!(" {icon} "), Style::default().fg(color)),
+                        Span::styled(&run.name, Style::default().fg(Theme::Text)),
+                    ]));
+                }
+
+                if pr.checks == CheckStatus::Pending {
+                    if let Some(eta) = app.pr_eta(pr) {
+                        ci_lines.push(Line::from(Span::styled(
+                            format!(" ETA: {eta}"),
+                            Style::default().fg(Theme::Muted),
+                        )));
+                    }
+                }
+            } else {
+                ci_lines.push(Line::from(Span::styled(
+                    "No CI results",
+                    Style::default().fg(Theme::Muted),
                 )));
-                for desc_line in desc.lines().take(15) {
-                    lines.push(Line::from(Span::styled(
-                        desc_line.to_string(),
-                        Style::default().fg(Theme::Text),
-                    )));
-                }
-                let desc_line_count = desc.lines().count();
-                if desc_line_count > 15 {
-                    lines.push(Line::from(Span::styled(
-                        format!("  … +{} more lines", desc_line_count - 15),
-                        Style::default().fg(Theme::SurfaceAlt),
-                    )));
-                }
             }
         }
         None => {
-            lines.push(Line::from(Span::styled(
-                "No issue selected",
+            github_lines.push(Line::from(Span::styled(
+                "No linked PR",
+                Style::default().fg(Theme::Muted),
+            )));
+            ci_lines.push(Line::from(Span::styled(
+                "No CI results",
                 Style::default().fg(Theme::Muted),
             )));
         }
     }
 
+    let mut constraints = vec![Constraint::Length(header_height.max(1))];
+    constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
+    constraints.push(Constraint::Length(section_height(&jira_lines)));
+    constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
+    constraints.push(Constraint::Length(section_height(&github_lines)));
+    constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
+    constraints.push(Constraint::Length(section_height(&ci_lines)));
+    if let Some((_, error_lines)) = &error_panel {
+        constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
+        constraints.push(Constraint::Length(section_height(error_lines)));
+    }
+    constraints.push(Constraint::Min(0));
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(vec![header_line])
+            .style(Style::default().bg(Theme::SidebarBg))
+            .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    render_sidebar_section(frame, chunks[2], "Jira", jira_lines, Theme::SurfaceAlt);
+    render_sidebar_section(frame, chunks[4], "GitHub", github_lines, Theme::SurfaceAlt);
+    render_sidebar_section(frame, chunks[6], "CI", ci_lines, Theme::SurfaceAlt);
+
+    if let Some((title, error_lines)) = error_panel {
+        render_sidebar_section(frame, chunks[8], &title, error_lines, Theme::Error);
+    }
+}
+
+fn render_sidebar_section<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'a>>,
+    border_color: ratatui::style::Color,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
     frame.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(Theme::SidebarBg))
+            .style(Style::default().bg(Theme::SidebarBg).fg(Theme::Muted))
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
-                    .padding(Padding::new(1, 1, 1, 0))
+                    .borders(Borders::TOP)
+                    .title(Span::styled(
+                        format!(" {title} "),
+                        Style::default().fg(border_color),
+                    ))
+                    .border_style(Style::default().fg(border_color))
+                    .padding(Padding::new(1, 1, 0, 0))
                     .style(Style::default().bg(Theme::SidebarBg)),
             ),
         area,
     );
+}
+
+fn ci_error_panel(
+    pr: &PrInfo,
+    detail_loading: bool,
+    detail_error: Option<&str>,
+    width: u16,
+) -> Option<(String, Vec<Line<'static>>)> {
+    let failed_run = pr.latest_failed_check()?;
+    let message = if !failed_run.text.trim().is_empty() {
+        failed_run.text.trim().to_string()
+    } else if !failed_run.summary.trim().is_empty() {
+        failed_run.summary.trim().to_string()
+    } else if !failed_run.details_url.trim().is_empty() {
+        format!("Open details: {}", failed_run.details_url)
+    } else if detail_loading {
+        "Loading latest CI error…".to_string()
+    } else if let Some(error) = detail_error {
+        format!("Failed to load CI detail: {error}")
+    } else {
+        format!("{} failed without inline error output.", failed_run.name)
+    };
+
+    let mut lines = vec![Line::from(Span::styled(
+        failed_run.name.clone(),
+        Style::default()
+            .fg(Theme::Error)
+            .add_modifier(Modifier::BOLD),
+    ))];
+
+    for line in wrap_text(&message, width as usize, 6) {
+        lines.push(Line::from(Span::styled(
+            line,
+            Style::default().fg(Theme::Text),
+        )));
+    }
+
+    Some((failed_run.name.clone(), lines))
+}
+
+fn section_height(lines: &[Line<'_>]) -> u16 {
+    (lines.len() as u16).saturating_add(1)
+}
+
+fn comment_counts(pr: &PrInfo) -> (usize, usize) {
+    let mut unresolved = pr.comments.len();
+    let mut resolved = 0;
+
+    for thread in &pr.review_threads {
+        let thread_comment_count = thread.comments.len();
+        if thread.is_resolved {
+            resolved += thread_comment_count;
+        } else {
+            unresolved += thread_comment_count;
+        }
+    }
+
+    (unresolved, resolved)
+}
+
+fn push_wrapped_block<'a>(
+    lines: &mut Vec<Line<'a>>,
+    text: &str,
+    width: usize,
+    max_lines: usize,
+    color: ratatui::style::Color,
+    prefix: &str,
+) {
+    for line in wrap_text(text, width, max_lines) {
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{line}"),
+            Style::default().fg(color),
+        )));
+    }
+}
+
+fn labeled_text_line(label: &str, value: String, color: ratatui::style::Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<10}"), Style::default().fg(Theme::Muted)),
+        Span::styled(value, Style::default().fg(color)),
+    ])
+}
+
+fn issue_created_at(issue: &Issue) -> Option<String> {
+    issue
+        .field::<String>("created")
+        .and_then(|result| result.ok())
+}
+
+fn issue_author(issue: &Issue) -> Option<String> {
+    issue
+        .field::<User>("creator")
+        .and_then(|result| result.ok())
+        .map(|user| user.display_name)
+}
+
+fn format_timestamp(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|parsed| parsed.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| timestamp.to_string())
+}
+
+fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    if width == 0 || max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut wrapped = Vec::new();
+    let paragraphs = if text.trim().is_empty() {
+        vec![String::new()]
+    } else {
+        text.lines()
+            .map(str::trim)
+            .map(ToString::to_string)
+            .collect()
+    };
+
+    'outer: for paragraph in paragraphs {
+        if paragraph.is_empty() {
+            wrapped.push(String::new());
+            if wrapped.len() >= max_lines {
+                break;
+            }
+            continue;
+        }
+
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate_width = if current.is_empty() {
+                word.len()
+            } else {
+                current.len() + 1 + word.len()
+            };
+
+            if candidate_width > width && !current.is_empty() {
+                wrapped.push(current);
+                if wrapped.len() >= max_lines {
+                    break 'outer;
+                }
+                current = word.to_string();
+                continue;
+            }
+
+            if word.len() > width && current.is_empty() {
+                wrapped.push(
+                    word.chars()
+                        .take(width.saturating_sub(1))
+                        .collect::<String>()
+                        + "…",
+                );
+                if wrapped.len() >= max_lines {
+                    break 'outer;
+                }
+                continue;
+            }
+
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+
+        if !current.is_empty() {
+            wrapped.push(current);
+            if wrapped.len() >= max_lines {
+                break;
+            }
+        }
+    }
+
+    if wrapped.len() == max_lines && !text.trim().is_empty() {
+        if let Some(last) = wrapped.last_mut() {
+            if !last.ends_with('…') {
+                last.push('…');
+            }
+        }
+    }
+
+    wrapped
+}
+
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    if text.is_empty() {
+        return 1;
+    }
+
+    wrap_text(text, width.max(1), usize::MAX).len().max(1)
 }
 
 fn story_header_row(
@@ -978,28 +1168,6 @@ fn status_color(status: &str) -> Style {
         return Style::default().fg(Theme::Muted);
     }
 
-    Style::default().fg(Theme::Text)
-}
-
-fn priority_color(priority: &str) -> Style {
-    let priority = priority.to_lowercase();
-    if priority.contains("highest") || priority.contains("critical") {
-        return Style::default()
-            .fg(Theme::Error)
-            .add_modifier(Modifier::BOLD);
-    }
-    if priority.contains("high") {
-        return Style::default().fg(Theme::Error);
-    }
-    if priority.contains("medium") {
-        return Style::default().fg(Theme::Warning);
-    }
-    if priority.contains("low") {
-        return Style::default().fg(Theme::Muted);
-    }
-    if priority.contains("lowest") {
-        return Style::default().fg(Theme::Muted);
-    }
     Style::default().fg(Theme::Text)
 }
 

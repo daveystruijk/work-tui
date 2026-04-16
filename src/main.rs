@@ -436,7 +436,8 @@ const SCROLL_OFF: usize = 3;
 
 fn adjust_scroll_offset(app: &mut App) {
     let height = app.list_area_height as usize;
-    if height == 0 {
+    if height == 0 || app.display_rows.is_empty() {
+        app.prefetch_selected_pr_detail();
         return;
     }
 
@@ -457,6 +458,7 @@ fn adjust_scroll_offset(app: &mut App) {
     // Clamp offset so we don't scroll past the end
     let max_offset = app.display_rows.len().saturating_sub(height);
     app.list_scroll_offset = app.list_scroll_offset.min(max_offset);
+    app.prefetch_selected_pr_detail();
 }
 
 fn move_selection_down(app: &mut App) {
@@ -499,6 +501,7 @@ fn move_selection_by(app: &mut App, delta: isize) {
 
 fn scroll_viewport(app: &mut App, delta: isize) {
     if app.display_rows.is_empty() {
+        app.prefetch_selected_pr_detail();
         return;
     }
     let height = app.list_area_height as usize;
@@ -514,4 +517,5 @@ fn scroll_viewport(app: &mut App, delta: isize) {
     } else if app.selected_index >= new_offset + height {
         app.selected_index = (new_offset + height - 1).min(last);
     }
+    app.prefetch_selected_pr_detail();
 }

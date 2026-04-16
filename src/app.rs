@@ -145,6 +145,12 @@ pub struct App {
     pub collapsed_stories: HashSet<String>,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
+    /// Issue keys currently loading selected PR detail data.
+    pub github_pr_detail_loading: HashSet<String>,
+    /// Issue keys whose PR detail data has been loaded.
+    pub github_pr_detail_loaded: HashSet<String>,
+    /// Per-issue PR detail loading errors.
+    pub github_pr_detail_errors: HashMap<String, String>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
     pub check_durations: HashMap<String, u64>,
     /// Currently running background task names
@@ -198,6 +204,9 @@ impl App {
             search_filter: String::new(),
             collapsed_stories: HashSet::new(),
             github_prs: HashMap::new(),
+            github_pr_detail_loading: HashSet::new(),
+            github_pr_detail_loaded: HashSet::new(),
+            github_pr_detail_errors: HashMap::new(),
             check_durations: HashMap::new(),
             running_tasks: HashSet::new(),
             completed_tasks: VecDeque::new(),
@@ -255,6 +264,30 @@ impl App {
             .collect();
         actions::fetch_github_prs::spawn(self.bg_tx.clone(), active_repos);
         self.last_ci_refresh = std::time::Instant::now();
+    }
+
+    pub fn prefetch_selected_pr_detail(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        if self.github_pr_detail_loaded.contains(&issue_key)
+            || self.github_pr_detail_loading.contains(&issue_key)
+        {
+            return;
+        }
+        let Some(pr) = self.github_prs.get(&issue_key) else {
+            return;
+        };
+
+        self.github_pr_detail_errors.remove(&issue_key);
+        self.github_pr_detail_loading.insert(issue_key.clone());
+        actions::fetch_github_pr_detail::spawn(
+            self.bg_tx.clone(),
+            issue_key,
+            pr.repo_slug.clone(),
+            pr.number,
+        );
     }
 
     /// Spawn active branch detection for all issues.
@@ -347,6 +380,9 @@ impl App {
             ActionMessage::GithubPrs(all_prs, errors) => {
                 self.github_prs.clear();
                 self.github_statuses.clear();
+                self.github_pr_detail_loading.clear();
+                self.github_pr_detail_loaded.clear();
+                self.github_pr_detail_errors.clear();
                 for issue in &self.issues {
                     let key_lower = issue.key.to_lowercase();
                     let matched = all_prs
@@ -364,10 +400,29 @@ impl App {
                 self.github_loading = false;
                 self.last_updated = Some(std::time::Instant::now());
                 self.refresh_latest_activity();
+                self.prefetch_selected_pr_detail();
                 if !errors.is_empty() {
                     self.status_message = format!("Failed: {}", errors.join("; "));
                 } else if self.running_tasks.is_empty() {
                     self.status_message = "Ready".into();
+                }
+            }
+            ActionMessage::GithubPrDetail(issue_key, result) => {
+                self.github_pr_detail_loading.remove(&issue_key);
+                match result {
+                    Ok(detail) => {
+                        if let Some(pr) = self.github_prs.get_mut(&issue_key) {
+                            pr.apply_detail(detail);
+                            self.github_pr_detail_loaded.insert(issue_key.clone());
+                            self.github_pr_detail_errors.remove(&issue_key);
+                        }
+                    }
+                    Err(err) => {
+                        self.github_pr_detail_errors
+                            .insert(issue_key.clone(), err.to_string());
+                        self.status_message =
+                            format!("Failed to load PR detail for {issue_key}: {err}");
+                    }
                 }
             }
             ActionMessage::PickedUp(result) => match result {
@@ -422,7 +477,8 @@ impl App {
                         self.selected_index = index;
                         self.status_message = format!("Created {key}");
                     } else {
-                        self.status_message = format!("Created {key} (may take a moment to appear)");
+                        self.status_message =
+                            format!("Created {key} (may take a moment to appear)");
                     }
                 }
                 Err(err) => {
@@ -582,6 +638,9 @@ impl App {
 
         self.github_statuses.clear();
         self.github_prs.clear();
+        self.github_pr_detail_loading.clear();
+        self.github_pr_detail_loaded.clear();
+        self.github_pr_detail_errors.clear();
         self.latest_activity.clear();
         Ok(())
     }

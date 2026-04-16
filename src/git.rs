@@ -175,7 +175,9 @@ pub async fn create_branch_from_origin_main(
             .await?;
 
         if !existing_rev.status.success() {
-            let rev_stderr = String::from_utf8_lossy(&existing_rev.stderr).trim().to_string();
+            let rev_stderr = String::from_utf8_lossy(&existing_rev.stderr)
+                .trim()
+                .to_string();
             return Err(eyre!(
                 "{}",
                 if rev_stderr.is_empty() {
@@ -193,7 +195,9 @@ pub async fn create_branch_from_origin_main(
             .await?;
 
         if !origin_rev.status.success() {
-            let rev_stderr = String::from_utf8_lossy(&origin_rev.stderr).trim().to_string();
+            let rev_stderr = String::from_utf8_lossy(&origin_rev.stderr)
+                .trim()
+                .to_string();
             return Err(eyre!(
                 "{}",
                 if rev_stderr.is_empty() {
@@ -204,8 +208,12 @@ pub async fn create_branch_from_origin_main(
             ));
         }
 
-        let existing_hash = String::from_utf8_lossy(&existing_rev.stdout).trim().to_string();
-        let origin_hash = String::from_utf8_lossy(&origin_rev.stdout).trim().to_string();
+        let existing_hash = String::from_utf8_lossy(&existing_rev.stdout)
+            .trim()
+            .to_string();
+        let origin_hash = String::from_utf8_lossy(&origin_rev.stdout)
+            .trim()
+            .to_string();
 
         if existing_hash == origin_hash {
             let checkout_existing = Command::new("git")

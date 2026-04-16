@@ -13,6 +13,7 @@ pub mod auto_label;
 pub mod branch_diff;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
+pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
 pub mod finish;
 pub mod initialize;
@@ -24,7 +25,7 @@ use std::fmt;
 
 use color_eyre::Result;
 
-use crate::github::PrInfo;
+use crate::github::{PrDetail, PrInfo};
 use crate::jira::Issue;
 
 /// Generic progress report sent by long-running actions.
@@ -75,6 +76,8 @@ pub enum ActionMessage {
     /// GitHub PRs fetched for all configured repos (from [`fetch_github_prs`]).
     /// Carries (successful PRs, per-repo error messages).
     GithubPrs(Vec<PrInfo>, Vec<String>),
+    /// Detailed GitHub data fetched for one selected PR.
+    GithubPrDetail(String, Result<PrDetail>),
     /// Active branches resolved (from [`detect_active_branches`]).
     ActiveBranches(HashMap<String, String>),
     /// Pick-up completed (from [`pick_up`]).
