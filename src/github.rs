@@ -75,6 +75,9 @@ pub struct PrInfo {
     pub repo_slug: String,
     pub comments: Vec<PrComment>,
     pub review_threads: Vec<ReviewThread>,
+    pub changed_files: Option<u64>,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +86,9 @@ pub struct PrDetail {
     pub check_runs: Vec<CheckRun>,
     pub comments: Vec<PrComment>,
     pub review_threads: Vec<ReviewThread>,
+    pub changed_files: Option<u64>,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
 }
 
 impl PrInfo {
@@ -91,6 +97,9 @@ impl PrInfo {
         self.check_runs = detail.check_runs;
         self.comments = detail.comments;
         self.review_threads = detail.review_threads;
+        self.changed_files = detail.changed_files;
+        self.additions = detail.additions;
+        self.deletions = detail.deletions;
     }
 
     pub fn latest_failed_check(&self) -> Option<&CheckRun> {
@@ -197,6 +206,9 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                 repo_slug: slug.clone(),
                 comments: Vec::new(),
                 review_threads: Vec::new(),
+                changed_files: None,
+                additions: None,
+                deletions: None,
             }
         })
         .collect())
@@ -237,6 +249,9 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         url
                         headRefName
                         isDraft
+                        changedFiles
+                        additions
+                        deletions
                         statusCheckRollup: commits(last: 1) {{
                             nodes {{
                                 commit {{
@@ -373,6 +388,9 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 .get("isDraft")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let changed_files = pr.get("changedFiles").and_then(|v| v.as_u64());
+            let additions = pr.get("additions").and_then(|v| v.as_u64());
+            let deletions = pr.get("deletions").and_then(|v| v.as_u64());
             let mut rollup_option = {
                 let rollups = extract_check_rollups(pr);
                 if rollups.is_empty() {
@@ -411,6 +429,9 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 repo_slug: repo_slug.clone(),
                 comments: Vec::new(),
                 review_threads: Vec::new(),
+                changed_files,
+                additions,
+                deletions,
             });
         }
     }
@@ -427,6 +448,9 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
         r#"query {{
             repository(owner: "{owner}", name: "{name}") {{
                 pullRequest(number: {pr_number}) {{
+                    changedFiles
+                    additions
+                    deletions
                     comments(first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
                         nodes {{
                             body
@@ -570,11 +594,18 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
         })
         .collect();
 
+    let changed_files = pr_node.get("changedFiles").and_then(|v| v.as_u64());
+    let additions = pr_node.get("additions").and_then(|v| v.as_u64());
+    let deletions = pr_node.get("deletions").and_then(|v| v.as_u64());
+
     Ok(PrDetail {
         checks,
         check_runs,
         comments: extract_issue_comments(pr_node),
         review_threads: extract_review_threads(pr_node),
+        changed_files,
+        additions,
+        deletions,
     })
 }
 

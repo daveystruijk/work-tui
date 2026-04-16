@@ -155,6 +155,22 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
             };
             github_lines.push(labeled_text_line("Comments", comments_value, Theme::Text));
 
+            if let (Some(files), Some(adds), Some(dels)) =
+                (pr.changed_files, pr.additions, pr.deletions)
+            {
+                github_lines.push(Line::from(vec![
+                    Span::styled("Changes   ", Style::default().fg(Theme::Muted)),
+                    Span::styled(format!("{files}"), Style::default().fg(Theme::Text)),
+                    Span::styled(
+                        if files == 1 { " file  " } else { " files  " },
+                        Style::default().fg(Theme::Muted),
+                    ),
+                    Span::styled(format!("+{adds}"), Style::default().fg(Theme::Success)),
+                    Span::styled(" / ", Style::default().fg(Theme::Muted)),
+                    Span::styled(format!("-{dels}"), Style::default().fg(Theme::Error)),
+                ]));
+            }
+
             let ci_content_width = inner.width.saturating_sub(6) as usize;
             if !pr.check_runs.is_empty() {
                 for run in &pr.check_runs {
