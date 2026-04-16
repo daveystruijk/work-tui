@@ -3,7 +3,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+        Block, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table, TableState,
+        Wrap,
     },
     Frame,
 };
@@ -36,19 +37,20 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 fn render_list(app: &mut App, frame: &mut Frame) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(44)])
         .split(frame.area());
 
-    // Store visible list height (minus borders and header row) for half-page scrolling
-    app.list_area_height = chunks[1].height.saturating_sub(4);
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(columns[0]);
 
-    render_info_panel(app, frame, chunks[0]);
+    // Store visible list height for half-page scrolling
+    app.list_area_height = main_chunks[0].height.saturating_sub(4);
+
+    render_sidebar(app, frame, columns[1]);
 
     let rows: Vec<Row> = app
         .display_rows
@@ -83,12 +85,9 @@ fn render_list(app: &mut App, frame: &mut Frame) {
         ],
     )
     .header(
-        Row::new(["Key", "PR", "CI", "Status", "Summary", "Assignee", "Repo"]).style(
-            Style::default()
-                .fg(ACCENT_SOFT)
-                .bg(SURFACE)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Row::new(["Key", "PR", "CI", "Status", "Summary", "Assignee", "Repo"])
+            .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+            .bottom_margin(0),
     )
     .column_spacing(2)
     .row_highlight_style(
@@ -97,136 +96,260 @@ fn render_list(app: &mut App, frame: &mut Frame) {
             .bg(SURFACE_ALT)
             .add_modifier(Modifier::BOLD),
     )
-    .block({
-        let mut block = Block::bordered()
-            .style(Style::default().bg(PANEL))
-            .border_style(Style::default().fg(SURFACE_ALT));
-
-        if app.loading {
-            block = block.title_bottom(
-                Line::from(vec![
-                    Span::styled(
-                        SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()],
-                        Style::default().fg(WARNING),
-                    ),
-                    Span::styled(" Loading… ", Style::default().fg(MUTED)),
-                ])
-                .alignment(Alignment::Right),
-            );
-        } else if let Some(last_updated) = app.last_updated {
-            let secs = last_updated.elapsed().as_secs();
-            block = block.title_bottom(
-                Line::from(Span::styled(
-                    format!("updated {} ago", crate::app::format_duration(secs)),
-                    Style::default().fg(MUTED),
-                ))
-                .alignment(Alignment::Right),
-            );
-        }
-
-        block
-    });
-    frame.render_stateful_widget(table, chunks[1], &mut state);
+    .block(Block::default().style(Style::default().bg(PANEL)));
+    frame.render_stateful_widget(table, main_chunks[0], &mut state);
     app.list_scroll_offset = state.offset();
 
-    render_command_bar(app, frame, chunks[2]);
+    render_command_bar(app, frame, main_chunks[1]);
 
     if app.label_picker_active() {
         render_label_picker_modal(app, frame);
     }
 }
 
-fn render_info_panel(app: &App, frame: &mut Frame, area: Rect) {
-    let panes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
+fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
     let issue = app.selected_issue();
 
-    // Pane 1: Jira Description
-    let jira_content: Text = match issue {
-        Some(i) => {
-            let summary = i.summary().unwrap_or_default();
-            let description = i
-                .description()
-                .unwrap_or_else(|| "No description".to_string());
-            Text::from(vec![
-                Line::from(Span::styled(
-                    summary,
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(description, Style::default().fg(TEXT))),
-            ])
-        }
-        None => Text::from(Span::styled(
-            "No issue selected",
-            Style::default().fg(MUTED),
-        )),
-    };
-    frame.render_widget(
-        Paragraph::new(jira_content)
-            .style(Style::default().fg(TEXT).bg(SURFACE))
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        " Jira Description ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(SURFACE))
-                    .border_style(Style::default().fg(ACCENT_SOFT)),
-            ),
-        panes[0],
-    );
+    let mut lines: Vec<Line> = Vec::new();
 
-    // Pane 2: GitHub PR Description
-    let pr_content: Text = match issue.and_then(|i| app.github_prs.get(&i.key)) {
-        Some(pr) => {
-            let title_line = Line::from(Span::styled(
-                format!("#{} {}", pr.number, pr.title),
+    match issue {
+        Some(issue) => {
+            let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
+            let icon = issue_type_icon(&issue_type);
+            lines.push(Line::from(vec![Span::styled(
+                format!("{icon} {}", issue.key),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )]));
+            lines.push(Line::from(Span::styled(
+                issue_type,
+                Style::default().fg(MUTED),
+            )));
+
+            lines.push(Line::from(""));
+
+            let summary = issue.summary().unwrap_or_default();
+            lines.push(Line::from(Span::styled(
+                summary,
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            ));
-            if pr.body.is_empty() {
-                Text::from(vec![
-                    title_line,
-                    Line::from(""),
-                    Line::from(Span::styled("No description", Style::default().fg(MUTED))),
-                ])
-            } else {
-                Text::from(vec![
-                    title_line,
-                    Line::from(""),
-                    Line::from(Span::styled(pr.body.clone(), Style::default().fg(TEXT))),
-                ])
+            )));
+
+            lines.push(Line::from(""));
+
+            let status_name = issue.status().map(|s| s.name).unwrap_or_default();
+            let status_style = status_color(&status_name);
+            lines.push(Line::from(vec![
+                Span::styled("Status    ", Style::default().fg(MUTED)),
+                Span::styled("●", status_style),
+                Span::raw(" "),
+                Span::styled(status_name, status_style),
+            ]));
+
+            if let Some(priority) = issue.priority() {
+                let priority_style = priority_color(&priority.name);
+                lines.push(Line::from(vec![
+                    Span::styled("Priority  ", Style::default().fg(MUTED)),
+                    Span::styled(priority.name.clone(), priority_style),
+                ]));
+            }
+
+            let assignee = issue
+                .assignee()
+                .map(|u| u.display_name)
+                .unwrap_or_else(|| "Unassigned".to_string());
+            lines.push(Line::from(vec![
+                Span::styled("Assignee  ", Style::default().fg(MUTED)),
+                Span::styled(assignee, Style::default().fg(TEXT)),
+            ]));
+
+            if let Some(reporter) = issue.reporter() {
+                lines.push(Line::from(vec![
+                    Span::styled("Reporter  ", Style::default().fg(MUTED)),
+                    Span::styled(reporter.display_name, Style::default().fg(TEXT)),
+                ]));
+            }
+
+            let labels = issue.labels();
+            if !labels.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("Labels    ", Style::default().fg(MUTED)),
+                    Span::styled(labels.join(", "), Style::default().fg(ACCENT_SOFT)),
+                ]));
+            }
+
+            if let Some(parent) = issue.parent() {
+                let parent_summary = parent.summary().unwrap_or_default();
+                lines.push(Line::from(vec![
+                    Span::styled("Parent    ", Style::default().fg(MUTED)),
+                    Span::styled(parent.key, Style::default().fg(ACCENT_SOFT)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("          ", Style::default().fg(MUTED)),
+                    Span::styled(parent_summary, Style::default().fg(MUTED)),
+                ]));
+            }
+
+            let repos = app
+                .repo_matches(issue)
+                .into_iter()
+                .map(|entry| entry.label.as_str())
+                .collect::<Vec<_>>();
+            let is_active = app.active_branches.contains_key(&issue.key);
+            if !repos.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("Repo      ", Style::default().fg(MUTED)),
+                    if is_active {
+                        Span::styled(
+                            format!("⎇ {}", repos.join(", ")),
+                            Style::default().fg(ACCENT),
+                        )
+                    } else {
+                        Span::styled(repos.join(", "), Style::default().fg(ACCENT_SOFT))
+                    },
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "─".repeat(area.width.saturating_sub(2) as usize),
+                Style::default().fg(SURFACE_ALT),
+            )));
+            lines.push(Line::from(""));
+
+            match app.github_prs.get(&issue.key) {
+                Some(pr) => {
+                    lines.push(Line::from(vec![
+                        Span::styled("PR ", Style::default().fg(MUTED)),
+                        Span::styled(
+                            format!("#{}", pr.number),
+                            Style::default().fg(INFO).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            &pr.state,
+                            Style::default().fg(if pr.state == "OPEN" || pr.state == "open" {
+                                SUCCESS
+                            } else if pr.state == "MERGED" || pr.state == "merged" {
+                                ACCENT
+                            } else {
+                                MUTED
+                            }),
+                        ),
+                    ]));
+
+                    lines.push(Line::from(Span::styled(
+                        &pr.title,
+                        Style::default().fg(TEXT),
+                    )));
+
+                    lines.push(Line::from(""));
+
+                    if !pr.check_runs.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            "CI Checks",
+                            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                        )));
+                        for run in &pr.check_runs {
+                            let (icon, color) = match run.status {
+                                CheckStatus::Pass => ("✓", SUCCESS),
+                                CheckStatus::Fail => ("✗", ERROR),
+                                CheckStatus::Pending => ("●", WARNING),
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled(format!(" {icon} "), Style::default().fg(color)),
+                                Span::styled(&run.name, Style::default().fg(TEXT)),
+                            ]));
+                        }
+
+                        if pr.checks == CheckStatus::Pending {
+                            if let Some(eta) = app.pr_eta(pr) {
+                                lines.push(Line::from(Span::styled(
+                                    format!("   ETA: {eta}"),
+                                    Style::default().fg(MUTED),
+                                )));
+                            }
+                        }
+                    }
+
+                    if !pr.body.is_empty() {
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(Span::styled(
+                            "─".repeat(area.width.saturating_sub(2) as usize),
+                            Style::default().fg(SURFACE_ALT),
+                        )));
+                        lines.push(Line::from(""));
+                        for body_line in pr.body.lines().take(10) {
+                            lines.push(Line::from(Span::styled(
+                                body_line,
+                                Style::default().fg(MUTED),
+                            )));
+                        }
+                        let line_count = pr.body.lines().count();
+                        if line_count > 10 {
+                            lines.push(Line::from(Span::styled(
+                                format!("  … +{} more lines", line_count - 10),
+                                Style::default().fg(SURFACE_ALT),
+                            )));
+                        }
+                    }
+                }
+                None => {
+                    lines.push(Line::from(Span::styled(
+                        "No linked PR",
+                        Style::default().fg(MUTED),
+                    )));
+                }
+            }
+
+            let description = issue.description();
+            if let Some(desc) = description {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "─".repeat(area.width.saturating_sub(2) as usize),
+                    Style::default().fg(SURFACE_ALT),
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Description",
+                    Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                )));
+                for desc_line in desc.lines().take(15) {
+                    lines.push(Line::from(Span::styled(
+                        desc_line.to_string(),
+                        Style::default().fg(TEXT),
+                    )));
+                }
+                let desc_line_count = desc.lines().count();
+                if desc_line_count > 15 {
+                    lines.push(Line::from(Span::styled(
+                        format!("  … +{} more lines", desc_line_count - 15),
+                        Style::default().fg(SURFACE_ALT),
+                    )));
+                }
             }
         }
-        None => Text::from(Span::styled("No linked PR", Style::default().fg(MUTED))),
-    };
+        None => {
+            lines.push(Line::from(Span::styled(
+                "No issue selected",
+                Style::default().fg(MUTED),
+            )));
+        }
+    }
+
     frame.render_widget(
-        Paragraph::new(pr_content)
-            .style(Style::default().fg(TEXT).bg(SURFACE))
+        Paragraph::new(lines)
+            .style(Style::default().bg(PANEL))
             .wrap(Wrap { trim: false })
             .block(
-                Block::bordered()
-                    .title(Span::styled(
-                        " PR Description ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ))
-                    .style(Style::default().bg(SURFACE))
-                    .border_style(Style::default().fg(ACCENT_SOFT)),
+                Block::default()
+                    .padding(Padding::new(1, 1, 1, 0))
+                    .style(Style::default().bg(PANEL)),
             ),
-        panes[1],
+        area,
     );
 }
 
-fn story_header_row(key: &str, summary: &str, idx: usize, collapsed: bool) -> Row<'static> {
-    let row_style = if idx % 2 == 0 {
-        Style::default().fg(MUTED).bg(PANEL)
-    } else {
-        Style::default().fg(MUTED).bg(SURFACE)
-    };
+fn story_header_row(key: &str, summary: &str, _idx: usize, collapsed: bool) -> Row<'static> {
+    let row_style = Style::default().fg(MUTED);
 
     let first_line = summary.lines().next().unwrap_or_default().to_string();
     let icon = if collapsed { "▶" } else { "▼" };
@@ -253,12 +376,8 @@ fn story_header_row(key: &str, summary: &str, idx: usize, collapsed: bool) -> Ro
     .style(row_style)
 }
 
-fn inline_new_row(state: Option<&InlineNewState>, idx: usize, depth: u8) -> Row<'static> {
-    let row_style = if idx % 2 == 0 {
-        Style::default().fg(TEXT).bg(PANEL)
-    } else {
-        Style::default().fg(TEXT).bg(SURFACE)
-    };
+fn inline_new_row(state: Option<&InlineNewState>, _idx: usize, depth: u8) -> Row<'static> {
+    let row_style = Style::default().fg(TEXT);
 
     let summary_text = state.map(|s| s.summary.as_str()).unwrap_or("");
     let prefix = if depth > 0 { "  ↳ " } else { "" };
@@ -287,7 +406,7 @@ fn inline_new_row(state: Option<&InlineNewState>, idx: usize, depth: u8) -> Row<
     .style(row_style)
 }
 
-fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
+fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> Row<'static> {
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
     let status_style = status_color(&status_name);
@@ -306,11 +425,7 @@ fn issue_row(app: &App, issue: &Issue, idx: usize, depth: u8) -> Row<'static> {
         .next()
         .unwrap_or_default()
         .to_string();
-    let row_style = if idx % 2 == 0 {
-        Style::default().fg(TEXT).bg(PANEL)
-    } else {
-        Style::default().fg(TEXT).bg(SURFACE)
-    };
+    let row_style = Style::default().fg(TEXT);
     let (pr_cell, ci_cell) = match app.github_prs.get(&issue.key) {
         Some(pr) => {
             let pr_cell = Cell::from(Span::styled(
@@ -687,60 +802,69 @@ fn render_command_bar(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(format!("{icon} "), Style::default().fg(color)),
             Span::styled(app.status_message.as_str(), Style::default().fg(TEXT)),
         ])
-    } else if app.inline_new_active() {
-        Line::from(vec![
-            Span::styled(
-                "Esc",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled("Cancel", Style::default().fg(MUTED)),
-            Span::raw("  "),
-            Span::styled(
-                "↵",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled("Create", Style::default().fg(MUTED)),
-            Span::raw("  "),
-            Span::styled("type summary…", Style::default().fg(MUTED)),
-        ])
     } else {
-        let pairs = [
-            ("^C", "Quit"),
-            ("↵", "View"),
-            ("/", "Search"),
-            ("o", "PR"),
-            ("t", "Ticket"),
-            ("p", "Pick up"),
-            ("f", "Finish"),
-            ("n", "New"),
-            ("a", "Label"),
-            ("r", "Refresh"),
-        ];
+        let pairs: &[(&str, &str)] = if app.inline_new_active() {
+            &[("Esc", "Cancel"), ("↵", "Create")]
+        } else {
+            &[
+                ("^C", "Quit"),
+                ("↵", "View"),
+                ("/", "Search"),
+                ("o", "PR"),
+                ("t", "Ticket"),
+                ("p", "Pick up"),
+                ("f", "Finish"),
+                ("n", "New"),
+                ("a", "Label"),
+                ("r", "Refresh"),
+            ]
+        };
 
-        Line::from(
-            pairs
-                .into_iter()
-                .enumerate()
-                .flat_map(|(index, (key, label))| {
-                    let mut spans = vec![
-                        Span::styled(
-                            key,
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(" "),
-                        Span::styled(label, Style::default().fg(MUTED)),
-                    ];
+        let mut spans: Vec<Span> = pairs
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (key, label))| {
+                let mut s = vec![
+                    Span::styled(
+                        *key,
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(*label, Style::default().fg(MUTED)),
+                ];
+                if index < pairs.len() - 1 {
+                    s.push(Span::raw("  "));
+                }
+                s
+            })
+            .collect();
 
-                    if index < 9 {
-                        spans.push(Span::raw("  "));
-                    }
+        if app.inline_new_active() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled("type summary…", Style::default().fg(MUTED)));
+        }
 
-                    spans
-                })
-                .collect::<Vec<_>>(),
-        )
+        if app.loading {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!(
+                    "{} Loading…",
+                    SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()]
+                ),
+                Style::default().fg(MUTED),
+            ));
+        } else if let Some(last_updated) = app.last_updated {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!(
+                    "updated {} ago",
+                    crate::app::format_duration(last_updated.elapsed().as_secs())
+                ),
+                Style::default().fg(MUTED),
+            ));
+        }
+
+        Line::from(spans)
     };
 
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(PANEL)), area);
@@ -770,6 +894,26 @@ fn status_color(status: &str) -> Style {
         return Style::default().fg(MUTED);
     }
 
+    Style::default().fg(TEXT)
+}
+
+fn priority_color(priority: &str) -> Style {
+    let priority = priority.to_lowercase();
+    if priority.contains("highest") || priority.contains("critical") {
+        return Style::default().fg(ERROR).add_modifier(Modifier::BOLD);
+    }
+    if priority.contains("high") {
+        return Style::default().fg(ERROR);
+    }
+    if priority.contains("medium") {
+        return Style::default().fg(WARNING);
+    }
+    if priority.contains("low") {
+        return Style::default().fg(MUTED);
+    }
+    if priority.contains("lowest") {
+        return Style::default().fg(MUTED);
+    }
     Style::default().fg(TEXT)
 }
 
