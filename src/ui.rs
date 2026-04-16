@@ -4,6 +4,7 @@ use chrono::DateTime;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
+    symbols,
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table,
@@ -184,11 +185,11 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled(status_name, status_style),
     ]));
 
-    let assignee = issue
+    let (assignee, assignee_color) = issue
         .assignee()
-        .map(|user| user.display_name)
-        .unwrap_or_else(|| "Unassigned".to_string());
-    jira_lines.push(labeled_text_line("Assignee", assignee, Theme::Text));
+        .map(|user| (user.display_name, Theme::Text))
+        .unwrap_or_else(|| ("Unassigned".to_string(), Theme::Muted));
+    jira_lines.push(labeled_text_line("Assignee", assignee, assignee_color));
 
     if let Some(author) = issue_author(issue) {
         jira_lines.push(labeled_text_line("Author", author, Theme::Text));
@@ -202,10 +203,18 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
         ));
     }
 
-    if let Some(created) = issue_created_at(issue) {
+    if let Some(created) = issue_field_string(issue, "created") {
         jira_lines.push(labeled_text_line(
             "Created",
-            format_timestamp(&created),
+            humanize_timestamp(&created),
+            Theme::Text,
+        ));
+    }
+
+    if let Some(updated) = issue_field_string(issue, "updated") {
+        jira_lines.push(labeled_text_line(
+            "Updated",
+            humanize_timestamp(&updated),
             Theme::Text,
         ));
     }
@@ -367,6 +376,13 @@ fn render_sidebar_section<'a>(
         return;
     }
 
+    let top_only_border = symbols::border::Set {
+        horizontal_top: symbols::line::NORMAL.horizontal,
+        top_left: symbols::line::NORMAL.horizontal,
+        top_right: symbols::line::NORMAL.horizontal,
+        ..symbols::border::PLAIN
+    };
+
     frame.render_widget(
         Paragraph::new(lines)
             .style(Style::default().bg(Theme::SidebarBg).fg(Theme::Muted))
@@ -374,12 +390,13 @@ fn render_sidebar_section<'a>(
             .block(
                 Block::default()
                     .borders(Borders::TOP)
+                    .border_set(top_only_border)
                     .title(Span::styled(
                         format!(" {title} "),
                         Style::default().fg(border_color),
                     ))
                     .border_style(Style::default().fg(border_color))
-                    .padding(Padding::new(1, 1, 0, 0))
+                    .padding(Padding::new(1, 2, 0, 0))
                     .style(Style::default().bg(Theme::SidebarBg)),
             ),
         area,
@@ -467,10 +484,8 @@ fn labeled_text_line(label: &str, value: String, color: ratatui::style::Color) -
     ])
 }
 
-fn issue_created_at(issue: &Issue) -> Option<String> {
-    issue
-        .field::<String>("created")
-        .and_then(|result| result.ok())
+fn issue_field_string(issue: &Issue, field: &str) -> Option<String> {
+    issue.field::<String>(field).and_then(|result| result.ok())
 }
 
 fn issue_author(issue: &Issue) -> Option<String> {
@@ -480,10 +495,34 @@ fn issue_author(issue: &Issue) -> Option<String> {
         .map(|user| user.display_name)
 }
 
-fn format_timestamp(timestamp: &str) -> String {
-    DateTime::parse_from_rfc3339(timestamp)
-        .map(|parsed| parsed.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|_| timestamp.to_string())
+fn humanize_timestamp(timestamp: &str) -> String {
+    let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
+        return timestamp.to_string();
+    };
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(parsed);
+
+    if duration.num_minutes() < 1 {
+        return "just now".to_string();
+    }
+    if duration.num_hours() < 1 {
+        let minutes = duration.num_minutes();
+        return format!("{minutes}m ago");
+    }
+    if duration.num_days() < 1 {
+        let hours = duration.num_hours();
+        return format!("{hours}h ago");
+    }
+    if duration.num_days() < 30 {
+        let days = duration.num_days();
+        return format!("{days}d ago");
+    }
+    if duration.num_days() < 365 {
+        let months = duration.num_days() / 30;
+        return format!("{months}mo ago");
+    }
+    let years = duration.num_days() / 365;
+    format!("{years}y ago")
 }
 
 fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {

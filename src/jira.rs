@@ -71,6 +71,7 @@ impl JiraClient {
                 "labels",
                 "parent",
                 "created",
+                "updated",
                 "creator",
             ])
             .build();
