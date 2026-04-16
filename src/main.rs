@@ -6,6 +6,7 @@ mod git;
 mod github;
 mod jira;
 mod repos;
+mod theme;
 mod ui;
 
 use std::{io, time::Duration};
