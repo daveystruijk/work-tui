@@ -212,10 +212,12 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                     // Render substeps for non-passed runs
                     if run.status != CheckStatus::Pass {
                         for step in &run.steps {
+                            let is_running = is_running_check_step(step);
                             let (step_icon, step_color) = match step.status {
                                 CheckStatus::Pass => ("✓", Theme::Success),
                                 CheckStatus::Fail => ("✗", Theme::Error),
-                                CheckStatus::Pending => (spinner, Theme::Warning),
+                                CheckStatus::Pending if is_running => (spinner, Theme::Warning),
+                                CheckStatus::Pending => ("●", Theme::Warning),
                             };
                             let step_timing =
                                 app.check_step_timing(pr, run, step).unwrap_or_default();
@@ -369,4 +371,8 @@ fn comment_counts(pr: &PrInfo) -> (usize, usize) {
     }
 
     (unresolved, resolved)
+}
+
+fn is_running_check_step(step: &crate::github::CheckStep) -> bool {
+    step.status == CheckStatus::Pending && step.started_at.is_some() && step.completed_at.is_none()
 }
