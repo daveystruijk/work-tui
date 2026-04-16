@@ -487,33 +487,13 @@ fn issue_author(issue: &Issue) -> Option<String> {
 }
 
 fn humanize_timestamp(timestamp: &str) -> String {
-    let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp) else {
+    let parsed = DateTime::parse_from_rfc3339(timestamp)
+        .or_else(|_| DateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%.3f%z"));
+    let Ok(parsed) = parsed else {
         return timestamp.to_string();
     };
-    let now = chrono::Utc::now();
-    let duration = now.signed_duration_since(parsed);
-
-    if duration.num_minutes() < 1 {
-        return "just now".to_string();
-    }
-    if duration.num_hours() < 1 {
-        let minutes = duration.num_minutes();
-        return format!("{minutes}m ago");
-    }
-    if duration.num_days() < 1 {
-        let hours = duration.num_hours();
-        return format!("{hours}h ago");
-    }
-    if duration.num_days() < 30 {
-        let days = duration.num_days();
-        return format!("{days}d ago");
-    }
-    if duration.num_days() < 365 {
-        let months = duration.num_days() / 30;
-        return format!("{months}mo ago");
-    }
-    let years = duration.num_days() / 365;
-    format!("{years}y ago")
+    let local = parsed.with_timezone(&chrono::Local);
+    local.format("%Y-%m-%d %H:%M").to_string()
 }
 
 fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
