@@ -61,6 +61,13 @@ pub struct ReviewThread {
     pub comments: Vec<ReviewComment>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergeableState {
+    Mergeable,
+    Conflicting,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct PrInfo {
     pub number: u64,
@@ -78,6 +85,7 @@ pub struct PrInfo {
     pub changed_files: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
+    pub mergeable: Option<MergeableState>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +97,7 @@ pub struct PrDetail {
     pub changed_files: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
+    pub mergeable: Option<MergeableState>,
 }
 
 impl PrInfo {
@@ -100,6 +109,7 @@ impl PrInfo {
         self.changed_files = detail.changed_files;
         self.additions = detail.additions;
         self.deletions = detail.deletions;
+        self.mergeable = detail.mergeable;
     }
 
     pub fn latest_failed_check(&self) -> Option<&CheckRun> {
@@ -209,6 +219,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                 changed_files: None,
                 additions: None,
                 deletions: None,
+                mergeable: None,
             }
         })
         .collect())
@@ -249,6 +260,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         url
                         headRefName
                         isDraft
+                        mergeable
                         changedFiles
                         additions
                         deletions
@@ -391,6 +403,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
             let changed_files = pr.get("changedFiles").and_then(|v| v.as_u64());
             let additions = pr.get("additions").and_then(|v| v.as_u64());
             let deletions = pr.get("deletions").and_then(|v| v.as_u64());
+            let mergeable = parse_mergeable_state(pr);
             let mut rollup_option = {
                 let rollups = extract_check_rollups(pr);
                 if rollups.is_empty() {
@@ -432,6 +445,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 changed_files,
                 additions,
                 deletions,
+                mergeable,
             });
         }
     }
@@ -448,6 +462,7 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
         r#"query {{
             repository(owner: "{owner}", name: "{name}") {{
                 pullRequest(number: {pr_number}) {{
+                    mergeable
                     changedFiles
                     additions
                     deletions
@@ -597,6 +612,7 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
     let changed_files = pr_node.get("changedFiles").and_then(|v| v.as_u64());
     let additions = pr_node.get("additions").and_then(|v| v.as_u64());
     let deletions = pr_node.get("deletions").and_then(|v| v.as_u64());
+    let mergeable = parse_mergeable_state(pr_node);
 
     Ok(PrDetail {
         checks,
@@ -606,6 +622,7 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
         changed_files,
         additions,
         deletions,
+        mergeable,
     })
 }
 
@@ -630,6 +647,17 @@ pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<Stri
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn parse_mergeable_state(pr_node: &Value) -> Option<MergeableState> {
+    pr_node
+        .get("mergeable")
+        .and_then(|v| v.as_str())
+        .map(|s| match s {
+            "MERGEABLE" => MergeableState::Mergeable,
+            "CONFLICTING" => MergeableState::Conflicting,
+            _ => MergeableState::Unknown,
+        })
 }
 
 fn extract_check_rollups(pr_node: &Value) -> Vec<GhCheckRollup> {

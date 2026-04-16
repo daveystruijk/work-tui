@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::github::{CheckStatus, PrInfo};
+use crate::github::{CheckStatus, MergeableState, PrInfo};
 use crate::theme::Theme;
 
 use super::{
@@ -123,6 +123,7 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
             let detail_loading = app.github_pr_detail_loading.contains(&issue.key);
             let detail_error = app.github_pr_detail_errors.get(&issue.key);
             let detail_loaded = app.github_pr_detail_loaded.contains(&issue.key);
+            let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
             let (pr_state_label, pr_state_color) = if pr.is_draft {
                 ("DRAFT", Theme::Muted)
             } else if pr.state.eq_ignore_ascii_case("open") {
@@ -145,15 +146,22 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled(pr_state_label, Style::default().fg(pr_state_color)),
             ]));
 
-            let comments_value = if detail_loading && !detail_loaded {
-                "Loading…".to_string()
+            let (comments_value, comments_color) = if detail_loading && !detail_loaded {
+                (spinner.to_string(), Theme::Warning)
             } else if detail_error.is_some() {
-                "Unavailable".to_string()
+                ("Unavailable".to_string(), Theme::Muted)
             } else {
                 let (unresolved, resolved) = comment_counts(pr);
-                format!("{unresolved} unresolved · {resolved} resolved")
+                (
+                    format!("{unresolved} unresolved · {resolved} resolved"),
+                    Theme::Text,
+                )
             };
-            github_lines.push(labeled_text_line("Comments", comments_value, Theme::Text));
+            github_lines.push(labeled_text_line(
+                "Comments",
+                comments_value,
+                comments_color,
+            ));
 
             if let (Some(files), Some(adds), Some(dels)) =
                 (pr.changed_files, pr.additions, pr.deletions)
@@ -169,6 +177,15 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                     Span::styled(" / ", Style::default().fg(Theme::Muted)),
                     Span::styled(format!("-{dels}"), Style::default().fg(Theme::Error)),
                 ]));
+            }
+
+            if let Some(mergeable) = &pr.mergeable {
+                let (label, color) = match mergeable {
+                    MergeableState::Conflicting => ("Conflicts".to_string(), Theme::Error),
+                    MergeableState::Mergeable => ("No conflicts".to_string(), Theme::Success),
+                    MergeableState::Unknown => (spinner.to_string(), Theme::Warning),
+                };
+                github_lines.push(labeled_text_line("Merge", label, color));
             }
 
             let ci_content_width = inner.width.saturating_sub(6) as usize;
@@ -194,7 +211,6 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
 
                     // Render substeps for non-passed runs
                     if run.status != CheckStatus::Pass {
-                        let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
                         for step in &run.steps {
                             let (step_icon, step_color) = match step.status {
                                 CheckStatus::Pass => ("✓", Theme::Success),
@@ -229,7 +245,7 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                         } else if !run.details_url.trim().is_empty() {
                             Some(format!("Open: {}", run.details_url))
                         } else if detail_loading {
-                            Some("Loading error…".to_string())
+                            Some(spinner.to_string())
                         } else if let Some(error) = detail_error {
                             Some(format!("Failed to load: {error}"))
                         } else {
