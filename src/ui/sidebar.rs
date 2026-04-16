@@ -337,7 +337,10 @@ fn render_sidebar_section<'a>(
                     .borders(Borders::TOP)
                     .border_set(top_only_border)
                     .title(Span::styled(
-                        format!(" {title} "),
+                        format!(
+                            "{}{} {title} ",
+                            top_only_border.horizontal_top, top_only_border.horizontal_top
+                        ),
                         Style::default().fg(border_color),
                     ))
                     .border_style(Style::default().fg(border_color))
