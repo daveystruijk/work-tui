@@ -41,8 +41,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
         .constraints([
             Constraint::Percentage(20),
             Constraint::Min(1),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
@@ -130,63 +129,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
     frame.render_stateful_widget(table, chunks[1], &mut state);
     app.list_scroll_offset = state.offset();
 
-    if app.input_mode == crate::app::InputMode::Searching {
-        let filter_display = if app.search_filter.is_empty() {
-            "Type to filter issues...".to_string()
-        } else {
-            app.search_filter.clone()
-        };
-        let filter_style = if app.search_filter.is_empty() {
-            Style::default().fg(MUTED)
-        } else {
-            Style::default().fg(TEXT)
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("/ ", Style::default().fg(ACCENT)),
-                Span::styled(filter_display, filter_style),
-                Span::styled(
-                    "▏",
-                    Style::default()
-                        .fg(ACCENT)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]))
-            .block(
-                Block::bordered()
-                    .style(Style::default().bg(PANEL))
-                    .border_style(Style::default().fg(ACCENT)),
-            ),
-            chunks[2],
-        );
-    } else if !app.search_filter.is_empty() {
-        let count = app.display_rows.len();
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("/ ", Style::default().fg(ACCENT)),
-                Span::styled(&app.search_filter, Style::default().fg(TEXT)),
-                Span::styled(
-                    format!("  ({count} results)  Press / to edit, Esc to clear"),
-                    Style::default().fg(MUTED),
-                ),
-            ]))
-            .block(
-                Block::bordered()
-                    .style(Style::default().bg(PANEL))
-                    .border_style(Style::default().fg(ACCENT)),
-            ),
-            chunks[2],
-        );
-    } else {
-        let help_text = if app.inline_new_active() {
-            "Esc:Cancel  Enter:Create  type summary…"
-        } else {
-            "Ctrl+C:Quit  Enter:View  /:Search  o:PR  t:Ticket  p:Pick up  f:Finish  n:New  a:Add label  r:Refresh"
-        };
-        frame.render_widget(help_bar(help_text), chunks[2]);
-    }
-
-    render_status_bar(app, frame, chunks[3]);
+    render_command_bar(app, frame, chunks[2]);
 
     if app.label_picker_active() {
         render_label_picker_modal(app, frame);
@@ -549,8 +492,7 @@ fn render_new(app: &App, frame: &mut Frame) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
@@ -636,8 +578,6 @@ fn render_new(app: &App, frame: &mut Frame) {
         help_bar("Esc:Cancel  Tab:Next field  Ctrl+S:Submit"),
         chunks[2],
     );
-
-    render_status_bar(app, frame, chunks[3]);
 }
 
 fn render_form_field(frame: &mut Frame, area: Rect, label: &str, value: &str, active: bool) {
@@ -673,17 +613,69 @@ fn render_form_field(frame: &mut Frame, area: Rect, label: &str, value: &str, ac
     );
 }
 
-fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
-    if app.status_message.is_empty() {
-        return;
-    }
+fn help_bar(text: &str) -> Paragraph<'_> {
+    let spans = text
+        .split("  ")
+        .flat_map(|entry| match entry.split_once(':') {
+            Some((key, label)) => vec![
+                Span::styled(
+                    key.to_string(),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(label.to_string(), Style::default().fg(MUTED)),
+                Span::raw("  "),
+            ],
+            None => vec![
+                Span::styled(entry.to_string(), Style::default().fg(MUTED)),
+                Span::raw("  "),
+            ],
+        })
+        .collect::<Vec<_>>();
 
-    let is_loading = app.loading || app.github_loading || !app.running_tasks.is_empty();
-    // Progress messages (from actions) start with '[' — treat them as loading
-    let is_progress = app.status_message.starts_with('[');
-    let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
-    let (icon, color) =
-        if app.status_message.starts_with("Failed") || app.status_message.starts_with("Error") {
+    Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL))
+}
+
+fn render_command_bar(app: &App, frame: &mut Frame, area: Rect) {
+    let line = if app.input_mode == crate::app::InputMode::Searching {
+        let filter_display = if app.search_filter.is_empty() {
+            "Type to filter...".to_string()
+        } else {
+            app.search_filter.clone()
+        };
+        let filter_style = if app.search_filter.is_empty() {
+            Style::default().fg(MUTED)
+        } else {
+            Style::default().fg(TEXT)
+        };
+
+        Line::from(vec![
+            Span::styled("/ ", Style::default().fg(ACCENT)),
+            Span::styled(filter_display, filter_style),
+            Span::styled(
+                "▏",
+                Style::default()
+                    .fg(ACCENT)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+        ])
+    } else if !app.search_filter.is_empty() {
+        let count = app.display_rows.len();
+        Line::from(vec![
+            Span::styled("/ ", Style::default().fg(TEXT)),
+            Span::styled(&app.search_filter, Style::default().fg(TEXT)),
+            Span::styled(
+                format!("  ({count} results)  Press / to edit, Esc to clear"),
+                Style::default().fg(MUTED),
+            ),
+        ])
+    } else if !app.status_message.is_empty() {
+        let is_loading = app.loading || app.github_loading || !app.running_tasks.is_empty();
+        let is_progress = app.status_message.starts_with('[');
+        let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+        let (icon, color) = if app.status_message.starts_with("Failed")
+            || app.status_message.starts_with("Error")
+        {
             ("✖", ERROR)
         } else if is_loading || is_progress {
             (spinner, WARNING)
@@ -691,54 +683,67 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
             ("✔", SUCCESS)
         };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" {} ", icon),
-                Style::default()
-                    .fg(PANEL)
-                    .bg(color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
+        Line::from(vec![
+            Span::styled(format!("{icon} "), Style::default().fg(color)),
             Span::styled(app.status_message.as_str(), Style::default().fg(TEXT)),
-        ]))
-        .block(
-            Block::bordered()
-                .style(Style::default().bg(PANEL))
-                .border_style(Style::default().fg(color)),
-        )
-        .style(Style::default().bg(PANEL)),
-        area,
-    );
-}
+        ])
+    } else if app.inline_new_active() {
+        Line::from(vec![
+            Span::styled(
+                "Esc",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled("Cancel", Style::default().fg(MUTED)),
+            Span::raw("  "),
+            Span::styled(
+                "↵",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled("Create", Style::default().fg(MUTED)),
+            Span::raw("  "),
+            Span::styled("type summary…", Style::default().fg(MUTED)),
+        ])
+    } else {
+        let pairs = [
+            ("^C", "Quit"),
+            ("↵", "View"),
+            ("/", "Search"),
+            ("o", "PR"),
+            ("t", "Ticket"),
+            ("p", "Pick up"),
+            ("f", "Finish"),
+            ("n", "New"),
+            ("a", "Label"),
+            ("r", "Refresh"),
+        ];
 
-fn help_bar(text: &str) -> Paragraph<'_> {
-    let spans = text
-        .split("  ")
-        .flat_map(|entry| match entry.split_once(':') {
-            Some((key, label)) => vec![
-                Span::styled(
-                    format!(" {} ", key),
-                    Style::default()
-                        .fg(PANEL)
-                        .bg(ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(format!("{}   ", label), Style::default().fg(MUTED)),
-            ],
-            None => vec![Span::styled(entry.to_string(), Style::default().fg(MUTED))],
-        })
-        .collect::<Vec<_>>();
+        Line::from(
+            pairs
+                .into_iter()
+                .enumerate()
+                .flat_map(|(index, (key, label))| {
+                    let mut spans = vec![
+                        Span::styled(
+                            key,
+                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(label, Style::default().fg(MUTED)),
+                    ];
 
-    Paragraph::new(Line::from(spans))
-        .block(
-            Block::bordered()
-                .style(Style::default().bg(PANEL))
-                .border_style(Style::default().fg(SURFACE_ALT)),
+                    if index < 9 {
+                        spans.push(Span::raw("  "));
+                    }
+
+                    spans
+                })
+                .collect::<Vec<_>>(),
         )
-        .style(Style::default().bg(PANEL))
+    };
+
+    frame.render_widget(Paragraph::new(line).style(Style::default().bg(PANEL)), area);
 }
 
 fn status_color(status: &str) -> Style {
