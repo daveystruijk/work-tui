@@ -239,12 +239,14 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
             let detail_loading = app.github_pr_detail_loading.contains(&issue.key);
             let detail_error = app.github_pr_detail_errors.get(&issue.key);
             let detail_loaded = app.github_pr_detail_loaded.contains(&issue.key);
-            let pr_state_color = if pr.state.eq_ignore_ascii_case("open") {
-                Theme::Success
+            let (pr_state_label, pr_state_color) = if pr.is_draft {
+                ("DRAFT", Theme::Muted)
+            } else if pr.state.eq_ignore_ascii_case("open") {
+                ("OPEN", Theme::Success)
             } else if pr.state.eq_ignore_ascii_case("merged") {
-                Theme::Accent
+                ("MERGED", Theme::Accent)
             } else {
-                Theme::Muted
+                (pr.state.as_str(), Theme::Muted)
             };
 
             github_lines.push(Line::from(vec![
@@ -256,7 +258,7 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(&pr.state, Style::default().fg(pr_state_color)),
+                Span::styled(pr_state_label, Style::default().fg(pr_state_color)),
             ]));
 
             let comments_value = if detail_loading && !detail_loaded {
@@ -289,6 +291,34 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                         ));
                     }
                     ci_lines.push(Line::from(spans));
+
+                    // Render substeps for non-passed runs
+                    if run.status != CheckStatus::Pass {
+                        let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+                        for step in &run.steps {
+                            let (step_icon, step_color) = match step.status {
+                                CheckStatus::Pass => ("✓", Theme::Success),
+                                CheckStatus::Fail => ("✗", Theme::Error),
+                                CheckStatus::Pending => (spinner, Theme::Warning),
+                            };
+                            let step_timing =
+                                app.check_step_timing(pr, run, step).unwrap_or_default();
+                            let mut step_spans = vec![
+                                Span::styled(
+                                    format!("   {step_icon} "),
+                                    Style::default().fg(step_color),
+                                ),
+                                Span::styled(&step.name, Style::default().fg(Theme::Muted)),
+                            ];
+                            if !step_timing.is_empty() {
+                                step_spans.push(Span::styled(
+                                    format!("  {step_timing}"),
+                                    Style::default().fg(Theme::Muted),
+                                ));
+                            }
+                            ci_lines.push(Line::from(step_spans));
+                        }
+                    }
 
                     // Inline error output below failed steps
                     if run.status == CheckStatus::Fail {
@@ -703,9 +733,14 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'stat
     ]);
 
     if let Some(pr) = app.github_prs.get(&issue.key) {
+        let pr_color = if pr.is_draft {
+            Theme::Muted
+        } else {
+            Theme::Info
+        };
         cells.insert(
             "PR",
-            Line::styled(format!("#{}", pr.number), Style::default().fg(Theme::Info)),
+            Line::styled(format!("#{}", pr.number), Style::default().fg(pr_color)),
         );
 
         let mut ci_spans = Vec::new();

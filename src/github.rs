@@ -24,6 +24,16 @@ pub struct CheckRun {
     pub details_url: String,
     pub summary: String,
     pub text: String,
+    pub steps: Vec<CheckStep>,
+}
+
+/// A single step within a CI check run.
+#[derive(Debug, Clone)]
+pub struct CheckStep {
+    pub name: String,
+    pub status: CheckStatus,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +66,7 @@ pub struct PrInfo {
     pub number: u64,
     pub title: String,
     pub state: String,
+    pub is_draft: bool,
     pub checks: CheckStatus,
     pub check_runs: Vec<CheckRun>,
     pub url: String,
@@ -109,6 +120,8 @@ struct GhPrWithBranch {
     #[serde(default)]
     title: String,
     state: String,
+    #[serde(rename = "isDraft", default)]
+    is_draft: bool,
     url: String,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
@@ -128,7 +141,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
             "--state",
             "open",
             "--json",
-            "number,title,state,url,headRefName,statusCheckRollup",
+            "number,title,state,url,headRefName,isDraft,statusCheckRollup",
             "--limit",
             "100",
         ])
@@ -169,12 +182,14 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                     details_url: String::new(),
                     summary: String::new(),
                     text: String::new(),
+                    steps: Vec::new(),
                 })
                 .collect();
             PrInfo {
                 number: pr.number,
                 title: pr.title,
                 state: pr.state,
+                is_draft: pr.is_draft,
                 checks,
                 check_runs,
                 url: pr.url,
@@ -221,6 +236,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         state
                         url
                         headRefName
+                        isDraft
                         statusCheckRollup: commits(last: 1) {{
                             nodes {{
                                 commit {{
@@ -353,6 +369,10 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            let is_draft = pr
+                .get("isDraft")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut rollup_option = {
                 let rollups = extract_check_rollups(pr);
                 if rollups.is_empty() {
@@ -375,6 +395,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                     details_url: String::new(),
                     summary: String::new(),
                     text: String::new(),
+                    steps: Vec::new(),
                 })
                 .collect();
 
@@ -382,6 +403,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 number,
                 title,
                 state,
+                is_draft,
                 checks,
                 check_runs,
                 url,
@@ -451,6 +473,15 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                                                 detailsUrl
                                                 summary
                                                 text
+                                                steps(first: 50) {{
+                                                    nodes {{
+                                                        name
+                                                        status
+                                                        conclusion
+                                                        startedAt
+                                                        completedAt
+                                                    }}
+                                                }}
                                             }}
                                         }}
                                     }}
@@ -512,16 +543,30 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
     let check_runs = rollup_option
         .take()
         .unwrap_or_default()
-        .iter()
+        .into_iter()
         .filter(|check| !check.name.is_empty())
-        .map(|check| CheckRun {
-            name: check.name.clone(),
-            status: check_run_status(check),
-            started_at: check.started_at.clone(),
-            completed_at: check.completed_at.clone(),
-            details_url: check.details_url.clone(),
-            summary: check.summary.clone(),
-            text: check.text.clone(),
+        .map(|check| {
+            let status = check_run_status(&check);
+            let steps = check
+                .steps
+                .into_iter()
+                .map(|step| CheckStep {
+                    name: step.name,
+                    status: check_step_status(&step.status, step.conclusion.as_deref()),
+                    started_at: step.started_at,
+                    completed_at: step.completed_at,
+                })
+                .collect();
+            CheckRun {
+                name: check.name,
+                status,
+                started_at: check.started_at,
+                completed_at: check.completed_at,
+                details_url: check.details_url,
+                summary: check.summary,
+                text: check.text,
+                steps,
+            }
         })
         .collect();
 
@@ -625,6 +670,11 @@ fn extract_check_rollups(pr_node: &Value) -> Vec<GhCheckRollup> {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
+            steps: context
+                .get("steps")
+                .and_then(|v| v.get("nodes"))
+                .and_then(|v| serde_json::from_value::<Vec<GhCheckStep>>(v.clone()).ok())
+                .unwrap_or_default(),
         });
     }
 
@@ -751,6 +801,32 @@ fn aggregate_check_status(rollup: &Option<Vec<GhCheckRollup>>) -> CheckStatus {
     CheckStatus::Pass
 }
 
+fn check_step_status(status: &str, conclusion: Option<&str>) -> CheckStatus {
+    let is_fail = conclusion
+        .map(|s| s.eq_ignore_ascii_case("failure") || s.eq_ignore_ascii_case("cancelled"))
+        .unwrap_or(false);
+    if is_fail {
+        return CheckStatus::Fail;
+    }
+    if !status.eq_ignore_ascii_case("completed") {
+        return CheckStatus::Pending;
+    }
+    CheckStatus::Pass
+}
+
+#[derive(Deserialize)]
+struct GhCheckStep {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: String,
+    conclusion: Option<String>,
+    #[serde(rename = "startedAt")]
+    started_at: Option<String>,
+    #[serde(rename = "completedAt")]
+    completed_at: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct GhCheckRollup {
     #[serde(default)]
@@ -768,6 +844,8 @@ struct GhCheckRollup {
     summary: String,
     #[serde(default)]
     text: String,
+    #[serde(default)]
+    steps: Vec<GhCheckStep>,
 }
 
 fn check_run_status(c: &GhCheckRollup) -> CheckStatus {

@@ -9,7 +9,7 @@ use crate::{
     actions::{self, ActionMessage},
     cache::{self, Cache},
     events::{Event, EventLevel, EventSource},
-    github::{CheckRun, CheckStatus, GithubStatus, PrInfo},
+    github::{CheckRun, CheckStep, CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
     repos::{self, RepoEntry},
 };
@@ -1421,6 +1421,46 @@ impl App {
                     format!(" (~{})", format_duration(remaining))
                 });
                 Some(format!("{}{}", format_duration(elapsed), eta.unwrap_or_default()))
+            }
+        }
+    }
+
+    /// Compute a timing string for a single check step.
+    pub fn check_step_timing(
+        &self,
+        pr: &PrInfo,
+        run: &CheckRun,
+        step: &CheckStep,
+    ) -> Option<String> {
+        match step.status {
+            CheckStatus::Pass | CheckStatus::Fail => {
+                step.completed_at.as_deref().map(|completed| {
+                    let elapsed = parse_duration_secs(
+                        step.started_at.as_deref().unwrap_or(completed),
+                        completed,
+                    );
+                    match elapsed {
+                        Some(secs) => format_duration(secs),
+                        None => "done".to_string(),
+                    }
+                })
+            }
+            CheckStatus::Pending => {
+                let elapsed = step
+                    .started_at
+                    .as_deref()
+                    .and_then(elapsed_since_iso)?;
+                let cache_key =
+                    format!("{}/{}/{}", pr.repo_slug, run.name, step.name);
+                let eta = self.check_durations.get(&cache_key).map(|&historical| {
+                    let remaining = historical.saturating_sub(elapsed);
+                    format!(" (~{})", format_duration(remaining))
+                });
+                Some(format!(
+                    "{}{}",
+                    format_duration(elapsed),
+                    eta.unwrap_or_default()
+                ))
             }
         }
     }
