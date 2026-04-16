@@ -233,18 +233,6 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
 
     let mut github_lines = Vec::new();
     let mut ci_lines = Vec::new();
-    let error_panel = app.selected_issue().and_then(|selected_issue| {
-        app.github_prs.get(&selected_issue.key).and_then(|pr| {
-            ci_error_panel(
-                pr,
-                app.github_pr_detail_loading.contains(&selected_issue.key),
-                app.github_pr_detail_errors
-                    .get(&selected_issue.key)
-                    .map(String::as_str),
-                inner.width.saturating_sub(6),
-            )
-        })
-    });
 
     match app.github_prs.get(&issue.key) {
         Some(pr) => {
@@ -271,17 +259,6 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled(&pr.state, Style::default().fg(pr_state_color)),
             ]));
 
-            if !pr.title.is_empty() {
-                push_wrapped_block(
-                    &mut github_lines,
-                    &pr.title,
-                    inner.width.saturating_sub(6) as usize,
-                    2,
-                    Theme::Text,
-                    "",
-                );
-            }
-
             let comments_value = if detail_loading && !detail_loaded {
                 "Loading…".to_string()
             } else if detail_error.is_some() {
@@ -292,6 +269,7 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
             };
             github_lines.push(labeled_text_line("Comments", comments_value, Theme::Text));
 
+            let ci_content_width = inner.width.saturating_sub(6) as usize;
             if !pr.check_runs.is_empty() {
                 for run in &pr.check_runs {
                     let (icon, color) = match run.status {
@@ -299,18 +277,47 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                         CheckStatus::Fail => ("✗", Theme::Error),
                         CheckStatus::Pending => ("●", Theme::Warning),
                     };
-                    ci_lines.push(Line::from(vec![
+                    let timing = app.check_run_timing(pr, run).unwrap_or_default();
+                    let mut spans = vec![
                         Span::styled(format!(" {icon} "), Style::default().fg(color)),
                         Span::styled(&run.name, Style::default().fg(Theme::Text)),
-                    ]));
-                }
-
-                if pr.checks == CheckStatus::Pending {
-                    if let Some(eta) = app.pr_eta(pr) {
-                        ci_lines.push(Line::from(Span::styled(
-                            format!(" ETA: {eta}"),
+                    ];
+                    if !timing.is_empty() {
+                        spans.push(Span::styled(
+                            format!("  {timing}"),
                             Style::default().fg(Theme::Muted),
-                        )));
+                        ));
+                    }
+                    ci_lines.push(Line::from(spans));
+
+                    // Inline error output below failed steps
+                    if run.status == CheckStatus::Fail {
+                        let error_message = if !run.text.trim().is_empty() {
+                            Some(run.text.trim().to_string())
+                        } else if !run.summary.trim().is_empty() {
+                            Some(run.summary.trim().to_string())
+                        } else if !run.details_url.trim().is_empty() {
+                            Some(format!("Open: {}", run.details_url))
+                        } else if detail_loading {
+                            Some("Loading error…".to_string())
+                        } else if let Some(error) = detail_error {
+                            Some(format!("Failed to load: {error}"))
+                        } else {
+                            None
+                        };
+                        if let Some(message) = error_message {
+                            for line in wrap_text(&message, ci_content_width.saturating_sub(3), 6) {
+                                ci_lines.push(Line::from(vec![
+                                    Span::styled("   ", Style::default()),
+                                    Span::styled(
+                                        format!(" {line} "),
+                                        Style::default()
+                                            .fg(Theme::Text)
+                                            .bg(ratatui::style::Color::Black),
+                                    ),
+                                ]));
+                            }
+                        }
                     }
                 }
             } else {
@@ -339,10 +346,6 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
     constraints.push(Constraint::Length(section_height(&github_lines)));
     constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
     constraints.push(Constraint::Length(section_height(&ci_lines)));
-    if let Some((_, error_lines)) = &error_panel {
-        constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
-        constraints.push(Constraint::Length(section_height(error_lines)));
-    }
     constraints.push(Constraint::Min(0));
 
     let chunks = Layout::default()
@@ -359,10 +362,6 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
     render_sidebar_section(frame, chunks[2], "Jira", jira_lines, Theme::SurfaceAlt);
     render_sidebar_section(frame, chunks[4], "GitHub", github_lines, Theme::SurfaceAlt);
     render_sidebar_section(frame, chunks[6], "CI", ci_lines, Theme::SurfaceAlt);
-
-    if let Some((title, error_lines)) = error_panel {
-        render_sidebar_section(frame, chunks[8], &title, error_lines, Theme::Error);
-    }
 }
 
 fn render_sidebar_section<'a>(
@@ -401,44 +400,6 @@ fn render_sidebar_section<'a>(
             ),
         area,
     );
-}
-
-fn ci_error_panel(
-    pr: &PrInfo,
-    detail_loading: bool,
-    detail_error: Option<&str>,
-    width: u16,
-) -> Option<(String, Vec<Line<'static>>)> {
-    let failed_run = pr.latest_failed_check()?;
-    let message = if !failed_run.text.trim().is_empty() {
-        failed_run.text.trim().to_string()
-    } else if !failed_run.summary.trim().is_empty() {
-        failed_run.summary.trim().to_string()
-    } else if !failed_run.details_url.trim().is_empty() {
-        format!("Open details: {}", failed_run.details_url)
-    } else if detail_loading {
-        "Loading latest CI error…".to_string()
-    } else if let Some(error) = detail_error {
-        format!("Failed to load CI detail: {error}")
-    } else {
-        format!("{} failed without inline error output.", failed_run.name)
-    };
-
-    let mut lines = vec![Line::from(Span::styled(
-        failed_run.name.clone(),
-        Style::default()
-            .fg(Theme::Error)
-            .add_modifier(Modifier::BOLD),
-    ))];
-
-    for line in wrap_text(&message, width as usize, 6) {
-        lines.push(Line::from(Span::styled(
-            line,
-            Style::default().fg(Theme::Text),
-        )));
-    }
-
-    Some((failed_run.name.clone(), lines))
 }
 
 fn section_height(lines: &[Line<'_>]) -> u16 {

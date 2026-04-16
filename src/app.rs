@@ -9,7 +9,7 @@ use crate::{
     actions::{self, ActionMessage},
     cache::{self, Cache},
     events::{Event, EventLevel, EventSource},
-    github::{CheckStatus, GithubStatus, PrInfo},
+    github::{CheckRun, CheckStatus, GithubStatus, PrInfo},
     jira::{Issue, IssueType, JiraClient, JiraConfig},
     repos::{self, RepoEntry},
 };
@@ -308,6 +308,46 @@ impl App {
         actions::detect_active_branches::spawn(self.bg_tx.clone(), issue_data);
     }
 
+    /// Spawn repo linking for issues that have no repo label match.
+    ///
+    /// Searches GitHub for open PRs across the org and labels issues whose
+    /// PR branch matches an issue key and whose repo matches a local directory.
+    fn spawn_link_jira_repos(&self) {
+        let unlinked: Vec<_> = self
+            .issues
+            .iter()
+            .filter(|issue| self.repo_matches(issue).is_empty())
+            .map(|issue| (issue.key.clone(), issue.labels()))
+            .collect();
+
+        let repo_normalized_names: Vec<_> = self
+            .repo_entries
+            .iter()
+            .map(|entry| (entry.label.clone(), entry.normalized.clone()))
+            .collect();
+
+        let github_org = self
+            .repo_entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .github_slug
+                    .as_deref()
+                    .and_then(|slug| slug.split('/').next())
+                    .map(|org| org.to_string())
+            })
+            .next()
+            .unwrap_or_default();
+
+        actions::link_jira_repos::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            unlinked,
+            repo_normalized_names,
+            github_org,
+        );
+    }
+
     /// Spawn auto-labeling for issues with matched PRs but missing repo labels.
     fn spawn_auto_label(&self) {
         let to_label: Vec<_> = self
@@ -365,9 +405,10 @@ impl App {
                     };
                     self.loading = false;
                     self.last_updated = Some(std::time::Instant::now());
-                    // Chain: fetch branches, PRs (existing PR data stays visible until new data arrives)
+                    // Chain: fetch branches, PRs, and link unmatched issues via Jira dev panel
                     self.spawn_active_branches();
                     self.spawn_github_prs();
+                    self.spawn_link_jira_repos();
                 }
                 Err(err) => {
                     self.loading = false;
@@ -1349,6 +1390,39 @@ impl App {
             max_remaining = Some(max_remaining.map_or(remaining, |cur: u64| cur.max(remaining)));
         }
         max_remaining.map(|r| format!("~{}", format_duration(r)))
+    }
+
+    /// Compute a timing string for a single check run.
+    /// - Completed: returns humanized completion time (e.g. "2m ago")
+    /// - Pending: returns elapsed timer + optional ETA (e.g. "1m32s (~3m)")
+    /// - No timing data: returns None
+    pub fn check_run_timing(&self, pr: &PrInfo, run: &CheckRun) -> Option<String> {
+        match run.status {
+            CheckStatus::Pass | CheckStatus::Fail => {
+                run.completed_at.as_deref().map(|completed| {
+                    let elapsed = parse_duration_secs(
+                        run.started_at.as_deref().unwrap_or(completed),
+                        completed,
+                    );
+                    match elapsed {
+                        Some(secs) => format_duration(secs),
+                        None => "done".to_string(),
+                    }
+                })
+            }
+            CheckStatus::Pending => {
+                let elapsed = run
+                    .started_at
+                    .as_deref()
+                    .and_then(elapsed_since_iso)?;
+                let cache_key = format!("{}/{}", pr.repo_slug, run.name);
+                let eta = self.check_durations.get(&cache_key).map(|&historical| {
+                    let remaining = historical.saturating_sub(elapsed);
+                    format!(" (~{})", format_duration(remaining))
+                });
+                Some(format!("{}{}", format_duration(elapsed), eta.unwrap_or_default()))
+            }
+        }
     }
 
     /// Compose `status_message` from currently running and recently completed tasks.

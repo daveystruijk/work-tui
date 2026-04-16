@@ -15,6 +15,7 @@ pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
+pub mod link_jira_repos;
 pub mod finish;
 pub mod initialize;
 pub mod pick_up;
