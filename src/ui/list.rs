@@ -14,19 +14,36 @@ use crate::jira::Issue;
 use crate::theme::Theme;
 
 use super::{
-    centered_rect, help_bar, issue_type_icon, max_col_width, status_color, CellMap, COLUMNS,
-    SPINNER_FRAMES,
+    centered_rect, issue_type_icon, max_col_width, status_color, CellMap, COLUMNS, SPINNER_FRAMES,
 };
 
-pub fn render_list(app: &mut App, frame: &mut Frame) {
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use crate::fixtures::{render_to_string, selected_issue_app};
+    use crate::ui::render;
+
+    #[test]
+    fn snapshots_list_view() {
+        let mut app = selected_issue_app();
+        let rendered = render_to_string(120, 16, |frame| {
+            render(&mut app, frame);
+        });
+
+        assert_snapshot!("list_view", rendered);
+    }
+}
+
+pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(44)])
-        .split(frame.area());
+        .split(area);
 
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1)])
         .split(columns[0]);
 
     // Store visible list height for half-page scrolling
@@ -99,8 +116,6 @@ pub fn render_list(app: &mut App, frame: &mut Frame) {
         .block(Block::default().style(Style::default().bg(Theme::Panel)));
     frame.render_stateful_widget(table, main_chunks[0], &mut state);
     app.list_scroll_offset = state.offset();
-
-    super::command_bar::render_command_bar(app, frame, main_chunks[1]);
 
     if app.label_picker_active() {
         render_label_picker_modal(app, frame);
@@ -385,7 +400,7 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
     );
 }
 
-pub fn render_new(app: &App, frame: &mut Frame) {
+pub fn render_new(app: &App, frame: &mut Frame, area: ratatui::layout::Rect) {
     let Some(form) = &app.new_form else {
         frame.render_widget(Paragraph::new("No form"), frame.area());
         return;
@@ -393,12 +408,8 @@ pub fn render_new(app: &App, frame: &mut Frame) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .split(area);
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -482,11 +493,6 @@ pub fn render_new(app: &App, frame: &mut Frame) {
         "Description",
         &form.description,
         form.active_field == 2,
-    );
-
-    frame.render_widget(
-        help_bar("Esc:Cancel  Tab:Next field  Ctrl+S:Submit"),
-        chunks[2],
     );
 }
 

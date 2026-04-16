@@ -8,6 +8,8 @@ mod jira;
 mod repos;
 mod theme;
 mod ui;
+#[cfg(test)]
+mod fixtures;
 
 use std::{io, time::Duration};
 

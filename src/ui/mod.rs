@@ -1,12 +1,12 @@
-mod command_bar;
 mod list;
 mod sidebar;
+mod status_bar;
 
 use std::collections::HashMap;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     Frame,
 };
@@ -34,9 +34,19 @@ pub fn max_col_width(row_data: &[(CellMap, Style)], name: &str) -> u16 {
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
+    let footer_height = status_bar::footer_height(app);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
+        .split(frame.area());
+
     match app.screen {
-        Screen::List => list::render_list(app, frame),
-        Screen::New => list::render_new(app, frame),
+        Screen::List => list::render_list(app, frame, chunks[0]),
+        Screen::New => list::render_new(app, frame, chunks[0]),
+    }
+
+    if footer_height > 0 {
+        status_bar::render_status_bar(app, frame, chunks[1]);
     }
 }
 
@@ -240,29 +250,4 @@ pub fn issue_type_icon(issue_type: &str) -> &'static str {
     }
 
     "•"
-}
-
-pub fn help_bar(text: &str) -> ratatui::widgets::Paragraph<'_> {
-    let spans = text
-        .split("  ")
-        .flat_map(|entry| match entry.split_once(':') {
-            Some((key, label)) => vec![
-                Span::styled(
-                    key.to_string(),
-                    Style::default()
-                        .fg(Theme::Accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(label.to_string(), Style::default().fg(Theme::Muted)),
-                Span::raw("  "),
-            ],
-            None => vec![
-                Span::styled(entry.to_string(), Style::default().fg(Theme::Muted)),
-                Span::raw("  "),
-            ],
-        })
-        .collect::<Vec<_>>();
-
-    ratatui::widgets::Paragraph::new(Line::from(spans)).style(Style::default().bg(Theme::Panel))
 }

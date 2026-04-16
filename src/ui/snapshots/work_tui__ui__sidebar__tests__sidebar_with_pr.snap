@@ -1,0 +1,27 @@
+---
+source: src/ui/sidebar.rs
+expression: rendered
+---
+                                            
+ ◦ TEST-123 Snapshot the sidebar render     
+                                            
+ ── Jira ────────────────────────────────── 
+  Status    ● In Progress                   
+  Assignee  Casey Dev                       
+  Author    Riley Author                    
+  Reporter  Jordan QA                       
+                                            
+  Confirm sidebar, list, and command        
+  bar layouts.                              
+                                            
+ ── GitHub ──────────────────────────────── 
+  PR        #42 OPEN                        
+  Comments  ⠹                               
+  Changes   3 files  +72 / -14              
+  Merge     ⠹                               
+                                            
+ ── CI ──────────────────────────────────── 
+   ✓ lint  2m                               
+   ● build                                  
+     ✓ compile  1m                          
+     ● integration

@@ -1,0 +1,6 @@
+---
+source: src/ui/status_bar.rs
+assertion_line: 58
+expression: rendered
+---
+                             updated 1m30s ago

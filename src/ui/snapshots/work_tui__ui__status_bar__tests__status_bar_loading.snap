@@ -1,0 +1,6 @@
+---
+source: src/ui/status_bar.rs
+assertion_line: 47
+expression: rendered
+---
+⠼ Loading...

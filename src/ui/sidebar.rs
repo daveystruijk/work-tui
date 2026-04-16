@@ -16,6 +16,36 @@ use super::{
     push_wrapped_block, status_color, wrap_text, SIDEBAR_SECTION_MARGIN, SPINNER_FRAMES,
 };
 
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+    use ratatui::layout::Rect;
+
+    use crate::fixtures::{render_to_string, sidebar_app, test_app};
+
+    use super::*;
+
+    #[test]
+    fn snapshots_empty_sidebar() {
+        let app = test_app();
+        let rendered = render_to_string(44, 22, |frame| {
+            render_sidebar(&app, frame, Rect::new(0, 0, 44, 22));
+        });
+
+        assert_snapshot!("sidebar_empty", rendered);
+    }
+
+    #[test]
+    fn snapshots_sidebar_with_pr() {
+        let app = sidebar_app();
+        let rendered = render_to_string(44, 26, |frame| {
+            render_sidebar(&app, frame, Rect::new(0, 0, 44, 26));
+        });
+
+        assert_snapshot!("sidebar_with_pr", rendered);
+    }
+}
+
 pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
     let sidebar = Block::default()
         .padding(Padding::new(1, 1, 1, 0))

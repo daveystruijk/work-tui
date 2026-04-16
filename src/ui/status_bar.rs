@@ -6,13 +6,80 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, InputMode};
 use crate::theme::Theme;
 
 use super::SPINNER_FRAMES;
 
-pub fn render_command_bar(app: &App, frame: &mut Frame, area: Rect) {
-    let line = if app.input_mode == crate::app::InputMode::Searching {
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+    use ratatui::layout::Rect;
+
+    use crate::app::InputMode;
+
+    use super::*;
+
+    use crate::fixtures::{render_to_string, test_app};
+
+    #[test]
+    fn snapshots_search_mode_status_bar() {
+        let mut app = test_app();
+        app.input_mode = InputMode::Searching;
+        app.search_filter = "backend".to_string();
+        let rendered = render_to_string(48, 1, |frame| {
+            render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
+        });
+
+        assert_snapshot!("status_bar_searching", rendered);
+    }
+
+    #[test]
+    fn snapshots_loading_status_bar() {
+        let mut app = test_app();
+        app.status_message = "Loading...".to_string();
+        app.loading = true;
+        app.spinner_tick = 4;
+        let rendered = render_to_string(48, 1, |frame| {
+            render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
+        });
+
+        assert_snapshot!("status_bar_loading", rendered);
+    }
+
+    #[test]
+    fn snapshots_updated_timestamp_status_bar() {
+        let mut app = test_app();
+        app.last_updated = Some(std::time::Instant::now() - std::time::Duration::from_secs(90));
+        let rendered = render_to_string(48, 1, |frame| {
+            render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
+        });
+
+        assert_snapshot!("status_bar_updated", rendered);
+    }
+}
+
+pub fn footer_height(app: &App) -> u16 {
+    if has_content(app) {
+        1
+    } else {
+        0
+    }
+}
+
+fn has_content(app: &App) -> bool {
+    app.input_mode == InputMode::Searching
+        || !app.search_filter.is_empty()
+        || !app.status_message.is_empty()
+        || app.last_updated.is_some()
+}
+
+pub fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
+    if !has_content(app) {
+        return;
+    }
+
+    let left_text = if app.input_mode == InputMode::Searching {
         let filter_display = if app.search_filter.is_empty() {
             "Type to filter...".to_string()
         } else {
@@ -66,73 +133,7 @@ pub fn render_command_bar(app: &App, frame: &mut Frame, area: Rect) {
             ),
         ])
     } else {
-        let pairs: &[(&str, &str)] = if app.inline_new_active() {
-            &[("Esc", "Cancel"), ("↵", "Create")]
-        } else {
-            &[
-                ("^C", "Quit"),
-                ("↵", "View"),
-                ("/", "Search"),
-                ("o", "PR"),
-                ("t", "Ticket"),
-                ("p", "Pick up"),
-                ("f", "Finish"),
-                ("n", "New"),
-                ("a", "Label"),
-                ("r", "Refresh"),
-            ]
-        };
-
-        let mut spans: Vec<Span> = pairs
-            .iter()
-            .enumerate()
-            .flat_map(|(index, (key, label))| {
-                let mut s = vec![
-                    Span::styled(
-                        *key,
-                        Style::default()
-                            .fg(Theme::Accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(*label, Style::default().fg(Theme::Muted)),
-                ];
-                if index < pairs.len() - 1 {
-                    s.push(Span::raw("  "));
-                }
-                s
-            })
-            .collect();
-
-        if app.inline_new_active() {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                "type summary…",
-                Style::default().fg(Theme::Muted),
-            ));
-        }
-
-        if app.loading {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!(
-                    "{} Loading…",
-                    SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()]
-                ),
-                Style::default().fg(Theme::Muted),
-            ));
-        } else if let Some(last_updated) = app.last_updated {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!(
-                    "updated {} ago",
-                    crate::app::format_duration(last_updated.elapsed().as_secs())
-                ),
-                Style::default().fg(Theme::Muted),
-            ));
-        }
-
-        Line::from(spans)
+        Line::default()
     };
 
     let updated_text = app.last_updated.map(|last_updated| {
@@ -141,16 +142,17 @@ pub fn render_command_bar(app: &App, frame: &mut Frame, area: Rect) {
             crate::app::format_duration(last_updated.elapsed().as_secs())
         )
     });
-    let right_width = updated_text.as_ref().map_or(0, |t| t.len() as u16);
+    let right_width = updated_text.as_ref().map_or(0, |text| text.len() as u16);
     let bar_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(right_width)])
         .split(area);
 
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(Theme::Panel)),
+        Paragraph::new(left_text).style(Style::default().bg(Theme::Panel)),
         bar_layout[0],
     );
+
     if let Some(text) = updated_text {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(

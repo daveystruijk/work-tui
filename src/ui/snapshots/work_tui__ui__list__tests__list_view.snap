@@ -1,0 +1,21 @@
+---
+source: src/ui/list.rs
+assertion_line: 34
+expression: rendered
+---
+Key       Summary                                 Status         Assignee                                               
+TEST-123  ◦ Snapshot the sidebar render           ● In Progress  Casey Dev   ◦ TEST-123 Snapshot the sidebar render     
+                                                                                                                        
+                                                                             ── Jira ────────────────────────────────── 
+                                                                              Status    ● In Progress                   
+                                                                              Assignee  Casey Dev                       
+                                                                              Author    Riley Author                    
+                                                                              Reporter  Jordan QA                       
+                                                                                                                        
+                                                                              Confirm sidebar, list, and command        
+                                                                                                                        
+                                                                             ── GitHub ──────────────────────────────── 
+                                                                              No linked PR                              
+                                                                                                                        
+                                                                             ── CI ──────────────────────────────────── 
+                                                                              No CI results
