@@ -413,9 +413,17 @@ impl App {
             },
             ActionMessage::InlineCreated(result) => match result {
                 Ok(key) => {
-                    self.status_message = format!("Created {key}");
                     self.input_mode = InputMode::Normal;
-                    self.spawn_refresh();
+                    let found_index = self.display_rows.iter().position(|row| match row {
+                        DisplayRow::Issue { index, .. } => self.issues[*index].key == key,
+                        _ => false,
+                    });
+                    if let Some(index) = found_index {
+                        self.selected_index = index;
+                        self.status_message = format!("Created {key}");
+                    } else {
+                        self.status_message = format!("Created {key} (may take a moment to appear)");
+                    }
                 }
                 Err(err) => {
                     self.status_message = format!("Failed: {err}");
@@ -542,6 +550,7 @@ impl App {
         actions::create_inline_issue::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
+            self.jql.clone(),
             state.project_key,
             summary,
             state.parent_key,

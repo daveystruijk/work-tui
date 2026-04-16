@@ -8,8 +8,11 @@
 //! - [`ActionMessage::Progress`]
 //! - [`ActionMessage::InlineCreated`]
 
+use std::time::Duration;
+
 use color_eyre::eyre::eyre;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use super::ActionMessage;
 use crate::actions::Progress;
@@ -19,6 +22,7 @@ use crate::jira::JiraClient;
 pub fn spawn(
     tx: mpsc::UnboundedSender<ActionMessage>,
     client: JiraClient,
+    jql: String,
     project_key: String,
     summary: String,
     parent_key: Option<String>,
@@ -53,6 +57,39 @@ pub fn spawn(
         .await;
 
         let _ = tx.send(ActionMessage::TaskFinished("Creating issue"));
-        let _ = tx.send(ActionMessage::InlineCreated(result));
+
+        let Ok(created_key) = result else {
+            let _ = tx.send(ActionMessage::InlineCreated(result));
+            return;
+        };
+
+        let mut last_issues = None;
+        for attempt in 0..6 {
+            let issues_result = client.search(&jql).await;
+            if let Ok(issues) = issues_result {
+                let contains_created_key = issues.iter().any(|issue| issue.key == created_key);
+                last_issues = Some(issues);
+                if contains_created_key {
+                    let _ = tx.send(ActionMessage::Issues(Ok(last_issues.take().unwrap())));
+                    let _ = tx.send(ActionMessage::InlineCreated(Ok(created_key)));
+                    return;
+                }
+            }
+
+            if attempt < 5 {
+                let _ = tx.send(ActionMessage::Progress(Progress {
+                    action: "create_inline_issue",
+                    message: format!("Waiting for Jira to index {created_key}..."),
+                    current: attempt + 2,
+                    total: 7,
+                }));
+                sleep(Duration::from_millis(250)).await;
+            }
+        }
+
+        if let Some(issues) = last_issues {
+            let _ = tx.send(ActionMessage::Issues(Ok(issues)));
+        }
+        let _ = tx.send(ActionMessage::InlineCreated(Ok(created_key)));
     });
 }
