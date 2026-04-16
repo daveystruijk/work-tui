@@ -15,7 +15,7 @@ use color_eyre::Result;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -89,11 +89,36 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
         }
 
         let event = event::read()?;
-        if let Event::Key(key_event) = event {
-            if key_event.kind != KeyEventKind::Press {
-                continue;
+        match event {
+            Event::Key(key_event) => {
+                if key_event.kind != KeyEventKind::Press {
+                    continue;
+                }
+                handle_key_event(&mut app, key_event).await;
             }
-            handle_key_event(&mut app, key_event).await;
+            Event::Mouse(mouse_event) if app.screen == Screen::List => {
+                match mouse_event.kind {
+                    MouseEventKind::ScrollDown => {
+                        scroll_viewport(&mut app, 3);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        scroll_viewport(&mut app, -3);
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let clicked_row = mouse_event.row as usize;
+                        // Table starts at row 0 of main area; header is row 0, data starts at row 1
+                        // Account for the header row offset
+                        let data_row = clicked_row.saturating_sub(1);
+                        let target = app.list_scroll_offset + data_row;
+                        if target < app.display_rows.len() {
+                            app.selected_index = target;
+                            adjust_scroll_offset(&mut app);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 
@@ -469,4 +494,23 @@ fn move_selection_by(app: &mut App, delta: isize) {
     let new_index = (app.selected_index as isize + delta).clamp(0, last as isize) as usize;
     app.selected_index = new_index;
     adjust_scroll_offset(app);
+}
+
+fn scroll_viewport(app: &mut App, delta: isize) {
+    if app.display_rows.is_empty() {
+        return;
+    }
+    let height = app.list_area_height as usize;
+    let max_offset = app.display_rows.len().saturating_sub(height);
+    let new_offset =
+        (app.list_scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
+    app.list_scroll_offset = new_offset;
+
+    // Keep selection visible within the viewport
+    let last = app.display_rows.len() - 1;
+    if app.selected_index < new_offset {
+        app.selected_index = new_offset;
+    } else if app.selected_index >= new_offset + height {
+        app.selected_index = (new_offset + height - 1).min(last);
+    }
 }

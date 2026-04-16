@@ -24,6 +24,7 @@ const ACCENT_SOFT: Color = Color::Cyan;
 const SURFACE: Color = Color::Reset;
 const SURFACE_ALT: Color = Color::DarkGray;
 const PANEL: Color = Color::Reset;
+const SIDEBAR_BG: Color = Color::Rgb(42, 42, 55);
 const SUCCESS: Color = Color::Green;
 const WARNING: Color = Color::Yellow;
 const ERROR: Color = Color::Red;
@@ -48,7 +49,7 @@ fn render_list(app: &mut App, frame: &mut Frame) {
         .split(columns[0]);
 
     // Store visible list height for half-page scrolling
-    app.list_area_height = main_chunks[0].height.saturating_sub(4);
+    app.list_area_height = main_chunks[0].height.saturating_sub(1);
 
     render_sidebar(app, frame, columns[1]);
 
@@ -76,16 +77,16 @@ fn render_list(app: &mut App, frame: &mut Frame) {
         rows,
         [
             Constraint::Length(16),
+            Constraint::Min(10),
             Constraint::Length(8),
             Constraint::Length(14),
             Constraint::Length(14),
-            Constraint::Min(10),
             Constraint::Length(20),
             Constraint::Length(24),
         ],
     )
     .header(
-        Row::new(["Key", "PR", "CI", "Status", "Summary", "Assignee", "Repo"])
+        Row::new(["Key", "Summary", "PR", "CI", "Status", "Assignee", "Repo"])
             .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
             .bottom_margin(0),
     )
@@ -337,12 +338,12 @@ fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(PANEL))
+            .style(Style::default().bg(SIDEBAR_BG))
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .padding(Padding::new(1, 1, 1, 0))
-                    .style(Style::default().bg(PANEL)),
+                    .style(Style::default().bg(SIDEBAR_BG)),
             ),
         area,
     );
@@ -361,15 +362,15 @@ fn story_header_row(key: &str, summary: &str, _idx: usize, collapsed: bool) -> R
                 .fg(ACCENT_SOFT)
                 .add_modifier(Modifier::BOLD),
         )),
-        Cell::from(""), // PR
-        Cell::from(""), // CI
-        Cell::from(""), // Status
         Cell::from(Span::styled(
             format!("§ {}", first_line),
             Style::default()
                 .fg(ACCENT_SOFT)
                 .add_modifier(Modifier::BOLD),
         )),
+        Cell::from(""), // PR
+        Cell::from(""), // CI
+        Cell::from(""), // Status
         Cell::from(""), // Assignee
         Cell::from(""), // Repo
     ])
@@ -387,9 +388,6 @@ fn inline_new_row(state: Option<&InlineNewState>, _idx: usize, depth: u8) -> Row
             format!("{prefix}NEW"),
             Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
         )),
-        Cell::from(""), // PR
-        Cell::from(""), // CI
-        Cell::from(""), // Status
         Cell::from(Line::from(vec![
             Span::styled("◦ ", Style::default().fg(MUTED)),
             Span::styled(summary_text.to_string(), Style::default().fg(TEXT)),
@@ -400,6 +398,9 @@ fn inline_new_row(state: Option<&InlineNewState>, _idx: usize, depth: u8) -> Row
                     .add_modifier(Modifier::SLOW_BLINK),
             ),
         ])),
+        Cell::from(""), // PR
+        Cell::from(""), // CI
+        Cell::from(""), // Status
         Cell::from(""), // Assignee
         Cell::from(""), // Repo
     ])
@@ -466,6 +467,10 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> Row<'static> {
 
     Row::new(vec![
         key_cell,
+        Cell::from(Span::styled(
+            format!("{} {}", issue_type_icon(&issue_type), summary),
+            Style::default().fg(TEXT),
+        )),
         pr_cell,
         ci_cell,
         Cell::from(Line::from(vec![
@@ -473,10 +478,6 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> Row<'static> {
             Span::raw(" "),
             Span::styled(status_name, status_style),
         ])),
-        Cell::from(Span::styled(
-            format!("{} {}", issue_type_icon(&issue_type), summary),
-            Style::default().fg(TEXT),
-        )),
         Cell::from(Span::styled(assignee, Style::default().fg(MUTED))),
         Cell::from(Line::from(if is_active {
             vec![
