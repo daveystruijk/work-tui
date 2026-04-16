@@ -99,27 +99,33 @@ fn render_list(app: &mut App, frame: &mut Frame) {
             .add_modifier(Modifier::BOLD),
     )
     .block({
-        let updated_ago = app.last_updated.map(|t| {
-            let secs = t.elapsed().as_secs();
-            format!(" • updated {} ago", crate::app::format_duration(secs))
-        });
-        let title = if app.loading {
-            format!(
-                " Assigned issues {} Loading… ",
-                SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()]
-            )
-        } else if let Some(ago) = updated_ago {
-            format!(" Assigned issues{ago} ")
-        } else {
-            " Assigned issues ".to_string()
-        };
-        Block::bordered()
-            .title(Span::styled(
-                title,
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            ))
+        let mut block = Block::bordered()
             .style(Style::default().bg(PANEL))
-            .border_style(Style::default().fg(ACCENT))
+            .border_style(Style::default().fg(SURFACE_ALT));
+
+        if app.loading {
+            block = block.title_bottom(
+                Line::from(vec![
+                    Span::styled(
+                        SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()],
+                        Style::default().fg(WARNING),
+                    ),
+                    Span::styled(" Loading… ", Style::default().fg(MUTED)),
+                ])
+                .alignment(Alignment::Right),
+            );
+        } else if let Some(last_updated) = app.last_updated {
+            let secs = last_updated.elapsed().as_secs();
+            block = block.title_bottom(
+                Line::from(Span::styled(
+                    format!("updated {} ago", crate::app::format_duration(secs)),
+                    Style::default().fg(MUTED),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
+
+        block
     });
     frame.render_stateful_widget(table, chunks[1], &mut state);
     app.list_scroll_offset = state.offset();
