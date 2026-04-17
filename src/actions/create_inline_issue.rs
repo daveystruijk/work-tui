@@ -27,7 +27,7 @@ pub fn spawn(
     summary: String,
     parent_key: Option<String>,
 ) {
-    let _ = tx.send(ActionMessage::TaskStarted("Creating issue"));
+    let _ = tx.send(ActionMessage::TaskStarted("Creating issue".to_string()));
     let _ = tx.send(ActionMessage::Progress(Progress {
         action: "create_inline_issue",
         message: "Creating issue...".into(),
@@ -56,7 +56,7 @@ pub fn spawn(
         }
         .await;
 
-        let _ = tx.send(ActionMessage::TaskFinished("Creating issue"));
+        let _ = tx.send(ActionMessage::TaskFinished("Creating issue".to_string()));
 
         let Ok(created_key) = result else {
             let _ = tx.send(ActionMessage::InlineCreated(result));

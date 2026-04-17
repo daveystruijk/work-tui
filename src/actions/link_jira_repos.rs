@@ -40,12 +40,12 @@ pub fn spawn(
         return;
     }
 
-    let _ = tx.send(ActionMessage::TaskStarted("Linking repos"));
+    let _ = tx.send(ActionMessage::TaskStarted("Linking repos".to_string()));
     tokio::spawn(async move {
         let discovered = match search_org_prs(&github_org).await {
             Ok(prs) => prs,
             Err(_) => {
-                let _ = tx.send(ActionMessage::TaskFinished("Linking repos"));
+                let _ = tx.send(ActionMessage::TaskFinished("Linking repos".to_string()));
                 return;
             }
         };
@@ -82,7 +82,7 @@ pub fn spawn(
                 result.map(|_| ()),
             ));
         }
-        let _ = tx.send(ActionMessage::TaskFinished("Linking repos"));
+        let _ = tx.send(ActionMessage::TaskFinished("Linking repos".to_string()));
     });
 }
 

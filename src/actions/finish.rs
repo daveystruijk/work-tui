@@ -33,9 +33,9 @@ pub fn spawn(
     repo_path: PathBuf,
 ) {
     tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Finishing"));
+        let _ = tx.send(ActionMessage::TaskStarted("Finishing".to_string()));
         let result = run(&tx, &client, &issue_key, &issue_summary, &repo_path).await;
-        let _ = tx.send(ActionMessage::TaskFinished("Finishing"));
+        let _ = tx.send(ActionMessage::TaskFinished("Finishing".to_string()));
         let _ = tx.send(ActionMessage::Finished(result));
     });
 }

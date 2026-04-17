@@ -13,6 +13,7 @@ pub mod auto_label;
 pub mod branch_diff;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
+pub mod fetch_children;
 pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
 pub mod link_jira_repos;
@@ -94,10 +95,12 @@ pub enum ActionMessage {
     AutoLabeled(String, Result<()>),
     /// Label added to an issue (from [`add_label`]).
     LabelAdded(Result<(String, String)>),
+    /// Child issues loaded for a parent story (from [`fetch_children`]).
+    ChildrenLoaded(String, Result<Vec<Issue>>),
     /// A background task has started. The payload is the human-readable task name.
-    TaskStarted(&'static str),
+    TaskStarted(String),
     /// A background task has finished. The payload is the human-readable task name.
-    TaskFinished(&'static str),
+    TaskFinished(String),
     /// Generic progress update from any long-running action.
     ///
     /// Rendered in the status bar with step-by-step feedback.

@@ -16,7 +16,7 @@ use crate::git;
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_key: String, repo_path: PathBuf) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Opening diff"));
+        let _ = tx.send(ActionMessage::TaskStarted("Opening diff".to_string()));
         let result = async {
             // Fetch first so remote-only branches are visible
             git::fetch_origin(&repo_path).await?;
@@ -87,7 +87,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_key: String, repo_p
             Ok(branch)
         }
         .await;
-        let _ = tx.send(ActionMessage::TaskFinished("Opening diff"));
+        let _ = tx.send(ActionMessage::TaskFinished("Opening diff".to_string()));
         let _ = tx.send(ActionMessage::BranchDiffOpened(result));
     });
 }

@@ -34,7 +34,7 @@ pub fn spawn(
 ) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Picking up"));
+        let _ = tx.send(ActionMessage::TaskStarted("Picking up".to_string()));
         let result = async {
             // Step 1: Check working tree state
             let _ = tx.send(ActionMessage::Progress(Progress {
@@ -127,7 +127,7 @@ pub fn spawn(
             })
         }
         .await;
-        let _ = tx.send(ActionMessage::TaskFinished("Picking up"));
+        let _ = tx.send(ActionMessage::TaskFinished("Picking up".to_string()));
         let _ = tx.send(ActionMessage::PickedUp(result));
     });
 }

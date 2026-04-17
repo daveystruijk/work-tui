@@ -17,14 +17,14 @@ pub fn spawn(
     label: String,
     mut labels: Vec<String>,
 ) {
-    let _ = tx.send(ActionMessage::TaskStarted("Adding label"));
+    let _ = tx.send(ActionMessage::TaskStarted("Adding label".to_string()));
     tokio::spawn(async move {
         labels.push(label.clone());
         let result = client
             .update_labels(&issue_key, &labels)
             .await
             .map(|_| (issue_key, label));
-        let _ = tx.send(ActionMessage::TaskFinished("Adding label"));
+        let _ = tx.send(ActionMessage::TaskFinished("Adding label".to_string()));
         let _ = tx.send(ActionMessage::LabelAdded(result));
     });
 }

@@ -56,16 +56,30 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
         .iter()
         .enumerate()
         .map(|(row_idx, display_row)| match display_row {
-            DisplayRow::StoryHeader { key, summary } => {
+            DisplayRow::StoryHeader {
+                key,
+                summary,
+                depth,
+            } => {
                 let collapsed = app.collapsed_stories.contains(key);
-                story_header_row(key, summary, row_idx, collapsed)
+                story_header_row(key, summary, row_idx, collapsed, *depth)
             }
-            DisplayRow::Issue { index, depth } => {
-                issue_row(app, &app.issues[*index], row_idx, *depth)
+            DisplayRow::Issue {
+                index,
+                depth,
+                child_of,
+            } => {
+                let issue = match child_of {
+                    Some(parent_key) => &app.story_children[parent_key][*index],
+                    None => &app.issues[*index],
+                };
+                issue_row(app, issue, row_idx, *depth)
             }
             DisplayRow::InlineNew { depth } => {
                 inline_new_row(app.inline_new.as_ref(), row_idx, *depth)
             }
+            DisplayRow::Loading { depth } => loading_row(app.spinner_tick, row_idx, *depth),
+            DisplayRow::Empty { depth } => empty_row(row_idx, *depth),
         })
         .collect();
 
@@ -126,11 +140,13 @@ fn story_header_row(
     summary: &str,
     _idx: usize,
     collapsed: bool,
+    depth: u8,
 ) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted);
 
     let first_line = summary.lines().next().unwrap_or_default().to_string();
     let icon = if collapsed { "▶" } else { "▼" };
+    let indent = "  ".repeat(depth as usize);
     let header_style = Style::default()
         .fg(Theme::AccentSoft)
         .add_modifier(Modifier::BOLD);
@@ -138,7 +154,7 @@ fn story_header_row(
     let cells = HashMap::from([
         (
             "Key",
-            Line::styled(format!("{} {}", icon, key), header_style),
+            Line::styled(format!("{}{} {}", indent, icon, key), header_style),
         ),
         (
             "Summary",
@@ -156,7 +172,11 @@ fn inline_new_row(
     let row_style = Style::default().fg(Theme::Text);
 
     let summary_text = state.map(|s| s.summary.as_str()).unwrap_or("");
-    let prefix = if depth > 0 { "  ↳ " } else { "" };
+    let prefix = if depth > 0 {
+        format!("{}↳ ", "  ".repeat(depth as usize))
+    } else {
+        String::new()
+    };
 
     let cells = HashMap::from([
         (
@@ -185,6 +205,33 @@ fn inline_new_row(
     (cells, row_style)
 }
 
+fn loading_row(spinner_tick: usize, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
+    let row_style = Style::default().fg(Theme::Muted);
+    let indent = "  ".repeat(depth as usize);
+    let spinner = SPINNER_FRAMES[spinner_tick % SPINNER_FRAMES.len()];
+    let cells = HashMap::from([(
+        "Summary",
+        Line::styled(
+            format!("{indent}{spinner} Loading..."),
+            Style::default().fg(Theme::Muted),
+        ),
+    )]);
+    (cells, row_style)
+}
+
+fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
+    let row_style = Style::default().fg(Theme::Muted);
+    let indent = "  ".repeat(depth as usize);
+    let cells = HashMap::from([(
+        "Summary",
+        Line::styled(
+            format!("{indent}No issues"),
+            Style::default().fg(Theme::Muted),
+        ),
+    )]);
+    (cells, row_style)
+}
+
 fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
@@ -206,7 +253,11 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'stat
         .to_string();
     let row_style = Style::default().fg(Theme::Text);
 
-    let key_prefix = if depth > 0 { "  ↳ " } else { "" };
+    let key_prefix = if depth > 0 {
+        format!("{}↳ ", "  ".repeat(depth as usize))
+    } else {
+        String::new()
+    };
 
     let mut cells = HashMap::from([
         (

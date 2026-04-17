@@ -14,11 +14,11 @@ use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira issue refresh.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: String) {
-    let _ = tx.send(ActionMessage::TaskStarted("Refreshing issues"));
+    let _ = tx.send(ActionMessage::TaskStarted("Refreshing issues".to_string()));
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = client.search(&jql).await;
-        let _ = tx.send(ActionMessage::TaskFinished("Refreshing issues"));
+        let _ = tx.send(ActionMessage::TaskFinished("Refreshing issues".to_string()));
         let _ = tx.send(ActionMessage::Issues(result));
     });
 }

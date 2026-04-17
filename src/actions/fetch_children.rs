@@ -12,13 +12,13 @@ use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira child issue fetch.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, parent_key: String) {
-    let _ = tx.send(ActionMessage::TaskStarted("Fetching children"));
+    let _ = tx.send(ActionMessage::TaskStarted(format!("Fetching children for {parent_key}")));
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = client
             .search(&format!("parent = {parent_key} ORDER BY created DESC"))
             .await;
-        let _ = tx.send(ActionMessage::TaskFinished("Fetching children"));
+        let _ = tx.send(ActionMessage::TaskFinished(format!("Fetching children for {parent_key}")));
         let _ = tx.send(ActionMessage::ChildrenLoaded(parent_key, result));
     });
 }

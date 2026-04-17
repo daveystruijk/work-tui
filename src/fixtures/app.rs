@@ -46,6 +46,8 @@ pub fn test_app() -> App {
         inline_new: None,
         search_filter: String::new(),
         collapsed_stories: Default::default(),
+        story_children: Default::default(),
+        loading_children: Default::default(),
         github_prs: Default::default(),
         github_pr_detail_loading: Default::default(),
         github_pr_detail_loaded: Default::default(),
@@ -63,8 +65,11 @@ pub fn test_app() -> App {
 pub fn selected_issue_app() -> App {
     let mut app = test_app();
     app.issues.push(test_issue());
-    app.display_rows
-        .push(DisplayRow::Issue { index: 0, depth: 0 });
+    app.display_rows.push(DisplayRow::Issue {
+        index: 0,
+        depth: 0,
+        child_of: None,
+    });
     app
 }
 

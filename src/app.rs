@@ -52,15 +52,23 @@ pub fn format_duration(secs: u64) -> String {
 #[derive(Debug, Clone)]
 pub enum DisplayRow {
     /// A parent story header (not necessarily in the fetched issues list).
-    /// Contains the parent issue key and summary.
-    StoryHeader { key: String, summary: String },
-    /// An actual issue row. `depth` is 0 for top-level, 1 for subtask under a story.
+    /// Contains the parent issue key, summary, and nesting depth.
+    StoryHeader { key: String, summary: String, depth: u8 },
+    /// An actual issue row. `depth` is 0 for top-level, 1+ for subtask under a story.
     Issue {
-        index: usize, // index into `self.issues`
+        /// Index into `self.issues` for top-level issues, or into
+        /// `self.story_children[parent_key]` for dynamically loaded children.
+        index: usize,
         depth: u8,
+        /// If set, this issue comes from `story_children[parent_key]` rather than `self.issues`.
+        child_of: Option<String>,
     },
     /// Inline new-issue placeholder being edited in the list view.
     InlineNew { depth: u8 },
+    /// Spinner row shown while children are being fetched.
+    Loading { depth: u8 },
+    /// "No issues" placeholder shown when an expanded story has no children.
+    Empty { depth: u8 },
 }
 
 /// State for the inline new-issue editor shown in the list view.
@@ -145,6 +153,10 @@ pub struct App {
 
     /// Story keys that are currently collapsed (children hidden).
     pub collapsed_stories: HashSet<String>,
+    /// Dynamically loaded child issues for expanded stories, keyed by parent key.
+    pub story_children: HashMap<String, Vec<Issue>>,
+    /// Story keys currently being fetched (to avoid duplicate requests).
+    pub loading_children: HashSet<String>,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
     /// Issue keys currently loading selected PR detail data.
@@ -156,9 +168,9 @@ pub struct App {
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
     pub check_durations: HashMap<String, u64>,
     /// Currently running background task names
-    pub running_tasks: HashSet<&'static str>,
+    pub running_tasks: HashSet<String>,
     /// Recently completed task names (for brief status display), with remaining ticks
-    pub completed_tasks: VecDeque<(&'static str, usize)>,
+    pub completed_tasks: VecDeque<(String, usize)>,
     /// Sender for background tasks to deliver results
     pub bg_tx: mpsc::UnboundedSender<ActionMessage>,
     /// Receiver polled in the event loop
@@ -205,6 +217,8 @@ impl App {
             inline_new: None,
             search_filter: String::new(),
             collapsed_stories: HashSet::new(),
+            story_children: HashMap::new(),
+            loading_children: HashSet::new(),
             github_prs: HashMap::new(),
             github_pr_detail_loading: HashSet::new(),
             github_pr_detail_loaded: HashSet::new(),
@@ -391,12 +405,15 @@ impl App {
                 Ok(issues) => {
                     let selected_key = self.selected_issue().map(|i| i.key.clone());
                     self.issues = issues;
+                    self.story_children.clear();
+                    self.loading_children.clear();
                     self.rebuild_display_rows();
                     let next_index = selected_key
                         .and_then(|key| {
-                            self.display_rows.iter().position(|row| match row {
-                                DisplayRow::Issue { index, .. } => self.issues[*index].key == key,
-                                _ => false,
+                            self.display_rows.iter().position(|row| {
+                                self.issue_for_display_row(row)
+                                    .map(|i| i.key == key)
+                                    .unwrap_or(false)
                             })
                         })
                         .unwrap_or(0);
@@ -512,9 +529,10 @@ impl App {
             ActionMessage::InlineCreated(result) => match result {
                 Ok(key) => {
                     self.input_mode = InputMode::Normal;
-                    let found_index = self.display_rows.iter().position(|row| match row {
-                        DisplayRow::Issue { index, .. } => self.issues[*index].key == key,
-                        _ => false,
+                    let found_index = self.display_rows.iter().position(|row| {
+                        self.issue_for_display_row(row)
+                            .map(|i| i.key == key)
+                            .unwrap_or(false)
                     });
                     if let Some(index) = found_index {
                         self.selected_index = index;
@@ -530,6 +548,26 @@ impl App {
                     self.cancel_inline_new();
                 }
             },
+            ActionMessage::ChildrenLoaded(parent_key, result) => {
+                self.loading_children.remove(&parent_key);
+                match result {
+                    Ok(children) => {
+                        // Pre-collapse expandable children so only one level
+                        // is visible at a time.
+                        for child in &children {
+                            if is_expandable_type(child) {
+                                self.collapsed_stories.insert(child.key.clone());
+                            }
+                        }
+                        self.story_children.insert(parent_key, children);
+                        self.rebuild_display_rows();
+                    }
+                    Err(err) => {
+                        self.status_message =
+                            format!("Failed to load children for {parent_key}: {err}");
+                    }
+                }
+            }
             ActionMessage::AutoLabeled(_key, _result) => {
                 // Silent — auto-labeling is best-effort
             }
@@ -547,7 +585,7 @@ impl App {
                 self.update_task_status();
             }
             ActionMessage::TaskFinished(name) => {
-                self.running_tasks.remove(name);
+                self.running_tasks.remove(&name);
                 self.completed_tasks.push_back((name, 50));
                 self.update_task_status();
             }
@@ -662,14 +700,17 @@ impl App {
         let issues = self.client.search(&self.jql).await?;
         self.loading = false;
         self.issues = issues;
+        self.story_children.clear();
+        self.loading_children.clear();
         self.rebuild_display_rows();
 
         // Restore selection to the same issue key if possible
         let next_index = selected_key
             .and_then(|key| {
-                self.display_rows.iter().position(|row| match row {
-                    DisplayRow::Issue { index, .. } => self.issues[*index].key == key,
-                    _ => false,
+                self.display_rows.iter().position(|row| {
+                    self.issue_for_display_row(row)
+                        .map(|i| i.key == key)
+                        .unwrap_or(false)
                 })
             })
             .unwrap_or(0);
@@ -690,19 +731,56 @@ impl App {
 
     /// Returns the issue for the currently selected display row, if any.
     pub fn selected_issue(&self) -> Option<&Issue> {
-        let row = self.display_rows.get(self.selected_index)?;
+        self.issue_for_row(self.selected_index)
+    }
+
+    /// Returns the issue for a given display row index, if any.
+    pub fn issue_for_row(&self, row_index: usize) -> Option<&Issue> {
+        let row = self.display_rows.get(row_index)?;
         match row {
-            DisplayRow::Issue { index, .. } => self.issues.get(*index),
-            DisplayRow::StoryHeader { .. } | DisplayRow::InlineNew { .. } => None,
+            DisplayRow::Issue { index, child_of: None, .. } => self.issues.get(*index),
+            DisplayRow::Issue { index, child_of: Some(parent_key), .. } => {
+                self.story_children.get(parent_key)?.get(*index)
+            }
+            DisplayRow::StoryHeader { .. }
+            | DisplayRow::InlineNew { .. }
+            | DisplayRow::Loading { .. }
+            | DisplayRow::Empty { .. } => None,
+        }
+    }
+
+    /// Returns the issue for a given display row, if any.
+    fn issue_for_display_row(&self, row: &DisplayRow) -> Option<&Issue> {
+        match row {
+            DisplayRow::Issue { index, child_of: None, .. } => self.issues.get(*index),
+            DisplayRow::Issue { index, child_of: Some(parent_key), .. } => {
+                self.story_children.get(parent_key)?.get(*index)
+            }
+            DisplayRow::StoryHeader { .. }
+            | DisplayRow::InlineNew { .. }
+            | DisplayRow::Loading { .. }
+            | DisplayRow::Empty { .. } => None,
         }
     }
 
     /// Returns the story key if the current selection is inside a story group.
-    /// Walks backwards from `selected_index` to find the enclosing StoryHeader.
+    /// Walks backwards from `selected_index` to find the nearest enclosing StoryHeader.
     pub fn enclosing_story_key(&self) -> Option<String> {
-        for i in (0..=self.selected_index).rev() {
+        let current_depth = match &self.display_rows.get(self.selected_index)? {
+            DisplayRow::Issue { depth, .. }
+            | DisplayRow::InlineNew { depth }
+            | DisplayRow::Loading { depth }
+            | DisplayRow::Empty { depth } => *depth,
+            DisplayRow::StoryHeader { .. } => return None,
+        };
+        if current_depth == 0 {
+            return None;
+        }
+        for i in (0..self.selected_index).rev() {
             match &self.display_rows[i] {
-                DisplayRow::StoryHeader { key, .. } => return Some(key.clone()),
+                DisplayRow::StoryHeader { key, depth, .. } if *depth < current_depth => {
+                    return Some(key.clone());
+                }
                 DisplayRow::Issue { depth: 0, .. } => return None,
                 _ => continue,
             }
@@ -717,15 +795,37 @@ impl App {
             Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
             _ => return false,
         };
-        if !self.collapsed_stories.remove(&key) {
+        if self.collapsed_stories.remove(&key) {
+            // Was collapsed → now expanding. Fetch children if needed.
+            self.spawn_fetch_children_for_story(&key);
+        } else {
+            // Was expanded → now collapsing.
             self.collapsed_stories.insert(key);
         }
         self.rebuild_display_rows();
         true
     }
 
+    /// Fetch children for a story's child issues that might themselves be parents.
+    /// This enables multi-level expansion.
+    fn spawn_fetch_children_for_story(&mut self, parent_key: &str) {
+        // Find child issues under this story that have an issue type suggesting
+        // they could be stories (Story, Epic, Task with children, etc.)
+        // We fetch children for ALL child issues of this story to discover sub-stories.
+        if self.loading_children.contains(parent_key) || self.story_children.contains_key(parent_key) {
+            return;
+        }
+        self.loading_children.insert(parent_key.to_string());
+        actions::fetch_children::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            parent_key.to_string(),
+        );
+    }
+
     /// Build the flattened display rows from the current issues list.
     /// Groups subtasks under their parent story headers, sorted by key.
+    /// Supports multi-level nesting via `story_children`.
     pub fn rebuild_display_rows(&mut self) {
         use std::collections::HashMap as StdMap;
 
@@ -798,7 +898,6 @@ impl App {
         let parent_key_set: HashSet<String> = parent_groups.keys().cloned().collect();
 
         // Build top-level entries: each is either a standalone issue or a story group.
-        // A story group sorts by its parent key.
         enum TopLevel {
             Standalone(usize),
             StoryGroup {
@@ -904,10 +1003,33 @@ impl App {
         for entry in top_levels {
             match entry {
                 TopLevel::Standalone(idx) => {
-                    rows.push(DisplayRow::Issue {
-                        index: idx,
-                        depth: 0,
-                    });
+                    let issue = &self.issues[idx];
+                    let issue_key = issue.key.clone();
+                    let expandable = is_expandable_type(issue)
+                        || self.story_children.contains_key(&issue_key);
+                    if expandable {
+                        // Default to collapsed until explicitly expanded
+                        if !self.story_children.contains_key(&issue_key)
+                            && !self.loading_children.contains(&issue_key)
+                        {
+                            self.collapsed_stories.insert(issue_key.clone());
+                        }
+                        let summary = issue.summary().unwrap_or_default();
+                        rows.push(DisplayRow::StoryHeader {
+                            key: issue_key.clone(),
+                            summary,
+                            depth: 0,
+                        });
+                        if !self.collapsed_stories.contains(&issue_key) {
+                            self.append_nested_children(&issue_key, 1, &mut rows);
+                        }
+                    } else {
+                        rows.push(DisplayRow::Issue {
+                            index: idx,
+                            depth: 0,
+                            child_of: None,
+                        });
+                    }
                 }
                 TopLevel::StoryGroup {
                     key,
@@ -918,6 +1040,7 @@ impl App {
                     rows.push(DisplayRow::StoryHeader {
                         key: key.clone(),
                         summary,
+                        depth: 0,
                     });
                     if !self.collapsed_stories.contains(&key) {
                         // Skip the parent issue row — it duplicates the story header
@@ -927,14 +1050,38 @@ impl App {
                                 rows.push(DisplayRow::Issue {
                                     index: idx,
                                     depth: 1,
+                                    child_of: None,
                                 });
                             }
                         }
                         for child_idx in children {
-                            rows.push(DisplayRow::Issue {
-                                index: child_idx,
-                                depth: 1,
-                            });
+                            let child_issue = &self.issues[child_idx];
+                            let child_key = child_issue.key.clone();
+                            let expandable = is_expandable_type(child_issue)
+                                || self.story_children.contains_key(&child_key);
+                            if expandable {
+                                // Default nested stories to collapsed
+                                if !self.story_children.contains_key(&child_key)
+                                    && !self.loading_children.contains(&child_key)
+                                {
+                                    self.collapsed_stories.insert(child_key.clone());
+                                }
+                                let child_summary = child_issue.summary().unwrap_or_default();
+                                rows.push(DisplayRow::StoryHeader {
+                                    key: child_key.clone(),
+                                    summary: child_summary,
+                                    depth: 1,
+                                });
+                                if !self.collapsed_stories.contains(&child_key) {
+                                    self.append_nested_children(&child_key, 2, &mut rows);
+                                }
+                            } else {
+                                rows.push(DisplayRow::Issue {
+                                    index: child_idx,
+                                    depth: 1,
+                                    child_of: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -944,6 +1091,46 @@ impl App {
         self.display_rows = rows;
         if !self.display_rows.is_empty() && self.selected_index >= self.display_rows.len() {
             self.selected_index = self.display_rows.len() - 1;
+        }
+    }
+
+    /// Append children for a nested story header, handling loading/empty states.
+    fn append_nested_children(&self, parent_key: &str, depth: u8, rows: &mut Vec<DisplayRow>) {
+        if self.loading_children.contains(parent_key) {
+            rows.push(DisplayRow::Loading { depth });
+            return;
+        }
+        let Some(children) = self.story_children.get(parent_key) else {
+            // Not loading and no children stored — show loading since fetch
+            // will be triggered by toggle_story_collapse.
+            rows.push(DisplayRow::Loading { depth });
+            return;
+        };
+        if children.is_empty() {
+            rows.push(DisplayRow::Empty { depth });
+            return;
+        }
+        for (idx, child) in children.iter().enumerate() {
+            let child_key = child.key.clone();
+            let expandable = is_expandable_type(child)
+                || self.story_children.contains_key(&child_key);
+            if expandable {
+                let child_summary = child.summary().unwrap_or_default();
+                rows.push(DisplayRow::StoryHeader {
+                    key: child_key.clone(),
+                    summary: child_summary,
+                    depth,
+                });
+                if !self.collapsed_stories.contains(&child_key) {
+                    self.append_nested_children(&child_key, depth + 1, rows);
+                }
+            } else {
+                rows.push(DisplayRow::Issue {
+                    index: idx,
+                    depth,
+                    child_of: Some(parent_key.to_string()),
+                });
+            }
         }
     }
 
@@ -1132,12 +1319,26 @@ impl App {
 
     /// Find the last row index belonging to the story group that contains `from`.
     fn find_story_group_end(&self, from: usize) -> usize {
+        let base_depth = match &self.display_rows[from] {
+            DisplayRow::StoryHeader { depth, .. }
+            | DisplayRow::Issue { depth, .. }
+            | DisplayRow::InlineNew { depth }
+            | DisplayRow::Loading { depth }
+            | DisplayRow::Empty { depth } => *depth,
+        };
         let mut end = from;
         for i in (from + 1)..self.display_rows.len() {
-            match &self.display_rows[i] {
-                DisplayRow::Issue { depth, .. } if *depth > 0 => end = i,
-                DisplayRow::InlineNew { depth } if *depth > 0 => end = i,
-                _ => break,
+            let row_depth = match &self.display_rows[i] {
+                DisplayRow::StoryHeader { depth, .. }
+                | DisplayRow::Issue { depth, .. }
+                | DisplayRow::InlineNew { depth }
+                | DisplayRow::Loading { depth }
+                | DisplayRow::Empty { depth } => *depth,
+            };
+            if row_depth > base_depth {
+                end = i;
+            } else {
+                break;
             }
         }
         end
@@ -1470,7 +1671,7 @@ impl App {
     /// Compose `status_message` from currently running and recently completed tasks.
     fn update_task_status(&mut self) {
         if !self.running_tasks.is_empty() {
-            let names: Vec<_> = self.running_tasks.iter().copied().collect();
+            let names: Vec<_> = self.running_tasks.iter().map(|s| s.as_str()).collect();
             self.status_message = format!("[{}]", names.join(", "));
         } else if let Some((name, _)) = self.completed_tasks.back() {
             self.status_message = format!("{name} done");
@@ -1543,6 +1744,17 @@ impl App {
         self.status_message = format!("Opened PR #{number} in browser");
         Ok(())
     }
+}
+
+/// Returns true if the issue type suggests this issue can contain child issues
+/// (i.e. it's a story or epic that can be expanded as a nested story header).
+fn is_expandable_type(issue: &Issue) -> bool {
+    let type_name = issue
+        .issue_type()
+        .map(|ty| ty.name)
+        .unwrap_or_default()
+        .to_lowercase();
+    type_name.contains("story") || type_name.contains("epic")
 }
 
 /// Numeric rank for sorting issues by status. Lower = higher in the list.
