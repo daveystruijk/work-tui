@@ -745,9 +745,10 @@ impl App {
             })
     }
 
-    /// Returns the story key if the current selection is inside a story group.
-    /// Walks backwards from `selected_index` to find the nearest enclosing StoryHeader.
-    pub fn enclosing_story_key(&self) -> Option<String> {
+    /// Returns the story key and depth if the current selection is inside a
+    /// story group. Walks backwards from `selected_index` to find the nearest
+    /// enclosing StoryHeader.
+    fn enclosing_story_key_and_depth(&self) -> Option<(String, u8)> {
         let current_depth = match &self.display_rows.get(self.selected_index)? {
             DisplayRow::Issue { depth, .. }
             | DisplayRow::InlineNew { depth }
@@ -761,13 +762,25 @@ impl App {
         for i in (0..self.selected_index).rev() {
             match &self.display_rows[i] {
                 DisplayRow::StoryHeader { key, depth, .. } if *depth < current_depth => {
-                    return Some(key.clone());
+                    return Some((key.clone(), *depth));
                 }
                 DisplayRow::Issue { depth: 0, .. } => return None,
                 _ => continue,
             }
         }
         None
+    }
+
+    /// Returns the story key and its depth for inline creation: if the
+    /// selection is on a `StoryHeader`, returns that header's key/depth;
+    /// otherwise walks backward to find the nearest enclosing story.
+    fn selected_story_or_enclosing(&self) -> Option<(String, u8)> {
+        if let Some(DisplayRow::StoryHeader { key, depth, .. }) =
+            self.display_rows.get(self.selected_index)
+        {
+            return Some((key.clone(), *depth));
+        }
+        self.enclosing_story_key_and_depth()
     }
 
     /// Toggle collapse state for the story at the current selection.
@@ -1199,22 +1212,36 @@ impl App {
         }
     }
 
-    /// Start an inline new-issue row. If inside a story group, it becomes a
-    /// subtask of that story. Otherwise creates a top-level issue.
+    /// Start an inline new-issue row. If inside a story group (or on a story
+    /// header), it becomes a subtask of that story. Otherwise creates a
+    /// top-level issue.
     pub fn start_inline_new(&mut self) -> bool {
-        let story_key = self.enclosing_story_key();
+        let story_key = self.selected_story_or_enclosing();
         let project_key = self.derive_project_key();
 
-        let (insert_at, depth, parent_key) = if let Some(parent) = story_key {
-            let at = self.find_story_group_end(self.selected_index) + 1;
-            (at, 1u8, Some(parent))
+        let (insert_at, depth, parent_key) = if let Some((parent, story_depth)) = story_key {
+            let child_depth = story_depth + 1;
+            let group_end = self.find_story_group_end(self.selected_index);
+            // If the last row in the group is an Empty placeholder, replace it
+            // so the inline editor appears nested inside the story group.
+            let replace_empty =
+                matches!(self.display_rows.get(group_end), Some(DisplayRow::Empty { .. }));
+            if replace_empty {
+                (group_end, child_depth, Some(parent))
+            } else {
+                (group_end + 1, child_depth, Some(parent))
+            }
         } else {
             let at = self.selected_index + 1;
             (at, 0u8, None)
         };
 
-        self.display_rows
-            .insert(insert_at, DisplayRow::InlineNew { depth });
+        if matches!(self.display_rows.get(insert_at), Some(DisplayRow::Empty { .. })) {
+            self.display_rows[insert_at] = DisplayRow::InlineNew { depth };
+        } else {
+            self.display_rows
+                .insert(insert_at, DisplayRow::InlineNew { depth });
+        }
 
         let state = InlineNewState {
             summary: String::new(),
@@ -1270,10 +1297,30 @@ impl App {
     }
 
     /// Remove the InlineNew row at the given index and fix up selection.
+    /// If the inline row was the only child of a story group, restores the
+    /// `Empty` placeholder so the group doesn't visually collapse.
     fn remove_inline_row(&mut self, row_index: usize) {
         if row_index < self.display_rows.len() {
-            if matches!(self.display_rows[row_index], DisplayRow::InlineNew { .. }) {
-                self.display_rows.remove(row_index);
+            if let DisplayRow::InlineNew { depth } = self.display_rows[row_index] {
+                let is_only_child_of_story = depth > 0
+                    && row_index > 0
+                    && matches!(
+                        self.display_rows.get(row_index - 1),
+                        Some(DisplayRow::StoryHeader { .. })
+                    )
+                    && !matches!(
+                        self.display_rows.get(row_index + 1),
+                        Some(
+                            DisplayRow::Issue { depth: d, .. }
+                            | DisplayRow::Loading { depth: d }
+                            | DisplayRow::Empty { depth: d }
+                        ) if *d > 0
+                    );
+                if is_only_child_of_story {
+                    self.display_rows[row_index] = DisplayRow::Empty { depth };
+                } else {
+                    self.display_rows.remove(row_index);
+                }
             }
         }
         // Clamp selection

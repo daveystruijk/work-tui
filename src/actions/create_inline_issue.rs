@@ -38,11 +38,19 @@ pub fn spawn(
     tokio::spawn(async move {
         let result = async {
             let issue_types = client.get_issue_types(&project_key).await?;
-            let issue_type = issue_types
-                .iter()
-                .find(|t| t.name.eq_ignore_ascii_case("task"))
-                .or_else(|| issue_types.first())
-                .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?;
+            let issue_type = if parent_key.is_some() {
+                // Child issues require a subtask type
+                issue_types
+                    .iter()
+                    .find(|t| t.subtask)
+                    .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
+            } else {
+                issue_types
+                    .iter()
+                    .find(|t| !t.subtask && t.name.eq_ignore_ascii_case("task"))
+                    .or_else(|| issue_types.iter().find(|t| !t.subtask))
+                    .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?
+            };
 
             client
                 .create_issue(

@@ -326,25 +326,3 @@ pub async fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
     ))
 }
 
-/// Get the git diff summary between origin/main and HEAD (for PR description).
-pub async fn diff_summary(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["log", "origin/main..HEAD", "--pretty=format:%s"])
-        .current_dir(repo_path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(eyre!(
-            "git log failed: {}",
-            if stderr.is_empty() {
-                "unknown error"
-            } else {
-                &stderr
-            }
-        ));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
