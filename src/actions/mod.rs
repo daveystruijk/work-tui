@@ -12,6 +12,7 @@ pub mod approve_merge;
 pub mod auto_label;
 pub mod branch_diff;
 pub mod create_inline_issue;
+pub mod convert_to_story;
 pub mod detect_active_branches;
 pub mod fetch_children;
 pub mod fetch_github_pr_detail;
@@ -97,6 +98,8 @@ pub enum ActionMessage {
     LabelAdded(Result<(String, String)>),
     /// Child issues loaded for a parent story (from [`fetch_children`]).
     ChildrenLoaded(String, Result<Vec<Issue>>),
+    /// Issue type changed to Story (from [`convert_to_story`]).
+    ConvertedToStory(String, Result<()>),
     /// A background task has started. The payload is the human-readable task name.
     TaskStarted(String),
     /// A background task has finished. The payload is the human-readable task name.

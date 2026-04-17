@@ -291,6 +291,23 @@ impl JiraClient {
         Ok(())
     }
 
+    pub async fn update_issue_type(&self, issue_key: &str, issue_type_name: &str) -> Result<()> {
+        let issue_types = self
+            .get_issue_types(&issue_key.split('-').next().unwrap_or("").to_uppercase())
+            .await?;
+        let target_type = issue_types
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(issue_type_name))
+            .ok_or_else(|| eyre!("Issue type '{issue_type_name}' not found"))?;
+        let payload = json!({
+            "fields": {
+                "issuetype": { "id": target_type.id }
+            }
+        });
+        self.jira.put::<(), _>("api", &format!("/issue/{issue_key}"), payload).await?;
+        Ok(())
+    }
+
     pub async fn create_issue(
         &self,
         project_key: &str,

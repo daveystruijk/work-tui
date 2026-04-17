@@ -213,6 +213,10 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.loading = true;
                     app.spawn_refresh();
                 }
+                's' => {
+                    app.status_message = "Converting to story...".to_string();
+                    app.spawn_convert_to_story();
+                }
                 'f' => {
                     app.status_message = "Finishing...".to_string();
                     app.spawn_finish();

@@ -485,6 +485,15 @@ impl App {
                     }
                 }
             }
+            ActionMessage::ConvertedToStory(issue_key, result) => match result {
+                Ok(()) => {
+                    self.status_message = format!("Converted {issue_key} to Story");
+                    self.spawn_refresh();
+                }
+                Err(err) => {
+                    self.status_message = format!("Failed to convert {issue_key}: {err}");
+                }
+            },
             ActionMessage::PickedUp(result) => match result {
                 Ok(pickup) => {
                     self.current_branch = pickup.branch.clone();
@@ -669,6 +678,23 @@ impl App {
             issue_summary,
             repos[0].path.clone(),
         );
+    }
+
+    /// Spawn convert-to-story in background.
+    pub fn spawn_convert_to_story(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_type_name = issue
+            .issue_type()
+            .map(|t| t.name.to_lowercase())
+            .unwrap_or_default();
+        if issue_type_name.contains("story") || issue_type_name.contains("epic") {
+            self.status_message = format!("{} is already a story/epic", issue.key);
+            return;
+        }
+        let issue_key = issue.key.clone();
+        actions::convert_to_story::spawn(self.bg_tx.clone(), self.client.clone(), issue_key);
     }
 
     /// Spawn inline new issue creation in background.
