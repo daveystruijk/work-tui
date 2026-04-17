@@ -136,11 +136,7 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
         handle_inline_new(app, key_event).await;
         return;
     }
-    if app.screen == Screen::List {
-        handle_list_normal(app, key_event).await;
-    } else if app.screen == Screen::New {
-        handle_new(app, key_event).await;
-    }
+    handle_list_normal(app, key_event).await;
 }
 
 async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
@@ -202,11 +198,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     Err(err) => app.status_message = format!("Failed to open issue: {err}"),
                 },
                 'n' => {
-                    if !app.start_inline_new() {
-                        if let Err(err) = app.enter_new().await {
-                            app.status_message = format!("Failed to open new issue form: {err}");
-                        }
-                    }
+                    app.start_inline_new();
                 }
                 'a' => app.open_label_picker(),
                 'r' => {
@@ -339,102 +331,6 @@ async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {
         KeyCode::Char(c) => app.label_picker_type_char(c),
         _ => {}
     }
-}
-
-async fn handle_new(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
-    {
-        app.should_quit = true;
-        return;
-    }
-
-    match key_event.code {
-        KeyCode::Esc => {
-            app.new_form = None;
-            app.back_to_list();
-            return;
-        }
-        KeyCode::Char('s') | KeyCode::Char('S')
-            if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            match app.submit_new().await {
-                Ok(key) => {
-                    app.status_message = format!("Created {key}");
-                    app.back_to_list();
-                }
-                Err(err) => app.status_message = format!("Failed to create issue: {err}"),
-            }
-            return;
-        }
-        _ => {}
-    }
-
-    let Some(form) = app.new_form.as_mut() else {
-        return;
-    };
-
-    match key_event.code {
-        KeyCode::Tab => form.active_field = (form.active_field + 1) % 3,
-        KeyCode::BackTab => form.active_field = (form.active_field + 2) % 3,
-        _ => handle_new_form_input(form, &key_event),
-    }
-}
-
-fn handle_new_form_input(form: &mut app::NewForm, key_event: &KeyEvent) {
-    match form.active_field {
-        0 => match key_event.code {
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
-                cycle_issue_type(form, false);
-            }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
-                cycle_issue_type(form, true);
-            }
-            _ => {}
-        },
-        1 => match key_event.code {
-            KeyCode::Backspace => {
-                form.summary.pop();
-            }
-            KeyCode::Char(c) => {
-                if !key_event
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    form.summary.push(c);
-                }
-            }
-            _ => {}
-        },
-        2 => match key_event.code {
-            KeyCode::Backspace => {
-                form.description.pop();
-            }
-            KeyCode::Enter => form.description.push('\n'),
-            KeyCode::Char(c) => {
-                if !key_event
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    form.description.push(c);
-                }
-            }
-            _ => {}
-        },
-        _ => {}
-    }
-}
-
-fn cycle_issue_type(form: &mut app::NewForm, forward: bool) {
-    let len = form.issue_types.len();
-    if len == 0 {
-        return;
-    }
-    form.issue_type_idx = if forward {
-        (form.issue_type_idx + 1) % len
-    } else {
-        (form.issue_type_idx + len - 1) % len
-    };
 }
 
 const SCROLL_OFF: usize = 3;

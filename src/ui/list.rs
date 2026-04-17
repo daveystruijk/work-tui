@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState},
     Frame,
 };
@@ -35,20 +35,8 @@ mod tests {
 }
 
 pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(44)])
-        .split(area);
-
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1)])
-        .split(columns[0]);
-
     // Store visible list height for half-page scrolling
-    app.list_area_height = main_chunks[0].height.saturating_sub(1);
-
-    super::sidebar::render_sidebar(app, frame, columns[1]);
+    app.list_area_height = area.height.saturating_sub(1);
 
     // Build row data as (CellMap, Style) so we can measure before converting to Row.
     let row_data: Vec<(CellMap, Style)> = app
@@ -127,7 +115,7 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
                 .add_modifier(Modifier::BOLD),
         )
         .block(Block::default().style(Style::default().bg(Theme::Panel)));
-    frame.render_stateful_widget(table, main_chunks[0], &mut state);
+    frame.render_stateful_widget(table, area, &mut state);
     app.list_scroll_offset = state.offset();
 
     if app.label_picker_active() {
@@ -447,145 +435,5 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
         .alignment(Alignment::Center)
         .style(Style::default().bg(Theme::Surface)),
         modal_layout[2],
-    );
-}
-
-pub fn render_new(app: &App, frame: &mut Frame, area: ratatui::layout::Rect) {
-    let Some(form) = &app.new_form else {
-        frame.render_widget(Paragraph::new("No form"), frame.area());
-        return;
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(3)])
-        .split(area);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("✦ ", Style::default().fg(Theme::AccentSoft)),
-            Span::styled(
-                "New issue",
-                Style::default()
-                    .fg(Theme::Text)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!(" {} ", form.project_key),
-                Style::default()
-                    .fg(Theme::Panel)
-                    .bg(Theme::Accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .block(
-            Block::bordered()
-                .title(Span::styled(
-                    " Compose ",
-                    Style::default()
-                        .fg(Theme::Accent)
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .style(Style::default().bg(Theme::Panel))
-                .border_style(Style::default().fg(Theme::AccentSoft)),
-        )
-        .style(Style::default().bg(Theme::Panel)),
-        chunks[0],
-    );
-
-    let form_block = Block::bordered()
-        .title(Span::styled(
-            " New issue details ",
-            Style::default()
-                .fg(Theme::Text)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(Theme::Panel))
-        .border_style(Style::default().fg(Theme::Accent));
-    let form_area = form_block.inner(chunks[1]);
-    frame.render_widget(form_block, chunks[1]);
-
-    let fields = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(3),
-        ])
-        .split(form_area);
-
-    render_form_field(
-        frame,
-        fields[0],
-        "Type",
-        &format!(
-            "‹ {} ›   {}/{}",
-            form.issue_types
-                .get(form.issue_type_idx)
-                .map(|ty| ty.name.as_str())
-                .unwrap_or(""),
-            form.issue_type_idx + 1,
-            form.issue_types.len(),
-        ),
-        form.active_field == 0,
-    );
-    render_form_field(
-        frame,
-        fields[1],
-        "Summary",
-        &form.summary,
-        form.active_field == 1,
-    );
-    render_form_field(
-        frame,
-        fields[2],
-        "Description",
-        &form.description,
-        form.active_field == 2,
-    );
-}
-
-fn render_form_field(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    label: &str,
-    value: &str,
-    active: bool,
-) {
-    let block_style = if active {
-        Style::default().fg(Theme::Accent).bg(Theme::Surface)
-    } else {
-        Style::default().fg(Theme::Muted).bg(Theme::Panel)
-    };
-
-    let label_style = if active {
-        Style::default()
-            .fg(Theme::AccentSoft)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Theme::Muted)
-            .add_modifier(Modifier::BOLD)
-    };
-
-    frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::from(vec![
-                Span::styled(if active { "▌ " } else { "  " }, block_style),
-                Span::styled(label, label_style),
-            ]),
-            Line::from(Span::styled(
-                value.to_string(),
-                Style::default().fg(Theme::Text),
-            )),
-        ]))
-        .block(
-            Block::bordered()
-                .style(Style::default().bg(block_style.bg.unwrap_or(Theme::Panel)))
-                .border_style(block_style),
-        )
-        .style(Style::default().bg(block_style.bg.unwrap_or(Theme::Panel))),
-        area,
     );
 }

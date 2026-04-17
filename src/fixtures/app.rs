@@ -24,7 +24,6 @@ pub fn test_app() -> App {
         issues: Vec::new(),
         selected_index: 0,
         jql: config.default_jql,
-        new_form: None,
         repo_entries: Vec::new(),
         repo_error: None,
         label_picker: None,

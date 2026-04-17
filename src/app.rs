@@ -11,7 +11,7 @@ use crate::{
     events::{Event, EventLevel, EventSource},
     apis::{
         github::{CheckRun, CheckStep, CheckStatus, GithubStatus, PrInfo},
-        jira::{Issue, IssueType, JiraClient, JiraConfig},
+        jira::{Issue, JiraClient, JiraConfig},
     },
     repos::{self, RepoEntry},
 };
@@ -87,7 +87,6 @@ pub struct InlineNewState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     List,
-    New,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,16 +94,6 @@ pub enum InputMode {
     Normal,
     Editing,
     Searching,
-}
-
-#[derive(Debug, Clone)]
-pub struct NewForm {
-    pub summary: String,
-    pub description: String,
-    pub issue_type_idx: usize,
-    pub issue_types: Vec<IssueType>,
-    pub active_field: usize,
-    pub project_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +110,6 @@ pub struct App {
     pub issues: Vec<Issue>,
     pub selected_index: usize,
     pub jql: String,
-    pub new_form: Option<NewForm>,
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
     pub label_picker: Option<LabelPickerState>,
@@ -195,7 +183,6 @@ impl App {
             issues: Vec::new(),
             selected_index: 0,
             jql,
-            new_form: None,
             repo_entries: Vec::new(),
             repo_error: None,
             label_picker: None,
@@ -720,41 +707,6 @@ impl App {
         );
     }
 
-    pub async fn refresh_issues(&mut self) -> Result<()> {
-        self.loading = true;
-        let selected_key = self.selected_issue().map(|issue| issue.key.clone());
-        let issues = self.client.search(&self.jql).await?;
-        self.loading = false;
-        self.issues = issues;
-        self.story_children.clear();
-        self.loading_children.clear();
-        self.rebuild_display_rows();
-
-        // Restore selection to the same issue key if possible
-        let next_index = selected_key
-            .and_then(|key| {
-                self.display_rows.iter().position(|row| {
-                    self.issue_for_display_row(row)
-                        .map(|i| i.key == key)
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(0);
-        self.selected_index = if self.display_rows.is_empty() {
-            0
-        } else {
-            next_index.min(self.display_rows.len() - 1)
-        };
-
-        self.github_statuses.clear();
-        self.github_prs.clear();
-        self.github_pr_detail_loading.clear();
-        self.github_pr_detail_loaded.clear();
-        self.github_pr_detail_errors.clear();
-        self.latest_activity.clear();
-        Ok(())
-    }
-
     /// Returns the issue for the currently selected display row, if any.
     pub fn selected_issue(&self) -> Option<&Issue> {
         self.issue_for_row(self.selected_index)
@@ -1164,34 +1116,6 @@ impl App {
         }
     }
 
-    pub async fn submit_new(&mut self) -> Result<String> {
-        let form = match self.new_form.take() {
-            Some(form) => form,
-            None => return Err(eyre!("No new issue form active")),
-        };
-        let issue_type = form
-            .issue_types
-            .get(form.issue_type_idx)
-            .ok_or_else(|| eyre!("Invalid issue type index"))?;
-        let description = if form.description.is_empty() {
-            None
-        } else {
-            Some(form.description.as_str())
-        };
-        let issue_key = self
-            .client
-            .create_issue(
-                &form.project_key,
-                &issue_type.id,
-                &form.summary,
-                description,
-                None,
-            )
-            .await?;
-        self.refresh_issues().await?;
-        Ok(issue_key)
-    }
-
     pub fn refresh_latest_activity(&mut self) {
         self.latest_activity.clear();
         for issue in &self.issues {
@@ -1275,33 +1199,6 @@ impl App {
         }
     }
 
-    pub async fn enter_new(&mut self) -> Result<()> {
-        let project_key = self.derive_project_key();
-        let issue_types = self.client.get_issue_types(&project_key).await?;
-        if issue_types.is_empty() {
-            return Err(eyre!("No issue types available"));
-        }
-        self.new_form = Some(NewForm {
-            summary: String::new(),
-            description: String::new(),
-            issue_type_idx: 0,
-            issue_types,
-            active_field: 0,
-            project_key,
-        });
-        self.screen = Screen::New;
-        self.input_mode = InputMode::Editing;
-        Ok(())
-    }
-
-    pub fn back_to_list(&mut self) {
-        self.screen = Screen::List;
-        self.input_mode = InputMode::Normal;
-        self.new_form = None;
-        self.label_picker = None;
-        self.cancel_inline_new();
-    }
-
     /// Start an inline new-issue row. If inside a story group, it becomes a
     /// subtask of that story. Otherwise creates a top-level issue.
     pub fn start_inline_new(&mut self) -> bool {
@@ -1330,8 +1227,6 @@ impl App {
         self.input_mode = InputMode::Editing;
         true
     }
-
-    /// Submit the inline new issue to Jira, then refresh.
 
     /// Cancel the inline new issue and remove the placeholder row.
     pub fn cancel_inline_new(&mut self) {

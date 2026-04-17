@@ -14,7 +14,7 @@ use ratatui::{
 use crate::theme::Theme;
 use crate::{
     apis::jira::{Issue, User},
-    app::{App, Screen},
+    app::App,
 };
 
 pub const COLUMNS: &[&str] = &["Key", "Summary", "PR", "CI", "Status", "Assignee", "Repo"];
@@ -34,20 +34,29 @@ pub fn max_col_width(row_data: &[(CellMap, Style)], name: &str) -> u16 {
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
+    let area = frame.area();
+
+    // Horizontal split: list column (flexible) | sidebar column (fixed 44 wide)
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(44)])
+        .split(area);
+
+    // Vertical split on the list column only: list area | footer
     let footer_height = status_bar::footer_height(app);
-    let chunks = Layout::default()
+    let list_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
-        .split(frame.area());
+        .split(columns[0]);
 
-    match app.screen {
-        Screen::List => list::render_list(app, frame, chunks[0]),
-        Screen::New => list::render_new(app, frame, chunks[0]),
-    }
+    list::render_list(app, frame, list_chunks[0]);
 
     if footer_height > 0 {
-        status_bar::render_status_bar(app, frame, chunks[1]);
+        status_bar::render_status_bar(app, frame, list_chunks[1]);
     }
+
+    // Sidebar gets the full height (no footer)
+    sidebar::render_sidebar(app, frame, columns[1]);
 }
 
 pub fn labeled_text_line(
