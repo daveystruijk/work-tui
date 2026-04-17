@@ -737,16 +737,7 @@ impl App {
     /// Returns the issue for a given display row index, if any.
     pub fn issue_for_row(&self, row_index: usize) -> Option<&Issue> {
         let row = self.display_rows.get(row_index)?;
-        match row {
-            DisplayRow::Issue { index, child_of: None, .. } => self.issues.get(*index),
-            DisplayRow::Issue { index, child_of: Some(parent_key), .. } => {
-                self.story_children.get(parent_key)?.get(*index)
-            }
-            DisplayRow::StoryHeader { .. }
-            | DisplayRow::InlineNew { .. }
-            | DisplayRow::Loading { .. }
-            | DisplayRow::Empty { .. } => None,
-        }
+        self.issue_for_display_row(row)
     }
 
     /// Returns the issue for a given display row, if any.
@@ -756,11 +747,24 @@ impl App {
             DisplayRow::Issue { index, child_of: Some(parent_key), .. } => {
                 self.story_children.get(parent_key)?.get(*index)
             }
-            DisplayRow::StoryHeader { .. }
-            | DisplayRow::InlineNew { .. }
+            DisplayRow::StoryHeader { key, .. } => self.find_issue_by_key(key),
+            DisplayRow::InlineNew { .. }
             | DisplayRow::Loading { .. }
             | DisplayRow::Empty { .. } => None,
         }
+    }
+
+    /// Look up an issue by key across all issue sources.
+    fn find_issue_by_key(&self, key: &str) -> Option<&Issue> {
+        self.issues
+            .iter()
+            .find(|issue| issue.key == key)
+            .or_else(|| {
+                self.story_children
+                    .values()
+                    .flat_map(|children| children.iter())
+                    .find(|issue| issue.key == key)
+            })
     }
 
     /// Returns the story key if the current selection is inside a story group.
