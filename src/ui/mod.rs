@@ -13,8 +13,8 @@ use ratatui::{
 
 use crate::theme::Theme;
 use crate::{
+    apis::jira::{Issue, User},
     app::{App, Screen},
-    jira::{Issue, User},
 };
 
 pub const COLUMNS: &[&str] = &["Key", "Summary", "PR", "CI", "Status", "Assignee", "Repo"];

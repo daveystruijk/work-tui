@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use super::ActionMessage;
 use crate::actions::Progress;
 use crate::git;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// Spawn all initialization tasks concurrently.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: String) {

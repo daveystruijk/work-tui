@@ -7,7 +7,7 @@
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// Spawn label addition for a single issue.
 pub fn spawn(

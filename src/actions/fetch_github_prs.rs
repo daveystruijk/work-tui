@@ -11,7 +11,7 @@
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
-use crate::github;
+use crate::apis::github;
 
 /// Spawn GitHub PR fetching for all configured repos.
 ///

@@ -26,8 +26,7 @@ use std::fmt;
 
 use color_eyre::Result;
 
-use crate::github::{PrDetail, PrInfo};
-use crate::jira::Issue;
+use crate::apis::{github::{PrDetail, PrInfo}, jira::Issue};
 
 /// Generic progress report sent by long-running actions.
 ///

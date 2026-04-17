@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use super::ActionMessage;
 use crate::actions::Progress;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// A single label update: `(issue_key, new_labels_list)`.
 pub type LabelUpdate = (String, Vec<String>);

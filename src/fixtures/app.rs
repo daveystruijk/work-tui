@@ -1,8 +1,8 @@
 use tokio::sync::mpsc;
 
 use crate::{
+    apis::jira::{JiraClient, JiraConfig},
     app::{App, DisplayRow},
-    jira::{JiraClient, JiraConfig},
 };
 
 use super::{issue::test_issue, pr::test_pr};

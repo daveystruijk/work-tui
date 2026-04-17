@@ -8,9 +8,8 @@ use ratatui::{
     Frame,
 };
 
+use crate::apis::{github::CheckStatus, jira::Issue};
 use crate::app::{App, DisplayRow, InlineNewState};
-use crate::github::CheckStatus;
-use crate::jira::Issue;
 use crate::theme::Theme;
 
 use super::{

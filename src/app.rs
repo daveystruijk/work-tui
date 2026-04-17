@@ -9,8 +9,10 @@ use crate::{
     actions::{self, ActionMessage},
     cache::{self, Cache},
     events::{Event, EventLevel, EventSource},
-    github::{CheckRun, CheckStep, CheckStatus, GithubStatus, PrInfo},
-    jira::{Issue, IssueType, JiraClient, JiraConfig},
+    apis::{
+        github::{CheckRun, CheckStep, CheckStatus, GithubStatus, PrInfo},
+        jira::{Issue, IssueType, JiraClient, JiraConfig},
+    },
     repos::{self, RepoEntry},
 };
 

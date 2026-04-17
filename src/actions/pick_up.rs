@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use super::{ActionMessage, PickUpResult};
 use crate::actions::Progress;
 use crate::git;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// Spawn the pick-up workflow for a single issue.
 pub fn spawn(

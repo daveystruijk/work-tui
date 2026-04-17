@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
-use crate::github;
+use crate::apis::github;
 
 pub fn spawn(
     tx: mpsc::UnboundedSender<ActionMessage>,

@@ -16,7 +16,7 @@ use tokio::time::sleep;
 
 use super::ActionMessage;
 use crate::actions::Progress;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// Spawn inline issue creation.
 pub fn spawn(

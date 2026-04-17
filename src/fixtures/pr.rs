@@ -1,4 +1,4 @@
-use crate::github::{
+use crate::apis::github::{
     CheckRun, CheckStatus, CheckStep, MergeableState, PrComment, PrInfo, ReviewComment,
     ReviewThread,
 };

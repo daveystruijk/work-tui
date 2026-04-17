@@ -1,10 +1,9 @@
 mod actions;
 mod app;
+mod apis;
 mod cache;
 mod events;
 mod git;
-mod github;
-mod jira;
 mod repos;
 mod theme;
 mod ui;

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-pub(crate) fn test_issue() -> crate::jira::Issue {
-    crate::jira::Issue {
+pub(crate) fn test_issue() -> crate::apis::jira::Issue {
+    crate::apis::jira::Issue {
         self_link: "http://localhost/rest/api/2/issue/TEST-123".to_string(),
         key: "TEST-123".to_string(),
         id: "10001".to_string(),

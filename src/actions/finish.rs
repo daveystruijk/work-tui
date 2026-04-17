@@ -21,8 +21,8 @@ use tokio::sync::mpsc;
 use super::ActionMessage;
 use crate::actions::Progress;
 use crate::git;
-use crate::github;
-use crate::jira::JiraClient;
+use crate::apis::github;
+use crate::apis::jira::JiraClient;
 
 /// Spawn the finish workflow for a single issue.
 pub fn spawn(

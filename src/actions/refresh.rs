@@ -10,7 +10,7 @@
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira issue refresh.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: String) {

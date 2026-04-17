@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
+use crate::apis::github::{CheckStatus, MergeableState, PrInfo};
 use crate::app::App;
-use crate::github::{CheckStatus, MergeableState, PrInfo};
 use crate::theme::Theme;
 
 use super::{
@@ -403,6 +403,6 @@ fn comment_counts(pr: &PrInfo) -> (usize, usize) {
     (unresolved, resolved)
 }
 
-fn is_running_check_step(step: &crate::github::CheckStep) -> bool {
+fn is_running_check_step(step: &crate::apis::github::CheckStep) -> bool {
     step.status == CheckStatus::Pending && step.started_at.is_some() && step.completed_at.is_none()
 }

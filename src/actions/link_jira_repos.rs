@@ -12,7 +12,7 @@
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 use crate::repos;
 
 /// An issue that has no repo label match: `(issue_key, current_labels)`.

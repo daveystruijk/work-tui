@@ -8,7 +8,7 @@
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
-use crate::jira::JiraClient;
+use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira child issue fetch.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, parent_key: String) {
