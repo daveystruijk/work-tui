@@ -13,7 +13,7 @@ use crate::theme::Theme;
 
 use super::{
     humanize_timestamp, issue_author, issue_field_string, issue_type_icon, labeled_text_line,
-    push_wrapped_block, status_color, wrap_text, SIDEBAR_SECTION_MARGIN, SPINNER_FRAMES,
+    push_wrapped_block, status_color, SIDEBAR_SECTION_MARGIN, SPINNER_FRAMES,
 };
 
 #[cfg(test)]
@@ -218,7 +218,6 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                 github_lines.push(labeled_text_line("Merge", label, color));
             }
 
-            let ci_content_width = inner.width.saturating_sub(6) as usize;
             if !pr.check_runs.is_empty() {
                 for run in &pr.check_runs {
                     let (icon, color) = match run.status {
@@ -267,36 +266,6 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
                             ci_lines.push(Line::from(step_spans));
                         }
                     }
-
-                    // Inline error output below failed steps
-                    if run.status == CheckStatus::Fail {
-                        let error_message = if !run.text.trim().is_empty() {
-                            Some(run.text.trim().to_string())
-                        } else if !run.summary.trim().is_empty() {
-                            Some(run.summary.trim().to_string())
-                        } else if !run.details_url.trim().is_empty() {
-                            Some(format!("Open: {}", run.details_url))
-                        } else if detail_loading {
-                            Some(spinner.to_string())
-                        } else if let Some(error) = detail_error {
-                            Some(format!("Failed to load: {error}"))
-                        } else {
-                            None
-                        };
-                        if let Some(message) = error_message {
-                            for line in wrap_text(&message, ci_content_width.saturating_sub(3), 6) {
-                                ci_lines.push(Line::from(vec![
-                                    Span::styled("   ", Style::default()),
-                                    Span::styled(
-                                        format!(" {line} "),
-                                        Style::default()
-                                            .fg(Theme::Text)
-                                            .bg(ratatui::style::Color::Black),
-                                    ),
-                                ]));
-                            }
-                        }
-                    }
                 }
             } else {
                 ci_lines.push(Line::from(Span::styled(
@@ -317,14 +286,16 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
         }
     }
 
-    let mut constraints = vec![Constraint::Length(header_height.max(1))];
-    constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
-    constraints.push(Constraint::Length(section_height(&jira_lines)));
-    constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
-    constraints.push(Constraint::Length(section_height(&github_lines)));
-    constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
-    constraints.push(Constraint::Length(section_height(&ci_lines)));
-    constraints.push(Constraint::Min(0));
+    let constraints = vec![
+        Constraint::Length(header_height.max(1)),
+        Constraint::Length(SIDEBAR_SECTION_MARGIN),
+        Constraint::Length(section_height(&jira_lines)),
+        Constraint::Length(SIDEBAR_SECTION_MARGIN),
+        Constraint::Length(section_height(&github_lines)),
+        Constraint::Length(SIDEBAR_SECTION_MARGIN),
+        Constraint::Length(section_height(&ci_lines)),
+        Constraint::Min(0),
+    ];
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

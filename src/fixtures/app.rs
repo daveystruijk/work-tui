@@ -58,6 +58,7 @@ pub fn test_app() -> App {
         bg_rx,
         last_ci_refresh: std::time::Instant::now(),
         last_updated: None,
+        ci_log_popup_scroll: None,
     }
 }
 

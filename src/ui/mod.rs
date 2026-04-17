@@ -1,3 +1,4 @@
+mod ci_logs;
 mod list;
 mod sidebar;
 mod status_bar;
@@ -57,6 +58,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Sidebar gets the full height (no footer)
     sidebar::render_sidebar(app, frame, columns[1]);
+
+    // CI logs popup overlays everything
+    if app.ci_log_popup_active() {
+        ci_logs::render_ci_log_popup(app, frame);
+    }
 }
 
 pub fn labeled_text_line(

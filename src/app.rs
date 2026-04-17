@@ -167,6 +167,8 @@ pub struct App {
     pub last_ci_refresh: std::time::Instant,
     /// Last time data was successfully received (for "updated X ago" display)
     pub last_updated: Option<std::time::Instant>,
+    /// When `Some`, the CI logs popup is open with this scroll offset.
+    pub ci_log_popup_scroll: Option<usize>,
 }
 
 impl App {
@@ -217,6 +219,7 @@ impl App {
             bg_rx,
             last_ci_refresh: std::time::Instant::now(),
             last_updated: None,
+            ci_log_popup_scroll: None,
         };
 
         app.check_durations = cache::load().check_durations;
@@ -425,6 +428,17 @@ impl App {
                 self.active_branches = active;
             }
             ActionMessage::GithubPrs(all_prs, errors) => {
+                // Snapshot detail-enriched PRs before clearing so we can
+                // carry forward fetched CI logs when the failed runs haven't
+                // changed (avoids re-fetching on every auto-refresh cycle).
+                let previous_prs: HashMap<String, PrInfo> = self
+                    .github_pr_detail_loaded
+                    .iter()
+                    .filter_map(|key| {
+                        self.github_prs.get(key).map(|pr| (key.clone(), pr.clone()))
+                    })
+                    .collect();
+
                 self.github_prs.clear();
                 self.github_statuses.clear();
                 self.github_pr_detail_loading.clear();
@@ -441,6 +455,19 @@ impl App {
                             .insert(issue.key.clone(), GithubStatus::Found(pr.clone()));
                     }
                 }
+
+                // Carry forward cached detail data when the set of failed
+                // check run names hasn't changed (i.e. no new CI run happened).
+                for (issue_key, old_pr) in &previous_prs {
+                    let Some(new_pr) = self.github_prs.get_mut(issue_key) else {
+                        continue;
+                    };
+                    if !check_runs_changed(&old_pr.check_runs, &new_pr.check_runs) {
+                        new_pr.apply_detail_from(old_pr);
+                        self.github_pr_detail_loaded.insert(issue_key.clone());
+                    }
+                }
+
                 self.record_check_durations();
                 self.save_cache();
                 self.spawn_auto_label();
@@ -474,7 +501,7 @@ impl App {
             }
             ActionMessage::ConvertedToStory(issue_key, result) => match result {
                 Ok(()) => {
-                    self.status_message = format!("Converted {issue_key} to Story");
+                    self.status_message = format!("Converted {issue_key}");
                     self.spawn_refresh();
                 }
                 Err(err) => {
@@ -667,8 +694,8 @@ impl App {
         );
     }
 
-    /// Spawn convert-to-story in background.
-    pub fn spawn_convert_to_story(&mut self) {
+    /// Spawn issue type toggle: Task → Story, or Story → Task if it has no children.
+    pub fn spawn_toggle_story_type(&mut self) {
         let Some(issue) = self.selected_issue() else {
             return;
         };
@@ -676,12 +703,36 @@ impl App {
             .issue_type()
             .map(|t| t.name.to_lowercase())
             .unwrap_or_default();
+        let issue_key = issue.key.clone();
+
         if issue_type_name.contains("story") || issue_type_name.contains("epic") {
-            self.status_message = format!("{} is already a story/epic", issue.key);
+            let has_children = self
+                .story_children
+                .get(&issue_key)
+                .map(|children| !children.is_empty())
+                .unwrap_or(false);
+            if has_children {
+                self.status_message =
+                    format!("{issue_key} has children — remove them first");
+                return;
+            }
+            self.status_message = "Reverting to task...".to_string();
+            actions::convert_to_story::spawn(
+                self.bg_tx.clone(),
+                self.client.clone(),
+                issue_key,
+                "Task",
+            );
             return;
         }
-        let issue_key = issue.key.clone();
-        actions::convert_to_story::spawn(self.bg_tx.clone(), self.client.clone(), issue_key);
+
+        self.status_message = "Converting to story...".to_string();
+        actions::convert_to_story::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            issue_key,
+            "Story",
+        );
     }
 
     /// Spawn inline new issue creation in background.
@@ -1448,6 +1499,37 @@ impl App {
         picker.selected = 0;
     }
 
+    pub fn open_ci_log_popup(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            self.status_message = "No issue selected".to_string();
+            return;
+        };
+        let Some(pr) = self.github_prs.get(&issue.key) else {
+            self.status_message = "No linked PR".to_string();
+            return;
+        };
+        let has_failed = pr.check_runs.iter().any(|r| r.status == CheckStatus::Fail);
+        if !has_failed {
+            self.status_message = "No failed CI checks".to_string();
+            return;
+        }
+        self.ci_log_popup_scroll = Some(usize::MAX);
+    }
+
+    pub fn close_ci_log_popup(&mut self) {
+        self.ci_log_popup_scroll = None;
+    }
+
+    pub fn ci_log_popup_active(&self) -> bool {
+        self.ci_log_popup_scroll.is_some()
+    }
+
+    pub fn scroll_ci_log_popup(&mut self, delta: isize) {
+        if let Some(scroll) = self.ci_log_popup_scroll.as_mut() {
+            *scroll = (*scroll as isize + delta).max(0) as usize;
+        }
+    }
+
     pub fn start_search(&mut self) {
         self.input_mode = InputMode::Searching;
     }
@@ -1716,6 +1798,24 @@ impl App {
         self.status_message = format!("Opened PR #{number} in browser");
         Ok(())
     }
+}
+
+/// Returns true if the set of check runs has changed between refreshes,
+/// meaning we need to re-fetch detail data (logs, annotations, etc.).
+/// Compares run names and their pass/fail/pending status.
+fn check_runs_changed(
+    old_runs: &[crate::apis::github::CheckRun],
+    new_runs: &[crate::apis::github::CheckRun],
+) -> bool {
+    if old_runs.len() != new_runs.len() {
+        return true;
+    }
+    for (old, new) in old_runs.iter().zip(new_runs.iter()) {
+        if old.name != new.name || old.status != new.status {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns true if the issue type suggests this issue can contain child issues

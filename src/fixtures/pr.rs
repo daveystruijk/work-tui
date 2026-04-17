@@ -19,12 +19,14 @@ pub(crate) fn test_pr() -> PrInfo {
                 details_url: String::new(),
                 summary: String::new(),
                 text: String::new(),
+                failed_log_excerpt: String::new(),
                 steps: vec![CheckStep {
                     name: "cargo fmt".to_string(),
                     status: CheckStatus::Pass,
                     started_at: Some("2024-01-01T10:00:00Z".to_string()),
                     completed_at: Some("2024-01-01T10:00:20Z".to_string()),
                 }],
+                annotations: Vec::new(),
             },
             CheckRun {
                 name: "build".to_string(),
@@ -34,6 +36,7 @@ pub(crate) fn test_pr() -> PrInfo {
                 details_url: String::new(),
                 summary: String::new(),
                 text: String::new(),
+                failed_log_excerpt: String::new(),
                 steps: vec![
                     CheckStep {
                         name: "compile".to_string(),
@@ -48,6 +51,7 @@ pub(crate) fn test_pr() -> PrInfo {
                         completed_at: None,
                     },
                 ],
+                annotations: Vec::new(),
             },
         ],
         url: "https://github.com/example/work-tui/pull/42".to_string(),

@@ -24,7 +24,9 @@ pub struct CheckRun {
     pub details_url: String,
     pub summary: String,
     pub text: String,
+    pub failed_log_excerpt: String,
     pub steps: Vec<CheckStep>,
+    pub annotations: Vec<CheckAnnotation>,
 }
 
 /// A single step within a CI check run.
@@ -34,6 +36,15 @@ pub struct CheckStep {
     pub status: CheckStatus,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+/// An annotation on a CI check run (e.g. error/warning from GitHub Actions).
+#[derive(Debug, Clone)]
+pub struct CheckAnnotation {
+    pub message: String,
+    pub title: String,
+    pub path: String,
+    pub annotation_level: String,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +121,19 @@ impl PrInfo {
         self.additions = detail.additions;
         self.deletions = detail.deletions;
         self.mergeable = detail.mergeable;
+    }
+
+    /// Copy detail-enriched fields from a previously loaded PR.
+    /// Used to carry forward cached CI logs across auto-refresh cycles
+    /// when the check run set hasn't changed.
+    pub fn apply_detail_from(&mut self, old: &PrInfo) {
+        self.check_runs = old.check_runs.clone();
+        self.comments = old.comments.clone();
+        self.review_threads = old.review_threads.clone();
+        self.changed_files = old.changed_files;
+        self.additions = old.additions;
+        self.deletions = old.deletions;
+        self.mergeable = old.mergeable.clone();
     }
 
     pub fn latest_failed_check(&self) -> Option<&CheckRun> {
@@ -201,7 +225,9 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                     details_url: String::new(),
                     summary: String::new(),
                     text: String::new(),
+                    failed_log_excerpt: String::new(),
                     steps: Vec::new(),
+                    annotations: Vec::new(),
                 })
                 .collect();
             PrInfo {
@@ -426,7 +452,9 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                     details_url: String::new(),
                     summary: String::new(),
                     text: String::new(),
+                    failed_log_excerpt: String::new(),
                     steps: Vec::new(),
+                    annotations: Vec::new(),
                 })
                 .collect();
 
@@ -521,6 +549,14 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                                                         completedAt
                                                     }}
                                                 }}
+                                                annotations(first: 50) {{
+                                                    nodes {{
+                                                        annotationLevel
+                                                        message
+                                                        title
+                                                        path
+                                                    }}
+                                                }}
                                             }}
                                         }}
                                     }}
@@ -579,7 +615,7 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
     };
 
     let checks = aggregate_check_status(&rollup_option);
-    let check_runs = rollup_option
+    let check_runs: Vec<CheckRun> = rollup_option
         .take()
         .unwrap_or_default()
         .into_iter()
@@ -596,6 +632,16 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                     completed_at: step.completed_at,
                 })
                 .collect();
+            let annotations = check
+                .annotations
+                .into_iter()
+                .map(|a| CheckAnnotation {
+                    message: a.message,
+                    title: a.title,
+                    path: a.path,
+                    annotation_level: a.annotation_level,
+                })
+                .collect();
             CheckRun {
                 name: check.name,
                 status,
@@ -604,8 +650,20 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                 details_url: check.details_url,
                 summary: check.summary,
                 text: check.text,
+                failed_log_excerpt: String::new(),
                 steps,
+                annotations,
             }
+        })
+        .collect();
+
+    let failed_logs = fetch_failed_check_run_logs(repo_slug, &check_runs).await?;
+    let check_runs: Vec<CheckRun> = check_runs
+        .into_iter()
+        .zip(failed_logs)
+        .map(|(mut run, failed_log_excerpt)| {
+            run.failed_log_excerpt = failed_log_excerpt;
+            run
         })
         .collect();
 
@@ -624,6 +682,84 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
         deletions,
         mergeable,
     })
+}
+
+fn parse_job_id_from_details_url(details_url: &str) -> Option<u64> {
+    let marker = "/actions/runs/";
+    let run_index = details_url.find(marker)? + marker.len();
+    let after_run = &details_url[run_index..];
+    let job_marker = "/job/";
+    let job_index = after_run.find(job_marker)? + job_marker.len();
+    let job_part = &after_run[job_index..];
+    let digits: String = job_part.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+async fn fetch_failed_job_log_text(repo_slug: &str, job_id: u64) -> Option<String> {
+    let output = Command::new("gh")
+        .args(["run", "view", "--repo", repo_slug, "--job", &job_id.to_string(), "--log-failed"])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    sanitize_failed_log_excerpt(&stdout)
+}
+
+fn sanitize_failed_log_excerpt(output: &str) -> Option<String> {
+    let without_ansi = strip_ansi_sequences(output);
+    let lines = without_ansi
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let keep_from = lines.len().saturating_sub(50);
+    Some(lines[keep_from..].join("\n"))
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && matches!(chars.peek(), Some('[')) {
+            chars.next();
+            while let Some(next) = chars.next() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+            continue;
+        }
+        output.push(ch);
+    }
+    output
+}
+
+async fn fetch_failed_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> Result<Vec<String>> {
+    let mut logs = Vec::with_capacity(check_runs.len());
+    for run in check_runs {
+        if run.status != CheckStatus::Fail {
+            logs.push(String::new());
+            continue;
+        }
+
+        let Some(job_id) = parse_job_id_from_details_url(&run.details_url) else {
+            logs.push(String::new());
+            continue;
+        };
+
+        logs.push(fetch_failed_job_log_text(repo_slug, job_id).await.unwrap_or_default());
+    }
+    Ok(logs)
 }
 
 /// Create a pull request using `gh pr create` and return the PR URL.
@@ -733,6 +869,11 @@ fn extract_check_rollups(pr_node: &Value) -> Vec<GhCheckRollup> {
                 .get("steps")
                 .and_then(|v| v.get("nodes"))
                 .and_then(|v| serde_json::from_value::<Vec<GhCheckStep>>(v.clone()).ok())
+                .unwrap_or_default(),
+            annotations: context
+                .get("annotations")
+                .and_then(|v| v.get("nodes"))
+                .and_then(|v| serde_json::from_value::<Vec<GhCheckAnnotation>>(v.clone()).ok())
                 .unwrap_or_default(),
         });
     }
@@ -887,6 +1028,18 @@ struct GhCheckStep {
 }
 
 #[derive(Deserialize)]
+struct GhCheckAnnotation {
+    #[serde(rename = "annotationLevel", default)]
+    annotation_level: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Deserialize)]
 struct GhCheckRollup {
     #[serde(default)]
     name: String,
@@ -905,6 +1058,8 @@ struct GhCheckRollup {
     text: String,
     #[serde(default)]
     steps: Vec<GhCheckStep>,
+    #[serde(default)]
+    annotations: Vec<GhCheckAnnotation>,
 }
 
 fn check_run_status(c: &GhCheckRollup) -> CheckStatus {

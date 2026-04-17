@@ -140,6 +140,10 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
 }
 
 async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
+    if app.ci_log_popup_active() {
+        handle_ci_log_popup(app, key_event);
+        return;
+    }
     if app.label_picker_active() {
         handle_label_picker(app, key_event).await;
         return;
@@ -205,10 +209,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.loading = true;
                     app.spawn_refresh();
                 }
-                's' => {
-                    app.status_message = "Converting to story...".to_string();
-                    app.spawn_convert_to_story();
-                }
+                's' => app.spawn_toggle_story_type(),
                 'f' => {
                     app.status_message = "Finishing...".to_string();
                     app.spawn_finish();
@@ -218,6 +219,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.status_message = "Approving & enabling auto-merge...".to_string();
                     app.spawn_approve_merge();
                 }
+                'c' => app.open_ci_log_popup(),
                 _ => {}
             }
         }
@@ -308,6 +310,39 @@ fn handle_search(app: &mut App, key_event: KeyEvent) {
         }
         _ => {}
     }
+}
+
+fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
+    if key_event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        app.should_quit = true;
+        return;
+    }
+
+    match key_event.code {
+        KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => app.close_ci_log_popup(),
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_ci_log_popup(1),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_ci_log_popup(-1),
+        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_ci_log_popup(20);
+        }
+        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_ci_log_popup(-20);
+        }
+        KeyCode::Char('G') => app.scroll_ci_log_popup(isize::MAX / 2),
+        KeyCode::Char('g') => {
+            if app.pending_g {
+                app.ci_log_popup_scroll = Some(0);
+                app.pending_g = false;
+            } else {
+                app.pending_g = true;
+            }
+            return;
+        }
+        _ => {}
+    }
+    app.pending_g = false;
 }
 
 async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {

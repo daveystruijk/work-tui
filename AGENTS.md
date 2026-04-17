@@ -9,8 +9,6 @@ Rust TUI app (ratatui + crossterm) for managing Jira issues with GitHub PR integ
 ```sh
 cargo run --bin work-tui     # Run the app (requires env vars below)
 cargo test                   # Run all tests
-cargo insta test             # Run tests + review snapshot changes
-cargo insta review           # Interactively accept/reject snapshot diffs
 cargo clippy                 # Lint
 ```
 
