@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "normalize-labels"
 path = "src/bin/normalize_labels.rs"
 
+[[bin]]
+name = "debug-action"
+path = "src/bin/debug_action.rs"
+
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"

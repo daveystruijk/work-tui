@@ -3,6 +3,7 @@ use std::path::Path;
 use color_eyre::{eyre::eyre, Result};
 use tokio::process::Command;
 
+#[derive(Debug)]
 pub struct BranchCheckoutResult {
     pub branch_name: String,
     pub reused_existing: bool,

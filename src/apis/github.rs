@@ -666,11 +666,7 @@ fn parse_job_id_from_details_url(details_url: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-async fn fetch_failed_job_log_text(
-    repo_slug: &str,
-    job_id: u64,
-    failed_step_names: &[String],
-) -> Option<String> {
+async fn fetch_failed_job_log_text(repo_slug: &str, job_id: u64) -> Option<String> {
     let output = Command::new("gh")
         .args(["run", "view", "--repo", repo_slug, "--job", &job_id.to_string(), "--log-failed"])
         .output()
@@ -682,37 +678,69 @@ async fn fetch_failed_job_log_text(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    sanitize_failed_log_excerpt(&stdout, failed_step_names)
+    sanitize_failed_log_excerpt(&stdout)
 }
 
-fn sanitize_failed_log_excerpt(output: &str, failed_step_names: &[String]) -> Option<String> {
+/// Strip ANSI sequences, `gh` log prefixes and timestamps, then extract
+/// `##[error]` lines with surrounding context.
+fn sanitize_failed_log_excerpt(output: &str) -> Option<String> {
     let without_ansi = strip_ansi_sequences(output);
-    let lines = without_ansi
+    let lines: Vec<&str> = without_ansi
         .lines()
         .map(str::trim_end)
-        .filter(|line| is_failed_step_line(line, failed_step_names))
+        .filter(|line| line.contains('\t'))
         .map(strip_gh_log_prefix)
         .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>();
+        .collect();
 
     if lines.is_empty() {
         return None;
     }
 
-    Some(lines.join("\n"))
+    Some(extract_error_context(&lines).join("\n"))
 }
 
-/// Returns true when the line's step name (second tab-delimited field) matches a failed step.
-fn is_failed_step_line(line: &str, failed_step_names: &[String]) -> bool {
-    let Some(first_tab) = line.find('\t') else {
-        return false;
-    };
-    let after_first = &line[first_tab + 1..];
-    let step_name = match after_first.find('\t') {
-        Some(pos) => &after_first[..pos],
-        None => after_first,
-    };
-    failed_step_names.iter().any(|name| name == step_name)
+/// Extract `##[error]` lines and surrounding context from a job log.
+///
+/// Returns up to 5 lines of context before each error line, the error line
+/// itself, and up to 2 lines after. Falls back to the last 50 lines if no
+/// `##[error]` markers are found.
+fn extract_error_context<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    let error_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("##[error]"))
+        .map(|(i, _)| i)
+        .collect();
+
+    if error_indices.is_empty() {
+        let start = lines.len().saturating_sub(50);
+        return lines[start..].to_vec();
+    }
+
+    let mut included = vec![false; lines.len()];
+    for &idx in &error_indices {
+        let context_start = idx.saturating_sub(5);
+        let context_end = (idx + 3).min(lines.len());
+        for flag in &mut included[context_start..context_end] {
+            *flag = true;
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut in_block = false;
+    for (i, line) in lines.iter().enumerate() {
+        if included[i] {
+            if !in_block && !result.is_empty() {
+                result.push("...");
+            }
+            result.push(line);
+            in_block = true;
+        } else {
+            in_block = false;
+        }
+    }
+    result
 }
 
 /// Strip the `<job>\t<step>\t` prefix that `gh run view --log-failed` adds.
@@ -774,15 +802,8 @@ pub async fn fetch_failed_check_run_logs(repo_slug: &str, check_runs: &[CheckRun
             continue;
         };
 
-        let failed_step_names: Vec<String> = run
-            .steps
-            .iter()
-            .filter(|s| s.status == CheckStatus::Fail)
-            .map(|s| s.name.clone())
-            .collect();
-
         logs.push(
-            fetch_failed_job_log_text(repo_slug, job_id, &failed_step_names)
+            fetch_failed_job_log_text(repo_slug, job_id)
                 .await
                 .unwrap_or_default(),
         );
