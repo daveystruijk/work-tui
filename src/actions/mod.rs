@@ -22,6 +22,7 @@ pub mod finish;
 pub mod fix_ci;
 pub mod initialize;
 pub mod link_jira_repos;
+pub mod openspec_propose;
 pub mod pick_up;
 pub mod refresh;
 
@@ -111,6 +112,9 @@ pub enum ActionMessage {
     /// Opencode session opened with CI error context (from [`fix_ci`]).
     /// Carries the branch name.
     FixCiOpened(Result<String>),
+    /// Opencode session opened for openspec propose (from [`openspec_propose`]).
+    /// Carries the slug.
+    OpenspecProposeOpened(Result<String>),
     /// A background task has started. The payload is the human-readable task name.
     TaskStarted(String),
     /// A background task has finished. The payload is the human-readable task name.

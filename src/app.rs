@@ -419,6 +419,7 @@ impl App {
                     self.spawn_active_branches();
                 }
             }
+            ActionMessage::OpenspecProposeOpened(_) => {}
             ActionMessage::TaskStarted(name) => {
                 self.running_tasks.insert(name);
                 self.status_bar.handle_task_started(&self.running_tasks);
@@ -536,19 +537,22 @@ impl App {
         let issue_key = issue.key.clone();
         let issue_summary = issue.summary().unwrap_or_default();
         let issue_description = issue.description().unwrap_or_default();
-        let repos = self.repo_matches(issue);
-        if repos.is_empty() {
-            self.status_bar.message = format!("Cannot pick up {issue_key}: no linked repo");
-            return;
-        }
+        let repo_path = match self.repo_matches(issue).first() {
+            Some(entry) => entry.path.clone(),
+            None => {
+                self.status_bar.message = format!("Cannot pick up {issue_key}: no linked repo");
+                return;
+            }
+        };
 
+        self.status_bar.message = "Picking up...".to_string();
         actions::pick_up::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
             issue_key,
             issue_summary,
             issue_description,
-            repos[0].path.clone(),
+            repo_path,
             self.my_account_id.clone(),
         );
     }
@@ -559,13 +563,16 @@ impl App {
             return;
         };
         let issue_key = issue.key.clone();
-        let repos = self.repo_matches(issue);
-        if repos.is_empty() {
-            self.status_bar.message = format!("Cannot open diff for {issue_key}: no linked repo");
-            return;
-        }
+        let repo_path = match self.repo_matches(issue).first() {
+            Some(entry) => entry.path.clone(),
+            None => {
+                self.status_bar.message = format!("Cannot open diff for {issue_key}: no linked repo");
+                return;
+            }
+        };
 
-        actions::branch_diff::spawn(self.bg_tx.clone(), issue_key, repos[0].path.clone());
+        self.status_bar.message = "Opening diff...".to_string();
+        actions::branch_diff::spawn(self.bg_tx.clone(), issue_key, repo_path);
     }
 
     /// Spawn approve + auto-merge for the selected issue's PR.
@@ -579,6 +586,7 @@ impl App {
             return;
         };
 
+        self.status_bar.message = "Approving & enabling auto-merge...".to_string();
         actions::approve_merge::spawn(self.bg_tx.clone(), pr.repo_slug.clone(), pr.number);
     }
 
@@ -589,18 +597,21 @@ impl App {
         };
         let issue_key = issue.key.clone();
         let issue_summary = issue.summary().unwrap_or_default();
-        let repos = self.repo_matches(issue);
-        if repos.is_empty() {
-            self.status_bar.message = format!("Cannot finish {issue_key}: no linked repo");
-            return;
-        }
+        let repo_path = match self.repo_matches(issue).first() {
+            Some(entry) => entry.path.clone(),
+            None => {
+                self.status_bar.message = format!("Cannot finish {issue_key}: no linked repo");
+                return;
+            }
+        };
 
+        self.status_bar.message = "Finishing...".to_string();
         actions::finish::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
             issue_key,
             issue_summary,
-            repos[0].path.clone(),
+            repo_path,
         );
     }
 
@@ -1476,6 +1487,51 @@ impl App {
         self.close_ci_log_popup();
         self.status_bar.message = "Checking out branch and opening opencode...".to_string();
         actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
+    }
+
+    /// Open an opencode session to propose an openspec change for the selected issue.
+    pub fn spawn_openspec_propose(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let issue_summary = issue.summary().unwrap_or_default();
+        let issue_description = issue.description().unwrap_or_default();
+
+        let repo_slugs: Vec<String> = self
+            .repo_matches(issue)
+            .iter()
+            .filter_map(|entry| entry.github_slug.clone())
+            .collect();
+
+        let mut parent_stories = Vec::new();
+        let mut current_issue = self.selected_issue().cloned();
+        while let Some(parent) = current_issue.as_ref().and_then(|i| i.parent()) {
+            parent_stories.push(actions::openspec_propose::StoryContext {
+                summary: parent.summary().unwrap_or_default(),
+                description: parent.description().unwrap_or_default(),
+            });
+            current_issue = Some(parent);
+        }
+
+        let repos_dir = match std::env::var("REPOS_DIR") {
+            Ok(dir) => std::path::PathBuf::from(dir),
+            Err(_) => {
+                self.status_bar.message = "REPOS_DIR is not set".to_string();
+                return;
+            }
+        };
+
+        self.status_bar.message = "Opening openspec propose...".to_string();
+        actions::openspec_propose::spawn(
+            self.bg_tx.clone(),
+            repos_dir,
+            issue_key,
+            issue_summary,
+            issue_description,
+            parent_stories,
+            repo_slugs,
+        );
     }
 
     pub fn close_ci_log_popup(&mut self) {

@@ -185,20 +185,14 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
             app.pending_g = false;
 
             match c {
-                'b' => {
-                    app.status_bar.message = "Opening diff...".to_string();
-                    app.spawn_branch_diff();
-                }
+                'b' => app.spawn_branch_diff(),
                 'j' => move_selection_down(app),
                 'k' => move_selection_up(app),
                 'G' => move_selection_to_end(app),
                 'g' => {
                     app.pending_g = true;
                 }
-                'p' => {
-                    app.status_bar.message = "Picking up...".to_string();
-                    app.spawn_pick_up();
-                }
+                'p' => app.spawn_pick_up(),
                 'o' => match app.open_selected_pr_in_browser().await {
                     Ok(_) => {}
                     Err(err) => app.status_bar.message = format!("{err}"),
@@ -216,16 +210,11 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.spawn_refresh();
                 }
                 's' => app.spawn_toggle_story_type(),
-                'f' => {
-                    app.status_bar.message = "Finishing...".to_string();
-                    app.spawn_finish();
-                }
+                'f' => app.spawn_finish(),
                 '/' => app.start_search(),
-                'V' => {
-                    app.status_bar.message = "Approving & enabling auto-merge...".to_string();
-                    app.spawn_approve_merge();
-                }
+                'V' => app.spawn_approve_merge(),
                 'c' => app.open_ci_log_popup(),
+                'e' => app.spawn_openspec_propose(),
                 'h' => {
                     app.collapse_story();
                 }
