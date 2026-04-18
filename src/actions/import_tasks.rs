@@ -35,7 +35,7 @@ pub struct TaskEntry {
 }
 
 /// Find the tasks.json path for the given issue key under `$REPOS_DIR/opencode/changes/`.
-fn find_tasks_json(repos_dir: &Path, issue_key: &str) -> Result<PathBuf> {
+pub fn find_tasks_json(repos_dir: &Path, issue_key: &str) -> Result<PathBuf> {
     let changes_dir = repos_dir.join("opencode").join("changes");
     if !changes_dir.is_dir() {
         return Err(eyre!(
@@ -45,8 +45,8 @@ fn find_tasks_json(repos_dir: &Path, issue_key: &str) -> Result<PathBuf> {
     }
 
     let prefix = format!("{}-", issue_key.to_lowercase());
-    let entries =
-        std::fs::read_dir(&changes_dir).map_err(|err| eyre!("Failed to read changes dir: {err}"))?;
+    let entries = std::fs::read_dir(&changes_dir)
+        .map_err(|err| eyre!("Failed to read changes dir: {err}"))?;
 
     for entry in entries {
         let entry = entry.map_err(|err| eyre!("Failed to read entry: {err}"))?;
@@ -72,11 +72,21 @@ fn find_tasks_json(repos_dir: &Path, issue_key: &str) -> Result<PathBuf> {
     ))
 }
 
+/// Load and parse tasks from a tasks.json file.
+pub fn load_tasks(path: &Path) -> Result<Vec<TaskEntry>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|err| eyre!("Failed to read {}: {err}", path.display()))?;
+    let tasks: Vec<TaskEntry> =
+        serde_json::from_str(&content).map_err(|err| eyre!("Failed to parse tasks.json: {err}"))?;
+    Ok(tasks)
+}
+
 /// Spawn the import tasks action.
 pub fn spawn(
     tx: mpsc::UnboundedSender<ActionMessage>,
     client: JiraClient,
-    repos_dir: PathBuf,
+    tasks_path: PathBuf,
+    tasks: Vec<TaskEntry>,
     issue_key: String,
     issue_type_name: String,
     project_key: String,
@@ -85,7 +95,8 @@ pub fn spawn(
         let result = run(
             &tx,
             &client,
-            &repos_dir,
+            &tasks_path,
+            tasks,
             &issue_key,
             &issue_type_name,
             &project_key,
@@ -98,24 +109,12 @@ pub fn spawn(
 async fn run(
     tx: &mpsc::UnboundedSender<ActionMessage>,
     client: &JiraClient,
-    repos_dir: &Path,
+    tasks_path: &Path,
+    mut tasks: Vec<TaskEntry>,
     issue_key: &str,
     issue_type_name: &str,
     project_key: &str,
 ) -> Result<()> {
-    let _ = tx.send(ActionMessage::Progress(Progress {
-        action: "import_tasks",
-        message: "Finding tasks.json...".into(),
-        current: 1,
-        total: 0,
-    }));
-
-    let tasks_path = find_tasks_json(repos_dir, issue_key)?;
-    let content = std::fs::read_to_string(&tasks_path)
-        .map_err(|err| eyre!("Failed to read {}: {err}", tasks_path.display()))?;
-    let mut tasks: Vec<TaskEntry> =
-        serde_json::from_str(&content).map_err(|err| eyre!("Failed to parse tasks.json: {err}"))?;
-
     let pending_tasks: Vec<usize> = tasks
         .iter()
         .enumerate()
@@ -127,17 +126,16 @@ async fn run(
         return Err(eyre!("All tasks already have keys assigned"));
     }
 
-    let total_steps = pending_tasks.len() + 1; // +1 for setup
+    let total_steps = pending_tasks.len() + 1;
 
     if pending_tasks.len() == 1 {
-        // Single task: update the current issue directly
         let task_index = pending_tasks[0];
         let task = &tasks[task_index];
 
         let _ = tx.send(ActionMessage::Progress(Progress {
             action: "import_tasks",
             message: format!("Updating {issue_key}..."),
-            current: 2,
+            current: 1,
             total: total_steps,
         }));
 
@@ -146,7 +144,7 @@ async fn run(
             .await?;
 
         tasks[task_index].key = Some(issue_key.to_string());
-        write_tasks_json(&tasks_path, &tasks)?;
+        write_tasks_json(tasks_path, &tasks)?;
 
         return Ok(());
     }
@@ -159,7 +157,7 @@ async fn run(
         let _ = tx.send(ActionMessage::Progress(Progress {
             action: "import_tasks",
             message: format!("Converting {issue_key} to Story..."),
-            current: 2,
+            current: 1,
             total: total_steps + 1,
         }));
         client.update_issue_type(issue_key, "Story").await?;
@@ -179,8 +177,8 @@ async fn run(
         let _ = tx.send(ActionMessage::Progress(Progress {
             action: "import_tasks",
             message: format!("Creating subtask: {}...", task.title),
-            current: step + 3,
-            total: total_steps + 2,
+            current: step + 2,
+            total: total_steps + 1,
         }));
 
         let created_key = client
@@ -194,7 +192,7 @@ async fn run(
             .await?;
 
         tasks[task_index].key = Some(created_key);
-        write_tasks_json(&tasks_path, &tasks)?;
+        write_tasks_json(tasks_path, &tasks)?;
     }
 
     Ok(())

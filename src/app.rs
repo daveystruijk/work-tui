@@ -14,7 +14,7 @@ use crate::{
     cache::{self, Cache},
     events::{Event, EventLevel, EventSource},
     repos::{self, RepoEntry},
-    ui::{CiLogPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
+    ui::{CiLogPopupState, ImportTasksPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
 };
 
 /// Compute duration in seconds between two ISO 8601 timestamps.
@@ -153,6 +153,7 @@ pub struct App {
     /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
     pub last_ci_refresh: std::time::Instant,
     pub ci_log_popup: CiLogPopupState,
+    pub import_tasks_popup: Option<ImportTasksPopupState>,
 }
 
 impl App {
@@ -197,6 +198,7 @@ impl App {
             bg_rx,
             last_ci_refresh: std::time::Instant::now(),
             ci_log_popup: CiLogPopupState::default(),
+            import_tasks_popup: None,
         };
 
         app.status_bar.message = "Loading...".to_string();
@@ -1500,8 +1502,8 @@ impl App {
         actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
     }
 
-    /// Import tasks from a tasks.json file in the opencode changes directory.
-    pub fn spawn_import_tasks(&mut self) {
+    /// Open the import tasks confirmation popup for the selected issue.
+    pub fn open_import_tasks_popup(&mut self) {
         let Some(issue) = self.selected_issue() else {
             return;
         };
@@ -1520,15 +1522,66 @@ impl App {
             }
         };
 
-        self.status_bar.message = format!("Importing tasks for {issue_key}...");
-        actions::import_tasks::spawn(
-            self.bg_tx.clone(),
-            self.client.clone(),
-            repos_dir,
+        let tasks_path = match actions::import_tasks::find_tasks_json(&repos_dir, &issue_key) {
+            Ok(path) => path,
+            Err(err) => {
+                self.status_bar.message = format!("{err}");
+                return;
+            }
+        };
+
+        let tasks = match actions::import_tasks::load_tasks(&tasks_path) {
+            Ok(tasks) => tasks,
+            Err(err) => {
+                self.status_bar.message = format!("{err}");
+                return;
+            }
+        };
+
+        let pending_count = tasks.iter().filter(|t| t.key.is_none()).count();
+        if pending_count == 0 {
+            self.status_bar.message = "All tasks already imported".to_string();
+            return;
+        }
+
+        self.import_tasks_popup = Some(ImportTasksPopupState {
+            tasks,
+            tasks_path,
             issue_key,
             issue_type_name,
             project_key,
+            scroll: 0,
+        });
+    }
+
+    /// Close the import tasks popup without importing.
+    pub fn close_import_tasks_popup(&mut self) {
+        self.import_tasks_popup = None;
+    }
+
+    /// Confirm and execute the import from the popup.
+    pub fn confirm_import_tasks(&mut self) {
+        let Some(popup) = self.import_tasks_popup.take() else {
+            return;
+        };
+
+        self.status_bar.message = format!("Importing tasks for {}...", popup.issue_key);
+        actions::import_tasks::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            popup.tasks_path,
+            popup.tasks,
+            popup.issue_key,
+            popup.issue_type_name,
+            popup.project_key,
         );
+    }
+
+    /// Scroll the import tasks popup.
+    pub fn scroll_import_tasks_popup(&mut self, delta: isize) {
+        if let Some(popup) = self.import_tasks_popup.as_mut() {
+            popup.scroll = (popup.scroll as isize + delta).max(0) as usize;
+        }
     }
 
     /// Open an opencode session to propose an openspec change for the selected issue.

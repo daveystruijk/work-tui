@@ -53,6 +53,7 @@ pub fn test_app() -> App {
         bg_rx,
         last_ci_refresh: std::time::Instant::now(),
         ci_log_popup: CiLogPopupState::default(),
+        import_tasks_popup: None,
     }
 }
 

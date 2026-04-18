@@ -146,6 +146,10 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
 }
 
 async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
+    if app.import_tasks_popup.is_some() {
+        handle_import_tasks_popup(app, key_event);
+        return;
+    }
     if app.ci_log_popup.scroll.is_some() {
         handle_ci_log_popup(app, key_event).await;
         return;
@@ -215,7 +219,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                 'V' => app.spawn_approve_merge(),
                 'c' => app.open_ci_log_popup(),
                 'e' => app.spawn_openspec_propose(),
-                'i' => app.spawn_import_tasks(),
+                'i' => app.open_import_tasks_popup(),
                 'h' => {
                     app.collapse_story();
                 }
@@ -347,6 +351,23 @@ async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
         _ => {}
     }
     app.pending_g = false;
+}
+
+fn handle_import_tasks_popup(app: &mut App, key_event: KeyEvent) {
+    if key_event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        app.should_quit = true;
+        return;
+    }
+
+    match key_event.code {
+        KeyCode::Esc => app.close_import_tasks_popup(),
+        KeyCode::Enter => app.confirm_import_tasks(),
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_import_tasks_popup(1),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_import_tasks_popup(-1),
+        _ => {}
+    }
 }
 
 async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {

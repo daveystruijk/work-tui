@@ -1,9 +1,11 @@
 mod ci_logs;
+mod import_tasks;
 mod list;
 mod sidebar;
 mod status_bar;
 
 pub use ci_logs::CiLogPopupState;
+pub use import_tasks::ImportTasksPopupState;
 pub use list::ListViewState;
 pub use sidebar::SidebarState;
 pub use status_bar::StatusBarState;
@@ -74,6 +76,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Sidebar gets the full height (no footer)
     sidebar::render_sidebar(app, frame, columns[1]);
+
+    // Import tasks popup overlays everything
+    if app.import_tasks_popup.is_some() {
+        import_tasks::render_import_tasks_popup(app, frame);
+    }
 
     // CI logs popup overlays everything
     if app.ci_log_popup.scroll.is_some() {
