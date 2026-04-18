@@ -13,6 +13,8 @@ pub mod auto_label;
 pub mod branch_diff;
 pub mod create_inline_issue;
 pub mod convert_to_story;
+pub mod fetch_ci_logs;
+pub mod fix_ci;
 pub mod detect_active_branches;
 pub mod fetch_children;
 pub mod fetch_github_pr_detail;
@@ -100,6 +102,12 @@ pub enum ActionMessage {
     ChildrenLoaded(String, Result<Vec<Issue>>),
     /// Issue type changed to Story (from [`convert_to_story`]).
     ConvertedToStory(String, Result<()>),
+    /// Failed CI log excerpts fetched on demand (from [`fetch_ci_logs`]).
+    /// Carries (issue_key, per-check-run log strings in order).
+    CiLogsFetched(String, Result<Vec<String>>),
+    /// Opencode session opened with CI error context (from [`fix_ci`]).
+    /// Carries the branch name.
+    FixCiOpened(Result<String>),
     /// A background task has started. The payload is the human-readable task name.
     TaskStarted(String),
     /// A background task has finished. The payload is the human-readable task name.

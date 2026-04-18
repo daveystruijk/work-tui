@@ -59,6 +59,8 @@ pub fn test_app() -> App {
         last_ci_refresh: std::time::Instant::now(),
         last_updated: None,
         ci_log_popup_scroll: None,
+        ci_logs_loaded: Default::default(),
+        ci_logs_loading: Default::default(),
     }
 }
 

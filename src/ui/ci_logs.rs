@@ -10,7 +10,7 @@ use crate::apis::github::CheckStatus;
 use crate::app::App;
 use crate::theme::Theme;
 
-use super::wrap_text;
+use super::{wrap_text, SPINNER_FRAMES};
 
 pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
     let Some(scroll) = app.ci_log_popup_scroll else {
@@ -25,6 +25,8 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
     let Some(pr) = app.github_prs.get(&issue_key) else {
         return;
     };
+
+    let logs_loading = app.ci_logs_loading.contains(&issue_key);
 
     let area = popup_rect(frame.area());
     frame.render_widget(Clear, area);
@@ -43,6 +45,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
     frame.render_widget(popup, area);
 
     let content_width = inner.width.saturating_sub(2) as usize;
+    let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -88,53 +91,43 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
             lines.push(Line::from(""));
         }
 
-        // Error content: prioritize failed_log_excerpt, then annotations, then text/summary
-        let error_blocks: Vec<String> = if !run.failed_log_excerpt.trim().is_empty() {
-            vec![run.failed_log_excerpt.trim().to_string()]
-        } else {
-            let failure_annotations: Vec<_> = run
-                .annotations
-                .iter()
-                .filter(|a| a.annotation_level == "FAILURE")
-                .collect();
+        // Show spinner while logs are being fetched
+        if logs_loading && run.failed_log_excerpt.trim().is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("   {spinner} Fetching logs..."),
+                Style::default().fg(Theme::Warning),
+            )));
+            continue;
+        }
 
-            if !failure_annotations.is_empty() {
-                failure_annotations
-                    .iter()
-                    .map(|a| {
-                        let location = if a.path.is_empty() {
-                            String::new()
-                        } else {
-                            format!("{}: ", a.path)
-                        };
-                        let title = if a.title.is_empty() {
-                            String::new()
-                        } else {
-                            format!("{}: ", a.title)
-                        };
-                        format!("{location}{title}{}", a.message)
-                    })
-                    .collect()
-            } else if !run.text.trim().is_empty() {
-                vec![run.text.trim().to_string()]
-            } else if !run.summary.trim().is_empty() {
-                vec![run.summary.trim().to_string()]
-            } else if !run.details_url.trim().is_empty() {
-                vec![format!("Open: {}", run.details_url)]
-            } else {
-                vec!["No log output available".to_string()]
-            }
-        };
-
-        for block in &error_blocks {
-            for text_line in block.lines() {
-                for wrapped in wrap_text(text_line, content_width.saturating_sub(4), usize::MAX) {
-                    lines.push(Line::from(Span::styled(
-                        format!("   {wrapped}"),
-                        Style::default().fg(Theme::Text),
-                    )));
+        // Log content
+        if !run.failed_log_excerpt.trim().is_empty() {
+            let log_lines: Vec<&str> = run.failed_log_excerpt.trim().lines().collect();
+            let line_number_width = log_lines.len().to_string().len();
+            for (i, text_line) in log_lines.iter().enumerate() {
+                let line_number = format!("{:>width$}", i + 1, width = line_number_width);
+                let wrapped_lines = wrap_text(
+                    text_line,
+                    content_width.saturating_sub(line_number_width + 5),
+                    usize::MAX,
+                );
+                for (j, wrapped) in wrapped_lines.iter().enumerate() {
+                    let prefix = if j == 0 {
+                        format!("   {line_number} ")
+                    } else {
+                        format!("   {:width$} ", "", width = line_number_width)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(Theme::Muted)),
+                        Span::styled(wrapped.to_string(), Style::default().fg(Theme::Text)),
+                    ]));
                 }
             }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "   No log output available",
+                Style::default().fg(Theme::Muted),
+            )));
         }
     }
 
@@ -202,7 +195,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
     // Footer
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            "j/k:Scroll  G/gg:Top/Bottom  Esc:Close",
+            "j/k:Scroll  G/gg:Top/Bottom  Enter:Fix in opencode  Esc:Close",
             Style::default().fg(Theme::Muted),
         )]))
         .style(Style::default().bg(ratatui::style::Color::Black)),

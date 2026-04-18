@@ -99,25 +99,31 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
                 handle_key_event(&mut app, key_event).await;
             }
             Event::Mouse(mouse_event) if app.screen == Screen::List => {
-                match mouse_event.kind {
-                    MouseEventKind::ScrollDown => {
-                        scroll_viewport(&mut app, 3);
+                if app.ci_log_popup_active() {
+                    match mouse_event.kind {
+                        MouseEventKind::ScrollDown => app.scroll_ci_log_popup(3),
+                        MouseEventKind::ScrollUp => app.scroll_ci_log_popup(-3),
+                        _ => {}
                     }
-                    MouseEventKind::ScrollUp => {
-                        scroll_viewport(&mut app, -3);
-                    }
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        let clicked_row = mouse_event.row as usize;
-                        // Table starts at row 0 of main area; header is row 0, data starts at row 1
-                        // Account for the header row offset
-                        let data_row = clicked_row.saturating_sub(1);
-                        let target = app.list_scroll_offset + data_row;
-                        if target < app.display_rows.len() {
-                            app.selected_index = target;
-                            adjust_scroll_offset(&mut app);
+                } else {
+                    match mouse_event.kind {
+                        MouseEventKind::ScrollDown => {
+                            scroll_viewport(&mut app, 3);
                         }
+                        MouseEventKind::ScrollUp => {
+                            scroll_viewport(&mut app, -3);
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let clicked_row = mouse_event.row as usize;
+                            let data_row = clicked_row.saturating_sub(1);
+                            let target = app.list_scroll_offset + data_row;
+                            if target < app.display_rows.len() {
+                                app.selected_index = target;
+                                adjust_scroll_offset(&mut app);
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             _ => {}
@@ -141,7 +147,7 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
 
 async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
     if app.ci_log_popup_active() {
-        handle_ci_log_popup(app, key_event);
+        handle_ci_log_popup(app, key_event).await;
         return;
     }
     if app.label_picker_active() {
@@ -312,7 +318,7 @@ fn handle_search(app: &mut App, key_event: KeyEvent) {
     }
 }
 
-fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
+async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
     if key_event.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
     {
@@ -322,6 +328,7 @@ fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
 
     match key_event.code {
         KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => app.close_ci_log_popup(),
+        KeyCode::Enter => app.spawn_fix_ci(),
         KeyCode::Char('j') | KeyCode::Down => app.scroll_ci_log_popup(1),
         KeyCode::Char('k') | KeyCode::Up => app.scroll_ci_log_popup(-1),
         KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {

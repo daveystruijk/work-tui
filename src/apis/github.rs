@@ -222,7 +222,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                     status: check_run_status(c),
                     started_at: c.started_at.clone(),
                     completed_at: c.completed_at.clone(),
-                    details_url: String::new(),
+                    details_url: c.details_url.clone(),
                     summary: String::new(),
                     text: String::new(),
                     failed_log_excerpt: String::new(),
@@ -303,6 +303,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                                                     conclusion
                                                     startedAt
                                                     completedAt
+                                                    detailsUrl
                                                 }}
                                             }}
                                         }}
@@ -449,7 +450,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                     status: check_run_status(c),
                     started_at: c.started_at.clone(),
                     completed_at: c.completed_at.clone(),
-                    details_url: String::new(),
+                    details_url: c.details_url.clone(),
                     summary: String::new(),
                     text: String::new(),
                     failed_log_excerpt: String::new(),
@@ -538,8 +539,6 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                                                 startedAt
                                                 completedAt
                                                 detailsUrl
-                                                summary
-                                                text
                                                 steps(first: 50) {{
                                                     nodes {{
                                                         name
@@ -547,14 +546,6 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                                                         conclusion
                                                         startedAt
                                                         completedAt
-                                                    }}
-                                                }}
-                                                annotations(first: 50) {{
-                                                    nodes {{
-                                                        annotationLevel
-                                                        message
-                                                        title
-                                                        path
                                                     }}
                                                 }}
                                             }}
@@ -632,38 +623,18 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                     completed_at: step.completed_at,
                 })
                 .collect();
-            let annotations = check
-                .annotations
-                .into_iter()
-                .map(|a| CheckAnnotation {
-                    message: a.message,
-                    title: a.title,
-                    path: a.path,
-                    annotation_level: a.annotation_level,
-                })
-                .collect();
             CheckRun {
                 name: check.name,
                 status,
                 started_at: check.started_at,
                 completed_at: check.completed_at,
                 details_url: check.details_url,
-                summary: check.summary,
-                text: check.text,
+                summary: String::new(),
+                text: String::new(),
                 failed_log_excerpt: String::new(),
                 steps,
-                annotations,
+                annotations: Vec::new(),
             }
-        })
-        .collect();
-
-    let failed_logs = fetch_failed_check_run_logs(repo_slug, &check_runs).await?;
-    let check_runs: Vec<CheckRun> = check_runs
-        .into_iter()
-        .zip(failed_logs)
-        .map(|(mut run, failed_log_excerpt)| {
-            run.failed_log_excerpt = failed_log_excerpt;
-            run
         })
         .collect();
 
@@ -695,7 +666,11 @@ fn parse_job_id_from_details_url(details_url: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-async fn fetch_failed_job_log_text(repo_slug: &str, job_id: u64) -> Option<String> {
+async fn fetch_failed_job_log_text(
+    repo_slug: &str,
+    job_id: u64,
+    failed_step_names: &[String],
+) -> Option<String> {
     let output = Command::new("gh")
         .args(["run", "view", "--repo", repo_slug, "--job", &job_id.to_string(), "--log-failed"])
         .output()
@@ -707,14 +682,16 @@ async fn fetch_failed_job_log_text(repo_slug: &str, job_id: u64) -> Option<Strin
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    sanitize_failed_log_excerpt(&stdout)
+    sanitize_failed_log_excerpt(&stdout, failed_step_names)
 }
 
-fn sanitize_failed_log_excerpt(output: &str) -> Option<String> {
+fn sanitize_failed_log_excerpt(output: &str, failed_step_names: &[String]) -> Option<String> {
     let without_ansi = strip_ansi_sequences(output);
     let lines = without_ansi
         .lines()
         .map(str::trim_end)
+        .filter(|line| is_failed_step_line(line, failed_step_names))
+        .map(strip_gh_log_prefix)
         .filter(|line| !line.trim().is_empty())
         .collect::<Vec<_>>();
 
@@ -722,8 +699,48 @@ fn sanitize_failed_log_excerpt(output: &str) -> Option<String> {
         return None;
     }
 
-    let keep_from = lines.len().saturating_sub(50);
-    Some(lines[keep_from..].join("\n"))
+    Some(lines.join("\n"))
+}
+
+/// Returns true when the line's step name (second tab-delimited field) matches a failed step.
+fn is_failed_step_line(line: &str, failed_step_names: &[String]) -> bool {
+    let Some(first_tab) = line.find('\t') else {
+        return false;
+    };
+    let after_first = &line[first_tab + 1..];
+    let step_name = match after_first.find('\t') {
+        Some(pos) => &after_first[..pos],
+        None => after_first,
+    };
+    failed_step_names.iter().any(|name| name == step_name)
+}
+
+/// Strip the `<job>\t<step>\t` prefix that `gh run view --log-failed` adds.
+/// Format: "Lint and Test / test\tUNKNOWN STEP\t<content>"
+fn strip_gh_log_prefix(line: &str) -> &str {
+    let mut remainder = line;
+    for _ in 0..2 {
+        match remainder.find('\t') {
+            Some(pos) => remainder = &remainder[pos + 1..],
+            None => return line,
+        }
+    }
+    strip_gh_log_timestamp(remainder)
+}
+
+/// Strip the ISO 8601 timestamp prefix that GitHub Actions adds to each log line.
+/// Format: "2024-01-15T10:30:45.1234567Z <content>"
+fn strip_gh_log_timestamp(line: &str) -> &str {
+    // Timestamps are exactly 28 chars: "YYYY-MM-DDTHH:MM:SS.fffffffZ"
+    if line.len() >= 29
+        && line.as_bytes()[4] == b'-'
+        && line.as_bytes()[10] == b'T'
+        && line.as_bytes()[27] == b'Z'
+        && line.as_bytes()[28] == b' '
+    {
+        return &line[29..];
+    }
+    line
 }
 
 fn strip_ansi_sequences(input: &str) -> String {
@@ -744,7 +761,7 @@ fn strip_ansi_sequences(input: &str) -> String {
     output
 }
 
-async fn fetch_failed_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> Result<Vec<String>> {
+pub async fn fetch_failed_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> Result<Vec<String>> {
     let mut logs = Vec::with_capacity(check_runs.len());
     for run in check_runs {
         if run.status != CheckStatus::Fail {
@@ -757,7 +774,18 @@ async fn fetch_failed_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -
             continue;
         };
 
-        logs.push(fetch_failed_job_log_text(repo_slug, job_id).await.unwrap_or_default());
+        let failed_step_names: Vec<String> = run
+            .steps
+            .iter()
+            .filter(|s| s.status == CheckStatus::Fail)
+            .map(|s| s.name.clone())
+            .collect();
+
+        logs.push(
+            fetch_failed_job_log_text(repo_slug, job_id, &failed_step_names)
+                .await
+                .unwrap_or_default(),
+        );
     }
     Ok(logs)
 }

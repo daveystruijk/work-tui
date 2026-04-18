@@ -257,6 +257,29 @@ pub async fn create_branch_from_origin_main(
     ))
 }
 
+/// Checkout an existing branch.
+pub async fn checkout_branch(repo_path: &Path, branch: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["checkout", branch])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(eyre!(
+        "git checkout {branch} failed: {}",
+        if stderr.is_empty() {
+            "unknown error"
+        } else {
+            &stderr
+        }
+    ))
+}
+
 /// Get the current branch in a specific repo directory.
 pub async fn current_branch_in(repo_path: &Path) -> Result<String> {
     let output = Command::new("git")

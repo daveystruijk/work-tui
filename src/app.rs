@@ -169,6 +169,10 @@ pub struct App {
     pub last_updated: Option<std::time::Instant>,
     /// When `Some`, the CI logs popup is open with this scroll offset.
     pub ci_log_popup_scroll: Option<usize>,
+    /// Issue keys for which CI logs have already been fetched.
+    pub ci_logs_loaded: HashSet<String>,
+    /// Issue keys for which CI logs are currently being fetched.
+    pub ci_logs_loading: HashSet<String>,
 }
 
 impl App {
@@ -220,6 +224,8 @@ impl App {
             last_ci_refresh: std::time::Instant::now(),
             last_updated: None,
             ci_log_popup_scroll: None,
+            ci_logs_loaded: Default::default(),
+            ci_logs_loading: Default::default(),
         };
 
         app.check_durations = cache::load().check_durations;
@@ -506,6 +512,33 @@ impl App {
                 }
                 Err(err) => {
                     self.status_message = format!("Failed to convert {issue_key}: {err}");
+                }
+            },
+            ActionMessage::CiLogsFetched(issue_key, result) => {
+                self.ci_logs_loading.remove(&issue_key);
+                match result {
+                    Ok(logs) => {
+                        if let Some(pr) = self.github_prs.get_mut(&issue_key) {
+                            for (run, log) in pr.check_runs.iter_mut().zip(logs) {
+                                run.failed_log_excerpt = log;
+                            }
+                        }
+                        self.ci_logs_loaded.insert(issue_key);
+                    }
+                    Err(err) => {
+                        self.status_message =
+                            format!("Failed to fetch CI logs for {issue_key}: {err}");
+                    }
+                }
+            }
+            ActionMessage::FixCiOpened(result) => match result {
+                Ok(branch) => {
+                    self.current_branch = branch;
+                    self.status_message = "Opened opencode to fix CI".to_string();
+                    self.spawn_active_branches();
+                }
+                Err(err) => {
+                    self.status_message = format!("Failed to fix CI: {err}");
                 }
             },
             ActionMessage::PickedUp(result) => match result {
@@ -1504,7 +1537,8 @@ impl App {
             self.status_message = "No issue selected".to_string();
             return;
         };
-        let Some(pr) = self.github_prs.get(&issue.key) else {
+        let issue_key = issue.key.clone();
+        let Some(pr) = self.github_prs.get(&issue_key) else {
             self.status_message = "No linked PR".to_string();
             return;
         };
@@ -1514,6 +1548,65 @@ impl App {
             return;
         }
         self.ci_log_popup_scroll = Some(usize::MAX);
+        self.spawn_ci_log_fetch(&issue_key);
+    }
+
+    /// Spawn CI log fetch if logs aren't already cached or in-flight.
+    fn spawn_ci_log_fetch(&mut self, issue_key: &str) {
+        if self.ci_logs_loaded.contains(issue_key)
+            || self.ci_logs_loading.contains(issue_key)
+        {
+            return;
+        }
+        let Some(pr) = self.github_prs.get(issue_key) else {
+            return;
+        };
+        self.ci_logs_loading.insert(issue_key.to_string());
+        actions::fetch_ci_logs::spawn(
+            self.bg_tx.clone(),
+            issue_key.to_string(),
+            pr.repo_slug.clone(),
+            pr.check_runs.clone(),
+        );
+    }
+
+    /// Checkout the PR branch and open opencode with the CI error as prompt.
+    pub fn spawn_fix_ci(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            self.status_message = "No issue selected".to_string();
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let repo_path = match self.repo_matches(issue).first() {
+            Some(entry) => entry.path.clone(),
+            None => {
+                self.status_message = format!("Cannot fix CI for {issue_key}: no linked repo");
+                return;
+            }
+        };
+        let Some(pr) = self.github_prs.get(&issue_key) else {
+            self.status_message = "No linked PR".to_string();
+            return;
+        };
+
+        let head_branch = pr.head_branch.clone();
+        let ci_error: String = pr
+            .check_runs
+            .iter()
+            .filter(|r| r.status == CheckStatus::Fail)
+            .map(|r| {
+                if !r.failed_log_excerpt.trim().is_empty() {
+                    format!("## {}\n{}", r.name, r.failed_log_excerpt.trim())
+                } else {
+                    format!("## {} (no logs available)", r.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        self.close_ci_log_popup();
+        self.status_message = "Checking out branch and opening opencode...".to_string();
+        actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
     }
 
     pub fn close_ci_log_popup(&mut self) {
