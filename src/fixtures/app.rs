@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use crate::{
     apis::jira::{JiraClient, JiraConfig},
     app::{App, DisplayRow},
+    ui::{CiLogPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
 };
 
 use super::{issue::test_issue, pr::test_pr};
@@ -26,42 +27,32 @@ pub fn test_app() -> App {
         jql: config.default_jql,
         repo_entries: Vec::new(),
         repo_error: None,
-        label_picker: None,
-        status_message: String::new(),
+        list_view: ListViewState::default(),
+        status_bar: StatusBarState::default(),
         loading: false,
         client,
         jira_base_url: config.base_url,
         my_account_id: String::new(),
         current_branch: String::new(),
         pending_g: false,
-        list_area_height: 0,
-        list_scroll_offset: 0,
         active_branches: Default::default(),
         github_statuses: Default::default(),
         github_loading: false,
-        spinner_tick: 0,
+        animation: UiAnimationState::default(),
         latest_activity: Default::default(),
         display_rows: Vec::new(),
         inline_new: None,
         search_filter: String::new(),
         collapsed_stories: Default::default(),
         story_children: Default::default(),
-        loading_children: Default::default(),
+        sidebar: SidebarState::default(),
         github_prs: Default::default(),
-        github_pr_detail_loading: Default::default(),
-        github_pr_detail_loaded: Default::default(),
-        github_pr_detail_errors: Default::default(),
         check_durations: Default::default(),
         running_tasks: Default::default(),
-        completed_tasks: Default::default(),
         bg_tx,
         bg_rx,
         last_ci_refresh: std::time::Instant::now(),
-        last_updated: None,
-        ci_log_popup_scroll: None,
-        ci_log_popup_tab: 0,
-        ci_logs_loaded: Default::default(),
-        ci_logs_loading: Default::default(),
+        ci_log_popup: CiLogPopupState::default(),
     }
 }
 
@@ -79,8 +70,8 @@ pub fn selected_issue_app() -> App {
 pub fn sidebar_app() -> App {
     let mut app = selected_issue_app();
     let issue_key = app.issues[0].key.clone();
-    app.spinner_tick = 2;
+    app.animation.spinner_tick = 2;
     app.github_prs.insert(issue_key.clone(), test_pr());
-    app.github_pr_detail_loading.insert(issue_key);
+    app.sidebar.detail_loading.insert(issue_key);
     app
 }

@@ -423,10 +423,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let is_draft = pr
-                .get("isDraft")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let is_draft = pr.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
             let changed_files = pr.get("changedFiles").and_then(|v| v.as_u64());
             let additions = pr.get("additions").and_then(|v| v.as_u64());
             let deletions = pr.get("deletions").and_then(|v| v.as_u64());
@@ -662,13 +659,24 @@ fn parse_job_id_from_details_url(details_url: &str) -> Option<u64> {
     let job_marker = "/job/";
     let job_index = after_run.find(job_marker)? + job_marker.len();
     let job_part = &after_run[job_index..];
-    let digits: String = job_part.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = job_part
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     digits.parse().ok()
 }
 
 async fn fetch_job_log_text(repo_slug: &str, job_id: u64) -> Option<String> {
     let output = Command::new("gh")
-        .args(["run", "view", "--repo", repo_slug, "--job", &job_id.to_string(), "--log"])
+        .args([
+            "run",
+            "view",
+            "--repo",
+            repo_slug,
+            "--job",
+            &job_id.to_string(),
+            "--log",
+        ])
         .output()
         .await
         .ok()?;

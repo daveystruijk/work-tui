@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
@@ -8,8 +8,10 @@ use ratatui::{
     Frame,
 };
 
+use crate::actions::ActionMessage;
 use crate::apis::{github::CheckStatus, jira::Issue};
 use crate::app::{App, DisplayRow, InlineNewState};
+use crate::repos::RepoEntry;
 use crate::theme::Theme;
 
 use super::{
@@ -34,9 +36,109 @@ mod tests {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RepoLabelPickerState {
+    pub selected: usize,
+    pub filter: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ListViewState {
+    pub area_height: u16,
+    pub scroll_offset: usize,
+    pub label_picker: Option<RepoLabelPickerState>,
+    pub loading_children: HashSet<String>,
+}
+
+impl ListViewState {
+    pub fn handle_action_message(&mut self, msg: &ActionMessage) {
+        match msg {
+            ActionMessage::Issues(Ok(_)) => {
+                self.loading_children.clear();
+            }
+            ActionMessage::ChildrenLoaded(parent_key, _) => {
+                self.loading_children.remove(parent_key);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn start_loading_children(&mut self, parent_key: &str) {
+        self.loading_children.insert(parent_key.to_string());
+    }
+
+    pub fn open_label_picker(&mut self) {
+        self.label_picker = Some(RepoLabelPickerState {
+            selected: 0,
+            filter: String::new(),
+        });
+    }
+
+    pub fn close_label_picker(&mut self) {
+        self.label_picker = None;
+    }
+
+    pub fn filtered_repo_entries<'a>(&self, repo_entries: &'a [RepoEntry]) -> Vec<&'a RepoEntry> {
+        let Some(picker) = &self.label_picker else {
+            return Vec::new();
+        };
+        if picker.filter.is_empty() {
+            return repo_entries.iter().collect();
+        }
+
+        let query = picker.filter.to_lowercase();
+        repo_entries
+            .iter()
+            .filter(|entry| entry.label.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    pub fn move_label_picker_selection(&mut self, repo_entries: &[RepoEntry], down: bool) {
+        let count = self.filtered_repo_entries(repo_entries).len();
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        if count == 0 {
+            picker.selected = 0;
+            return;
+        }
+        if down {
+            picker.selected = (picker.selected + 1).min(count - 1);
+            return;
+        }
+        if picker.selected == 0 {
+            return;
+        }
+        picker.selected -= 1;
+    }
+
+    pub fn label_picker_entry<'a>(&self, repo_entries: &'a [RepoEntry]) -> Option<&'a RepoEntry> {
+        let picker = self.label_picker.as_ref()?;
+        self.filtered_repo_entries(repo_entries)
+            .get(picker.selected)
+            .copied()
+    }
+
+    pub fn label_picker_type_char(&mut self, ch: char) {
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.filter.push(ch);
+        picker.selected = 0;
+    }
+
+    pub fn label_picker_backspace(&mut self) {
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.filter.pop();
+        picker.selected = 0;
+    }
+}
+
 pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
     // Store visible list height for half-page scrolling
-    app.list_area_height = area.height.saturating_sub(1);
+    app.list_view.area_height = area.height.saturating_sub(1);
 
     // Build row data as (CellMap, Style) so we can measure before converting to Row.
     let row_data: Vec<(CellMap, Style)> = app
@@ -66,7 +168,9 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
             DisplayRow::InlineNew { depth } => {
                 inline_new_row(app.inline_new.as_ref(), row_idx, *depth)
             }
-            DisplayRow::Loading { depth } => loading_row(app.spinner_tick, row_idx, *depth),
+            DisplayRow::Loading { depth } => {
+                loading_row(app.animation.spinner_tick, row_idx, *depth)
+            }
             DisplayRow::Empty { depth } => empty_row(row_idx, *depth),
         })
         .collect();
@@ -83,7 +187,7 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
 
     // Convert CellMaps to ordered Rows.
     let mut state = TableState::default()
-        .with_offset(app.list_scroll_offset)
+        .with_offset(app.list_view.scroll_offset)
         .with_selected(Some(app.selected_index));
 
     let rows: Vec<Row> = row_data
@@ -116,9 +220,9 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
         )
         .block(Block::default().style(Style::default().bg(Theme::Panel)));
     frame.render_stateful_widget(table, area, &mut state);
-    app.list_scroll_offset = state.offset();
+    app.list_view.scroll_offset = state.offset();
 
-    if app.label_picker_active() {
+    if app.list_view.label_picker.is_some() {
         render_label_picker_modal(app, frame);
     }
 }
@@ -310,7 +414,7 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'stat
             ci_spans.push(Span::styled(icon, Style::default().fg(color)));
         }
         if pr.checks == CheckStatus::Pending {
-            let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+            let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
             ci_spans.push(Span::styled(
                 format!(" {spinner}"),
                 Style::default().fg(Theme::Warning),
@@ -329,7 +433,7 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'stat
 }
 
 fn render_label_picker_modal(app: &App, frame: &mut Frame) {
-    let Some(picker) = &app.label_picker else {
+    let Some(picker) = &app.list_view.label_picker else {
         return;
     };
     let area = centered_rect(60, 70, frame.area());
@@ -347,7 +451,7 @@ fn render_label_picker_modal(app: &App, frame: &mut Frame) {
     let inner = popup.inner(area);
     frame.render_widget(popup, area);
 
-    let filtered = app.filtered_repo_entries();
+    let filtered = app.list_view.filtered_repo_entries(&app.repo_entries);
 
     let items: Vec<ListItem> = if filtered.is_empty() {
         let msg = if app.repo_entries.is_empty() {

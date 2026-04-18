@@ -349,4 +349,3 @@ pub async fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
         }
     ))
 }
-

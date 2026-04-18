@@ -3,6 +3,11 @@ mod list;
 mod sidebar;
 mod status_bar;
 
+pub use ci_logs::CiLogPopupState;
+pub use list::ListViewState;
+pub use sidebar::SidebarState;
+pub use status_bar::StatusBarState;
+
 use std::collections::HashMap;
 
 use ratatui::{
@@ -24,6 +29,17 @@ pub const SIDEBAR_SECTION_MARGIN: u16 = 1;
 pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;
 
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+#[derive(Debug, Clone, Default)]
+pub struct UiAnimationState {
+    pub spinner_tick: usize,
+}
+
+impl UiAnimationState {
+    pub fn tick_spinner(&mut self) {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+    }
+}
 
 /// Max content width for a named column across all rows.
 pub fn max_col_width(row_data: &[(CellMap, Style)], name: &str) -> u16 {
@@ -60,7 +76,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     sidebar::render_sidebar(app, frame, columns[1]);
 
     // CI logs popup overlays everything
-    if app.ci_log_popup_active() {
+    if app.ci_log_popup.scroll.is_some() {
         ci_logs::render_ci_log_popup(app, frame);
     }
 }

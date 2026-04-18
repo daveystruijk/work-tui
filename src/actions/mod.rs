@@ -11,17 +11,17 @@ pub mod add_label;
 pub mod approve_merge;
 pub mod auto_label;
 pub mod branch_diff;
-pub mod create_inline_issue;
 pub mod convert_to_story;
-pub mod fetch_ci_logs;
-pub mod fix_ci;
+pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_children;
+pub mod fetch_ci_logs;
 pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
-pub mod link_jira_repos;
 pub mod finish;
+pub mod fix_ci;
 pub mod initialize;
+pub mod link_jira_repos;
 pub mod pick_up;
 pub mod refresh;
 
@@ -30,7 +30,10 @@ use std::fmt;
 
 use color_eyre::Result;
 
-use crate::apis::{github::{PrDetail, PrInfo}, jira::Issue};
+use crate::apis::{
+    github::{PrDetail, PrInfo},
+    jira::Issue,
+};
 
 /// Generic progress report sent by long-running actions.
 ///

@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -7,7 +9,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::apis::github::{CheckStatus, MergeableState, PrInfo};
+use crate::actions::ActionMessage;
+use crate::apis::github::{CheckRun, CheckStatus, MergeableState, PrInfo};
 use crate::app::App;
 use crate::theme::Theme;
 
@@ -15,6 +18,79 @@ use super::{
     humanize_timestamp, issue_author, issue_field_string, issue_type_icon, labeled_text_line,
     push_wrapped_block, status_color, SIDEBAR_SECTION_MARGIN, SPINNER_FRAMES,
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct SidebarState {
+    pub detail_loading: HashSet<String>,
+    pub detail_loaded: HashSet<String>,
+    pub detail_errors: HashMap<String, String>,
+}
+
+impl SidebarState {
+    pub fn begin_pr_refresh(
+        &mut self,
+        github_prs: &HashMap<String, PrInfo>,
+    ) -> HashMap<String, PrInfo> {
+        let previous_prs = self
+            .detail_loaded
+            .iter()
+            .filter_map(|key| github_prs.get(key).map(|pr| (key.clone(), pr.clone())))
+            .collect();
+
+        self.detail_loading.clear();
+        self.detail_loaded.clear();
+        self.detail_errors.clear();
+
+        previous_prs
+    }
+
+    pub fn handle_action_message(
+        &mut self,
+        msg: &ActionMessage,
+        github_prs: &mut HashMap<String, PrInfo>,
+    ) {
+        match msg {
+            ActionMessage::GithubPrDetail(issue_key, result) => {
+                self.detail_loading.remove(issue_key);
+                match result {
+                    Ok(detail) => {
+                        if let Some(pr) = github_prs.get_mut(issue_key) {
+                            pr.apply_detail(detail.clone());
+                            self.detail_loaded.insert(issue_key.clone());
+                            self.detail_errors.remove(issue_key);
+                        }
+                    }
+                    Err(err) => {
+                        self.detail_errors
+                            .insert(issue_key.clone(), err.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_pr_refresh(
+        &mut self,
+        github_prs: &mut HashMap<String, PrInfo>,
+        previous_prs: &HashMap<String, PrInfo>,
+    ) {
+        for (issue_key, old_pr) in previous_prs {
+            let Some(new_pr) = github_prs.get_mut(issue_key) else {
+                continue;
+            };
+            if !check_runs_changed(&old_pr.check_runs, &new_pr.check_runs) {
+                new_pr.apply_detail_from(old_pr);
+                self.detail_loaded.insert(issue_key.clone());
+            }
+        }
+    }
+
+    pub fn start_loading_detail(&mut self, issue_key: &str) {
+        self.detail_errors.remove(issue_key);
+        self.detail_loading.insert(issue_key.to_string());
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -150,10 +226,10 @@ pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
 
     match app.github_prs.get(&issue.key) {
         Some(pr) => {
-            let detail_loading = app.github_pr_detail_loading.contains(&issue.key);
-            let detail_error = app.github_pr_detail_errors.get(&issue.key);
-            let detail_loaded = app.github_pr_detail_loaded.contains(&issue.key);
-            let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+            let detail_loading = app.sidebar.detail_loading.contains(&issue.key);
+            let detail_error = app.sidebar.detail_errors.get(&issue.key);
+            let detail_loaded = app.sidebar.detail_loaded.contains(&issue.key);
+            let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
             let (pr_state_label, pr_state_color) = if pr.is_draft {
                 ("DRAFT", Theme::Muted)
             } else if pr.state.eq_ignore_ascii_case("open") {
@@ -376,4 +452,18 @@ fn comment_counts(pr: &PrInfo) -> (usize, usize) {
 
 fn is_running_check_step(step: &crate::apis::github::CheckStep) -> bool {
     step.status == CheckStatus::Pending && step.started_at.is_some() && step.completed_at.is_none()
+}
+
+fn check_runs_changed(old_runs: &[CheckRun], new_runs: &[CheckRun]) -> bool {
+    if old_runs.len() != new_runs.len() {
+        return true;
+    }
+
+    for (old, new) in old_runs.iter().zip(new_runs.iter()) {
+        if old.name != new.name || old.status != new.status {
+            return true;
+        }
+    }
+
+    false
 }

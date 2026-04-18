@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -6,14 +8,98 @@ use ratatui::{
     Frame,
 };
 
+use crate::actions::ActionMessage;
 use crate::apis::github::CheckStatus;
+use crate::apis::github::PrInfo;
 use crate::app::App;
 use crate::theme::Theme;
 
 use super::{wrap_text, SPINNER_FRAMES};
 
+#[derive(Debug, Clone, Default)]
+pub struct CiLogPopupState {
+    pub scroll: Option<usize>,
+    pub active_tab: usize,
+    pub loaded_issues: HashSet<String>,
+    pub loading_issues: HashSet<String>,
+}
+
+impl CiLogPopupState {
+    pub fn open(&mut self) {
+        self.active_tab = 0;
+        self.scroll = Some(usize::MAX);
+    }
+
+    pub fn close(&mut self) {
+        self.scroll = None;
+    }
+
+    pub fn scroll_by(&mut self, delta: isize) {
+        if let Some(scroll) = self.scroll.as_mut() {
+            *scroll = (*scroll as isize + delta).max(0) as usize;
+        }
+    }
+
+    pub fn clamp_active_tab(&mut self, tab_count: usize) -> usize {
+        if tab_count == 0 {
+            self.active_tab = 0;
+            return 0;
+        }
+
+        let active_tab = self.active_tab.min(tab_count - 1);
+        self.active_tab = active_tab;
+        active_tab
+    }
+
+    pub fn cycle_tab(&mut self, delta: isize, tab_count: usize) {
+        if tab_count == 0 {
+            return;
+        }
+
+        let current = self.active_tab as isize;
+        self.active_tab = (current + delta).rem_euclid(tab_count as isize) as usize;
+        self.scroll = Some(0);
+    }
+
+    pub fn handle_action_message(
+        &mut self,
+        msg: &ActionMessage,
+        github_prs: &mut HashMap<String, PrInfo>,
+    ) {
+        match msg {
+            ActionMessage::GithubPrs(_, _) => {
+                self.loaded_issues.clear();
+                self.loading_issues.clear();
+            }
+            ActionMessage::CiLogsFetched(issue_key, result) => {
+                self.loading_issues.remove(issue_key);
+                let Ok(logs) = result else {
+                    return;
+                };
+
+                if let Some(pr) = github_prs.get_mut(issue_key) {
+                    for (run, log) in pr.check_runs.iter_mut().zip(logs.iter()) {
+                        run.log_excerpt = log.clone();
+                    }
+                }
+                self.loaded_issues.insert(issue_key.clone());
+            }
+            _ => {}
+        }
+    }
+
+    pub fn start_loading(&mut self, issue_key: &str) -> bool {
+        if self.loaded_issues.contains(issue_key) || self.loading_issues.contains(issue_key) {
+            return false;
+        }
+
+        self.loading_issues.insert(issue_key.to_string());
+        true
+    }
+}
+
 pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
-    let Some(scroll) = app.ci_log_popup_scroll else {
+    let Some(scroll) = app.ci_log_popup.scroll else {
         return;
     };
 
@@ -27,7 +113,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
     };
 
     let check_runs = &pr.check_runs;
-    let logs_loading = app.ci_logs_loading.contains(&issue_key);
+    let logs_loading = app.ci_log_popup.loading_issues.contains(&issue_key);
 
     let area = popup_rect(frame.area());
     frame.render_widget(Clear, area);
@@ -40,8 +126,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         )]
     } else {
-        let active_tab = app.ci_log_popup_tab.min(check_runs.len() - 1);
-        app.ci_log_popup_tab = active_tab;
+        let active_tab = app.ci_log_popup.clamp_active_tab(check_runs.len());
 
         let available_title_width = area.width.saturating_sub(2) as usize;
         let separator_width = check_runs.len().saturating_sub(1);
@@ -88,7 +173,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
     let inner = popup.inner(area);
     frame.render_widget(popup, area);
 
-    let spinner = SPINNER_FRAMES[app.spinner_tick % SPINNER_FRAMES.len()];
+    let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -109,7 +194,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
             content_area,
         );
     } else {
-        let active_tab = app.ci_log_popup_tab.min(check_runs.len() - 1);
+        let active_tab = app.ci_log_popup.clamp_active_tab(check_runs.len());
         let selected_run = &check_runs[active_tab];
         let mut lines: Vec<Line> = Vec::new();
 
@@ -176,7 +261,7 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
         let total_lines = lines.len();
         let max_scroll = total_lines.saturating_sub(visible_height);
         let clamped_scroll = scroll.min(max_scroll);
-        app.ci_log_popup_scroll = Some(clamped_scroll);
+        app.ci_log_popup.scroll = Some(clamped_scroll);
 
         let visible_lines: Vec<Line> = lines
             .into_iter()

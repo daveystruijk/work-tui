@@ -147,19 +147,30 @@ async fn fetch_issues() -> Result<()> {
     for issue in issues {
         println!("{}", issue.key);
         println!("  summary: {}", issue.summary().unwrap_or_default());
-        println!("  status: {}", issue.status().map(|status| status.name).unwrap_or_default());
+        println!(
+            "  status: {}",
+            issue.status().map(|status| status.name).unwrap_or_default()
+        );
         println!("  labels: {:?}", issue.labels());
     }
     Ok(())
 }
 
 async fn fetch_children(args: &[String]) -> Result<()> {
-    let Some(parent_key) = args.first() else { return Err(eyre!("fetch-children requires <parent-key>")); };
+    let Some(parent_key) = args.first() else {
+        return Err(eyre!("fetch-children requires <parent-key>"));
+    };
     let (client, _) = jira_client()?;
     let jql = format!("parent = {parent_key} ORDER BY created DESC");
     let issues = client.search(&jql).await?;
     for issue in issues {
-        println!("{} | {} | {} | {:?}", issue.key, issue.summary().unwrap_or_default(), issue.status().map(|status| status.name).unwrap_or_default(), issue.labels());
+        println!(
+            "{} | {} | {} | {:?}",
+            issue.key,
+            issue.summary().unwrap_or_default(),
+            issue.status().map(|status| status.name).unwrap_or_default(),
+            issue.labels()
+        );
     }
     Ok(())
 }
@@ -176,7 +187,9 @@ async fn scan_repos() -> Result<()> {
 }
 
 async fn detect_branches(args: &[String]) -> Result<()> {
-    if args.len() != 2 { return Err(eyre!("detect-branches requires <issue-key> <repo-path>")); }
+    if args.len() != 2 {
+        return Err(eyre!("detect-branches requires <issue-key> <repo-path>"));
+    }
     let issue_key = &args[0];
     let repo_path = PathBuf::from(&args[1]);
     let branch = work_tui::git::current_branch_in(&repo_path).await?;
@@ -188,11 +201,38 @@ async fn detect_branches(args: &[String]) -> Result<()> {
 async fn approve_merge(args: &[String]) -> Result<()> {
     let (slug, pr_number) = parse_pr_args(args)?;
     println!("WARNING: WRITE operation: approving and enabling auto-merge");
-    let approve = Command::new("gh").args(["pr", "review", &pr_number.to_string(), "--approve", "--repo", &slug]).output().await?;
+    let approve = Command::new("gh")
+        .args([
+            "pr",
+            "review",
+            &pr_number.to_string(),
+            "--approve",
+            "--repo",
+            &slug,
+        ])
+        .output()
+        .await?;
     println!("approve_status: {}", approve.status);
-    println!("approve_stdout:\n{}", String::from_utf8_lossy(&approve.stdout));
-    println!("approve_stderr:\n{}", String::from_utf8_lossy(&approve.stderr));
-    let merge = Command::new("gh").args(["pr", "merge", &pr_number.to_string(), "--auto", "--merge", "--repo", &slug]).output().await?;
+    println!(
+        "approve_stdout:\n{}",
+        String::from_utf8_lossy(&approve.stdout)
+    );
+    println!(
+        "approve_stderr:\n{}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+    let merge = Command::new("gh")
+        .args([
+            "pr",
+            "merge",
+            &pr_number.to_string(),
+            "--auto",
+            "--merge",
+            "--repo",
+            &slug,
+        ])
+        .output()
+        .await?;
     println!("merge_status: {}", merge.status);
     println!("merge_stdout:\n{}", String::from_utf8_lossy(&merge.stdout));
     println!("merge_stderr:\n{}", String::from_utf8_lossy(&merge.stderr));
@@ -200,7 +240,11 @@ async fn approve_merge(args: &[String]) -> Result<()> {
 }
 
 async fn finish(args: &[String]) -> Result<()> {
-    if args.len() != 3 { return Err(eyre!("finish requires <issue-key> <issue-summary> <repo-path>")); }
+    if args.len() != 3 {
+        return Err(eyre!(
+            "finish requires <issue-key> <issue-summary> <repo-path>"
+        ));
+    }
     let issue_key = &args[0];
     let issue_summary = &args[1];
     let repo_path = PathBuf::from(&args[2]);
@@ -218,7 +262,10 @@ async fn finish(args: &[String]) -> Result<()> {
     println!("create_pr: {}", pr_url);
     let transitions = client.get_transitions(issue_key).await?;
     println!("transitions: {:#?}", transitions);
-    if let Some(review) = transitions.into_iter().find(|t| t.name.to_lowercase().contains("review")) {
+    if let Some(review) = transitions
+        .into_iter()
+        .find(|t| t.name.to_lowercase().contains("review"))
+    {
         client.transition_issue(issue_key, &review.id).await?;
         println!("transition_issue: {}", review.id);
     }
@@ -226,7 +273,11 @@ async fn finish(args: &[String]) -> Result<()> {
 }
 
 async fn pick_up(args: &[String]) -> Result<()> {
-    if args.len() != 3 { return Err(eyre!("pick-up requires <issue-key> <issue-summary> <repo-path>")); }
+    if args.len() != 3 {
+        return Err(eyre!(
+            "pick-up requires <issue-key> <issue-summary> <repo-path>"
+        ));
+    }
     let issue_key = &args[0];
     let issue_summary = &args[1];
     let repo_path = PathBuf::from(&args[2]);
@@ -239,14 +290,18 @@ async fn pick_up(args: &[String]) -> Result<()> {
     println!("working_tree_clean: {}", clean);
     work_tui::git::fetch_origin(&repo_path).await?;
     println!("fetch_origin: ok");
-    let branch_setup = work_tui::git::create_branch_from_origin_main(&repo_path, issue_key, issue_summary).await?;
+    let branch_setup =
+        work_tui::git::create_branch_from_origin_main(&repo_path, issue_key, issue_summary).await?;
     println!("branch_name: {}", branch_setup.branch_name);
     println!("reused_existing: {}", branch_setup.reused_existing);
     client.assign_issue(issue_key, &account_id).await?;
     println!("assign_issue: ok");
     let transitions = client.get_transitions(issue_key).await?;
     println!("transitions: {:#?}", transitions);
-    if let Some(progress) = transitions.into_iter().find(|t| t.name.to_lowercase().contains("progress")) {
+    if let Some(progress) = transitions
+        .into_iter()
+        .find(|t| t.name.to_lowercase().contains("progress"))
+    {
         client.transition_issue(issue_key, &progress.id).await?;
         println!("transition_issue: {}", progress.id);
     }
@@ -256,10 +311,16 @@ async fn pick_up(args: &[String]) -> Result<()> {
 }
 
 fn parse_pr_args(args: &[String]) -> Result<(String, u64)> {
-    if args.len() != 2 { return Err(eyre!("requires <owner/repo> <pr-number>")); }
+    if args.len() != 2 {
+        return Err(eyre!("requires <owner/repo> <pr-number>"));
+    }
     Ok((args[0].clone(), args[1].parse()?))
 }
 
 fn indent_block(input: &str, prefix: &str) -> String {
-    input.lines().map(|line| format!("{prefix}{line}")).collect::<Vec<_>>().join("\n")
+    input
+        .lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

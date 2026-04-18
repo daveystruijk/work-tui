@@ -1,14 +1,14 @@
 mod actions;
-mod app;
 mod apis;
+mod app;
 mod cache;
 mod events;
+#[cfg(test)]
+mod fixtures;
 mod git;
 mod repos;
 mod theme;
 mod ui;
-#[cfg(test)]
-mod fixtures;
 
 use std::{io, time::Duration};
 
@@ -99,7 +99,7 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
                 handle_key_event(&mut app, key_event).await;
             }
             Event::Mouse(mouse_event) if app.screen == Screen::List => {
-                if app.ci_log_popup_active() {
+                if app.ci_log_popup.scroll.is_some() {
                     match mouse_event.kind {
                         MouseEventKind::ScrollDown => app.scroll_ci_log_popup(3),
                         MouseEventKind::ScrollUp => app.scroll_ci_log_popup(-3),
@@ -116,7 +116,7 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
                         MouseEventKind::Down(MouseButton::Left) => {
                             let clicked_row = mouse_event.row as usize;
                             let data_row = clicked_row.saturating_sub(1);
-                            let target = app.list_scroll_offset + data_row;
+                            let target = app.list_view.scroll_offset + data_row;
                             if target < app.display_rows.len() {
                                 app.selected_index = target;
                                 adjust_scroll_offset(&mut app);
@@ -146,11 +146,11 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
 }
 
 async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
-    if app.ci_log_popup_active() {
+    if app.ci_log_popup.scroll.is_some() {
         handle_ci_log_popup(app, key_event).await;
         return;
     }
-    if app.label_picker_active() {
+    if app.list_view.label_picker.is_some() {
         handle_label_picker(app, key_event).await;
         return;
     }
@@ -162,12 +162,12 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 app.pending_g = false;
-                move_selection_by(app, app.list_area_height as isize / 2);
+                move_selection_by(app, app.list_view.area_height as isize / 2);
                 return;
             }
             KeyCode::Char('u') | KeyCode::Char('U') => {
                 app.pending_g = false;
-                move_selection_by(app, -(app.list_area_height as isize / 2));
+                move_selection_by(app, -(app.list_view.area_height as isize / 2));
                 return;
             }
             _ => {}
@@ -186,7 +186,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
 
             match c {
                 'b' => {
-                    app.status_message = "Opening diff...".to_string();
+                    app.status_bar.message = "Opening diff...".to_string();
                     app.spawn_branch_diff();
                 }
                 'j' => move_selection_down(app),
@@ -196,16 +196,16 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.pending_g = true;
                 }
                 'p' => {
-                    app.status_message = "Picking up...".to_string();
+                    app.status_bar.message = "Picking up...".to_string();
                     app.spawn_pick_up();
                 }
                 'o' => match app.open_selected_pr_in_browser().await {
                     Ok(_) => {}
-                    Err(err) => app.status_message = format!("{err}"),
+                    Err(err) => app.status_bar.message = format!("{err}"),
                 },
                 't' => match app.open_selected_issue_in_browser().await {
                     Ok(_) => {}
-                    Err(err) => app.status_message = format!("Failed to open issue: {err}"),
+                    Err(err) => app.status_bar.message = format!("Failed to open issue: {err}"),
                 },
                 'n' => {
                     app.start_inline_new();
@@ -217,12 +217,12 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                 }
                 's' => app.spawn_toggle_story_type(),
                 'f' => {
-                    app.status_message = "Finishing...".to_string();
+                    app.status_bar.message = "Finishing...".to_string();
                     app.spawn_finish();
                 }
                 '/' => app.start_search(),
                 'V' => {
-                    app.status_message = "Approving & enabling auto-merge...".to_string();
+                    app.status_bar.message = "Approving & enabling auto-merge...".to_string();
                     app.spawn_approve_merge();
                 }
                 'c' => app.open_ci_log_popup(),
@@ -261,7 +261,7 @@ async fn handle_inline_new(app: &mut App, key_event: KeyEvent) {
                 return;
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                app.status_message = "Creating issue...".to_string();
+                app.status_bar.message = "Creating issue...".to_string();
                 app.spawn_submit_inline_new();
                 return;
             }
@@ -272,7 +272,7 @@ async fn handle_inline_new(app: &mut App, key_event: KeyEvent) {
     match key_event.code {
         KeyCode::Esc => app.cancel_inline_new(),
         KeyCode::Enter => {
-            app.status_message = "Creating issue...".to_string();
+            app.status_bar.message = "Creating issue...".to_string();
             app.spawn_submit_inline_new();
         }
         KeyCode::Backspace => {
@@ -342,7 +342,7 @@ async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
         KeyCode::Char('G') => app.scroll_ci_log_popup(isize::MAX / 2),
         KeyCode::Char('g') => {
             if app.pending_g {
-                app.ci_log_popup_scroll = Some(0);
+                app.ci_log_popup.scroll = Some(0);
                 app.pending_g = false;
             } else {
                 app.pending_g = true;
@@ -380,7 +380,7 @@ async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {
 const SCROLL_OFF: usize = 3;
 
 fn adjust_scroll_offset(app: &mut App) {
-    let height = app.list_area_height as usize;
+    let height = app.list_view.area_height as usize;
     if height == 0 || app.display_rows.is_empty() {
         app.prefetch_selected_pr_detail();
         return;
@@ -388,21 +388,21 @@ fn adjust_scroll_offset(app: &mut App) {
 
     let margin = SCROLL_OFF.min(height / 2);
     let selected = app.selected_index;
-    let offset = app.list_scroll_offset;
+    let offset = app.list_view.scroll_offset;
 
     // Cursor moved above the top margin — scroll up
     if selected < offset + margin {
-        app.list_scroll_offset = selected.saturating_sub(margin);
+        app.list_view.scroll_offset = selected.saturating_sub(margin);
     }
 
     // Cursor moved below the bottom margin — scroll down
     if selected + margin >= offset + height {
-        app.list_scroll_offset = (selected + margin + 1).saturating_sub(height);
+        app.list_view.scroll_offset = (selected + margin + 1).saturating_sub(height);
     }
 
     // Clamp offset so we don't scroll past the end
     let max_offset = app.display_rows.len().saturating_sub(height);
-    app.list_scroll_offset = app.list_scroll_offset.min(max_offset);
+    app.list_view.scroll_offset = app.list_view.scroll_offset.min(max_offset);
     app.prefetch_selected_pr_detail();
 }
 
@@ -449,11 +449,11 @@ fn scroll_viewport(app: &mut App, delta: isize) {
         app.prefetch_selected_pr_detail();
         return;
     }
-    let height = app.list_area_height as usize;
+    let height = app.list_view.area_height as usize;
     let max_offset = app.display_rows.len().saturating_sub(height);
     let new_offset =
-        (app.list_scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
-    app.list_scroll_offset = new_offset;
+        (app.list_view.scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
+    app.list_view.scroll_offset = new_offset;
 
     // Keep selection visible within the viewport
     let last = app.display_rows.len() - 1;

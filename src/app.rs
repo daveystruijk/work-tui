@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use color_eyre::{eyre::eyre, Result};
@@ -7,13 +7,14 @@ use tokio::sync::mpsc;
 
 use crate::{
     actions::{self, ActionMessage},
-    cache::{self, Cache},
-    events::{Event, EventLevel, EventSource},
     apis::{
-        github::{CheckRun, CheckStep, CheckStatus, GithubStatus, PrInfo},
+        github::{CheckRun, CheckStatus, CheckStep, GithubStatus, PrInfo},
         jira::{Issue, JiraClient, JiraConfig},
     },
+    cache::{self, Cache},
+    events::{Event, EventLevel, EventSource},
     repos::{self, RepoEntry},
+    ui::{CiLogPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
 };
 
 /// Compute duration in seconds between two ISO 8601 timestamps.
@@ -53,7 +54,11 @@ pub fn format_duration(secs: u64) -> String {
 pub enum DisplayRow {
     /// A parent story header (not necessarily in the fetched issues list).
     /// Contains the parent issue key, summary, and nesting depth.
-    StoryHeader { key: String, summary: String, depth: u8 },
+    StoryHeader {
+        key: String,
+        summary: String,
+        depth: u8,
+    },
     /// An actual issue row. `depth` is 0 for top-level, 1+ for subtask under a story.
     Issue {
         /// Index into `self.issues` for top-level issues, or into
@@ -96,12 +101,6 @@ pub enum InputMode {
     Searching,
 }
 
-#[derive(Debug, Clone)]
-pub struct LabelPickerState {
-    pub selected: usize,
-    pub filter: String,
-}
-
 pub struct App {
     pub should_quit: bool,
 
@@ -112,24 +111,21 @@ pub struct App {
     pub jql: String,
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
-    pub label_picker: Option<LabelPickerState>,
-    pub status_message: String,
+    pub list_view: ListViewState,
+    pub status_bar: StatusBarState,
     pub loading: bool,
     pub client: JiraClient,
     pub jira_base_url: String,
     pub my_account_id: String,
     pub current_branch: String,
     pub pending_g: bool,
-    pub list_area_height: u16,
-    pub list_scroll_offset: usize,
     /// Maps issue key -> repo label for issues whose branch is currently checked out
     pub active_branches: HashMap<String, String>,
     /// Maps issue key -> GitHub PR status
     pub github_statuses: HashMap<String, GithubStatus>,
     /// Whether GitHub statuses are currently being loaded
     pub github_loading: bool,
-    /// Spinner tick counter for animated loading indicators
-    pub spinner_tick: usize,
+    pub animation: UiAnimationState,
     /// Maps issue key -> latest synthesized activity for overview
     pub latest_activity: HashMap<String, Event>,
     /// Flattened display rows (story headers + issue rows) for the list view
@@ -143,38 +139,20 @@ pub struct App {
     pub collapsed_stories: HashSet<String>,
     /// Dynamically loaded child issues for expanded stories, keyed by parent key.
     pub story_children: HashMap<String, Vec<Issue>>,
-    /// Story keys currently being fetched (to avoid duplicate requests).
-    pub loading_children: HashSet<String>,
+    pub sidebar: SidebarState,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
-    /// Issue keys currently loading selected PR detail data.
-    pub github_pr_detail_loading: HashSet<String>,
-    /// Issue keys whose PR detail data has been loaded.
-    pub github_pr_detail_loaded: HashSet<String>,
-    /// Per-issue PR detail loading errors.
-    pub github_pr_detail_errors: HashMap<String, String>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
     pub check_durations: HashMap<String, u64>,
     /// Currently running background task names
     pub running_tasks: HashSet<String>,
-    /// Recently completed task names (for brief status display), with remaining ticks
-    pub completed_tasks: VecDeque<(String, usize)>,
     /// Sender for background tasks to deliver results
     pub bg_tx: mpsc::UnboundedSender<ActionMessage>,
     /// Receiver polled in the event loop
     pub bg_rx: mpsc::UnboundedReceiver<ActionMessage>,
     /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
     pub last_ci_refresh: std::time::Instant,
-    /// Last time data was successfully received (for "updated X ago" display)
-    pub last_updated: Option<std::time::Instant>,
-    /// When `Some`, the CI logs popup is open with this scroll offset.
-    pub ci_log_popup_scroll: Option<usize>,
-    /// Selected tab index in the CI logs popup (indexes into failed check runs).
-    pub ci_log_popup_tab: usize,
-    /// Issue keys for which CI logs have already been fetched.
-    pub ci_logs_loaded: HashSet<String>,
-    /// Issue keys for which CI logs are currently being fetched.
-    pub ci_logs_loading: HashSet<String>,
+    pub ci_log_popup: CiLogPopupState,
 }
 
 impl App {
@@ -193,43 +171,35 @@ impl App {
             jql,
             repo_entries: Vec::new(),
             repo_error: None,
-            label_picker: None,
-            status_message: "Loading...".to_string(),
+            list_view: ListViewState::default(),
+            status_bar: StatusBarState::default(),
             loading: true,
             client,
             jira_base_url,
             my_account_id: String::new(),
             current_branch: String::new(),
             pending_g: false,
-            list_area_height: 0,
-            list_scroll_offset: 0,
             active_branches: HashMap::new(),
             github_statuses: HashMap::new(),
             github_loading: false,
-            spinner_tick: 0,
+            animation: UiAnimationState::default(),
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
             search_filter: String::new(),
             collapsed_stories: HashSet::new(),
             story_children: HashMap::new(),
-            loading_children: HashSet::new(),
+            sidebar: SidebarState::default(),
             github_prs: HashMap::new(),
-            github_pr_detail_loading: HashSet::new(),
-            github_pr_detail_loaded: HashSet::new(),
-            github_pr_detail_errors: HashMap::new(),
             check_durations: HashMap::new(),
             running_tasks: HashSet::new(),
-            completed_tasks: VecDeque::new(),
             bg_tx,
             bg_rx,
             last_ci_refresh: std::time::Instant::now(),
-            last_updated: None,
-            ci_log_popup_scroll: None,
-            ci_log_popup_tab: 0,
-            ci_logs_loaded: Default::default(),
-            ci_logs_loading: Default::default(),
+            ci_log_popup: CiLogPopupState::default(),
         };
+
+        app.status_bar.message = "Loading...".to_string();
 
         app.check_durations = cache::load().check_durations;
 
@@ -286,8 +256,8 @@ impl App {
             return;
         };
         let issue_key = issue.key.clone();
-        if self.github_pr_detail_loaded.contains(&issue_key)
-            || self.github_pr_detail_loading.contains(&issue_key)
+        if self.sidebar.detail_loaded.contains(&issue_key)
+            || self.sidebar.detail_loading.contains(&issue_key)
         {
             return;
         }
@@ -295,8 +265,7 @@ impl App {
             return;
         };
 
-        self.github_pr_detail_errors.remove(&issue_key);
-        self.github_pr_detail_loading.insert(issue_key.clone());
+        self.sidebar.start_loading_detail(&issue_key);
         actions::fetch_github_pr_detail::spawn(
             self.bg_tx.clone(),
             issue_key,
@@ -390,268 +359,173 @@ impl App {
 
     /// Process a background message. Called from the event loop.
     pub fn handle_bg_msg(&mut self, msg: ActionMessage) {
+        self.list_view.handle_action_message(&msg);
+        self.status_bar
+            .handle_action_message(&msg, &self.running_tasks);
+        self.sidebar
+            .handle_action_message(&msg, &mut self.github_prs);
+        self.ci_log_popup
+            .handle_action_message(&msg, &mut self.github_prs);
+
         match msg {
             ActionMessage::CurrentBranch(branch) => {
                 self.current_branch = branch;
             }
-            ActionMessage::Myself(result) => match result {
-                Ok(account_id) => self.my_account_id = account_id,
-                Err(err) => {
-                    self.status_message = format!("Failed to fetch user: {err}");
+            ActionMessage::Myself(result) => {
+                if let Ok(account_id) = result {
+                    self.my_account_id = account_id;
                 }
-            },
-            ActionMessage::Issues(result) => match result {
-                Ok(issues) => {
-                    let selected_key = self.selected_issue().map(|i| i.key.clone());
-                    self.issues = issues;
-                    self.story_children.clear();
-                    self.loading_children.clear();
-                    self.rebuild_display_rows();
-                    let next_index = selected_key
-                        .and_then(|key| {
-                            self.display_rows.iter().position(|row| {
-                                self.issue_for_display_row(row)
-                                    .map(|i| i.key == key)
-                                    .unwrap_or(false)
-                            })
-                        })
-                        .unwrap_or(0);
-                    self.selected_index = if self.display_rows.is_empty() {
-                        0
-                    } else {
-                        next_index.min(self.display_rows.len() - 1)
-                    };
-                    self.loading = false;
-                    self.last_updated = Some(std::time::Instant::now());
-                    // Chain: fetch branches, PRs, and link unmatched issues via Jira dev panel
-                    self.spawn_active_branches();
-                    self.spawn_github_prs();
-                    self.spawn_link_jira_repos();
-                }
-                Err(err) => {
-                    self.loading = false;
-                    self.status_message = format!("Failed to load issues: {err}");
-                }
-            },
+            }
+            ActionMessage::Issues(result) => self.handle_issues_message(result),
+            ActionMessage::GithubPrs(all_prs, _) => {
+                self.handle_github_prs_message(all_prs);
+            }
+            ActionMessage::GithubPrDetail(_, _) => {}
             ActionMessage::ActiveBranches(active) => {
                 self.active_branches = active;
             }
-            ActionMessage::GithubPrs(all_prs, errors) => {
-                // Snapshot detail-enriched PRs before clearing so we can
-                // carry forward fetched CI logs when the failed runs haven't
-                // changed (avoids re-fetching on every auto-refresh cycle).
-                let previous_prs: HashMap<String, PrInfo> = self
-                    .github_pr_detail_loaded
-                    .iter()
-                    .filter_map(|key| {
-                        self.github_prs.get(key).map(|pr| (key.clone(), pr.clone()))
-                    })
-                    .collect();
-
-                self.github_prs.clear();
-                self.github_statuses.clear();
-                self.github_pr_detail_loading.clear();
-                self.github_pr_detail_loaded.clear();
-                self.github_pr_detail_errors.clear();
-                for issue in &self.issues {
-                    let key_lower = issue.key.to_lowercase();
-                    let matched = all_prs
-                        .iter()
-                        .find(|pr| pr.head_branch.to_lowercase().starts_with(&key_lower));
-                    if let Some(pr) = matched {
-                        self.github_prs.insert(issue.key.clone(), pr.clone());
-                        self.github_statuses
-                            .insert(issue.key.clone(), GithubStatus::Found(pr.clone()));
-                    }
-                }
-
-                // Carry forward cached detail data when the set of failed
-                // check run names hasn't changed (i.e. no new CI run happened).
-                for (issue_key, old_pr) in &previous_prs {
-                    let Some(new_pr) = self.github_prs.get_mut(issue_key) else {
-                        continue;
-                    };
-                    if !check_runs_changed(&old_pr.check_runs, &new_pr.check_runs) {
-                        new_pr.apply_detail_from(old_pr);
-                        self.github_pr_detail_loaded.insert(issue_key.clone());
-                    }
-                }
-
-                self.record_check_durations();
-                self.save_cache();
-                self.spawn_auto_label();
-                self.github_loading = false;
-                self.last_updated = Some(std::time::Instant::now());
-                self.refresh_latest_activity();
-                self.prefetch_selected_pr_detail();
-                if !errors.is_empty() {
-                    self.status_message = format!("Failed: {}", errors.join("; "));
-                } else if self.running_tasks.is_empty() {
-                    self.status_message = "Ready".into();
-                }
-            }
-            ActionMessage::GithubPrDetail(issue_key, result) => {
-                self.github_pr_detail_loading.remove(&issue_key);
-                match result {
-                    Ok(detail) => {
-                        if let Some(pr) = self.github_prs.get_mut(&issue_key) {
-                            pr.apply_detail(detail);
-                            self.github_pr_detail_loaded.insert(issue_key.clone());
-                            self.github_pr_detail_errors.remove(&issue_key);
-                        }
-                    }
-                    Err(err) => {
-                        self.github_pr_detail_errors
-                            .insert(issue_key.clone(), err.to_string());
-                        self.status_message =
-                            format!("Failed to load PR detail for {issue_key}: {err}");
-                    }
-                }
-            }
-            ActionMessage::ConvertedToStory(issue_key, result) => match result {
-                Ok(()) => {
-                    self.status_message = format!("Converted {issue_key}");
-                    self.spawn_refresh();
-                }
-                Err(err) => {
-                    self.status_message = format!("Failed to convert {issue_key}: {err}");
-                }
-            },
-            ActionMessage::CiLogsFetched(issue_key, result) => {
-                self.ci_logs_loading.remove(&issue_key);
-                match result {
-                    Ok(logs) => {
-                        if let Some(pr) = self.github_prs.get_mut(&issue_key) {
-                            for (run, log) in pr.check_runs.iter_mut().zip(logs) {
-                                run.log_excerpt = log;
-                            }
-                        }
-                        self.ci_logs_loaded.insert(issue_key);
-                    }
-                    Err(err) => {
-                        self.status_message =
-                            format!("Failed to fetch CI logs for {issue_key}: {err}");
-                    }
-                }
-            }
-            ActionMessage::FixCiOpened(result) => match result {
-                Ok(branch) => {
-                    self.current_branch = branch;
-                    self.status_message = "Opened opencode to fix CI".to_string();
+            ActionMessage::PickedUp(result) => {
+                if let Ok(pickup) = result {
+                    self.current_branch = pickup.branch;
                     self.spawn_active_branches();
                 }
-                Err(err) => {
-                    self.status_message = format!("Failed to fix CI: {err}");
-                }
-            },
-            ActionMessage::PickedUp(result) => match result {
-                Ok(pickup) => {
-                    self.current_branch = pickup.branch.clone();
-                    let skipped_note = if pickup.skipped_opencode {
-                        " (skipped opencode: uncommitted changes)"
-                    } else {
-                        ""
-                    };
-                    self.status_message = format!("Picked up {}{}", pickup.branch, skipped_note);
-                    self.spawn_active_branches();
-                }
-                Err(err) => {
-                    self.status_message = format!("Failed to pick up issue: {err}");
-                }
-            },
-            ActionMessage::BranchDiffOpened(result) => match result {
-                Ok(branch) => {
-                    self.status_message = format!("Opened diff for {branch}");
-                }
-                Err(err) => {
-                    self.status_message = format!("Branch diff failed: {err}");
-                }
-            },
-            ActionMessage::ApproveAutoMerged(result) => match result {
-                Ok(pr_number) => {
-                    self.status_message =
-                        format!("Approved & auto-merge enabled for PR #{pr_number}");
-                }
-                Err(err) => {
-                    self.status_message = format!("Approve/merge failed: {err}");
-                }
-            },
-            ActionMessage::Finished(result) => match result {
-                Ok(pr_url) => {
-                    self.status_message = format!("PR created: {pr_url}");
+            }
+            ActionMessage::BranchDiffOpened(_) => {}
+            ActionMessage::ApproveAutoMerged(_) => {}
+            ActionMessage::Finished(result) => {
+                if result.is_ok() {
                     self.spawn_refresh();
                 }
-                Err(err) => {
-                    self.status_message = format!("Finish failed: {err}");
+            }
+            ActionMessage::InlineCreated(result) => self.handle_inline_created_message(result),
+            ActionMessage::AutoLabeled(_key, _result) => {}
+            ActionMessage::LabelAdded(result) => {
+                if result.is_ok() {
+                    self.spawn_refresh();
                 }
-            },
-            ActionMessage::InlineCreated(result) => match result {
-                Ok(key) => {
-                    self.input_mode = InputMode::Normal;
-                    let found_index = self.display_rows.iter().position(|row| {
-                        self.issue_for_display_row(row)
-                            .map(|i| i.key == key)
-                            .unwrap_or(false)
-                    });
-                    if let Some(index) = found_index {
-                        self.selected_index = index;
-                        self.status_message = format!("Created {key}");
-                    } else {
-                        self.status_message =
-                            format!("Created {key} (may take a moment to appear)");
-                    }
-                }
-                Err(err) => {
-                    self.status_message = format!("Failed: {err}");
-                    self.input_mode = InputMode::Normal;
-                    self.cancel_inline_new();
-                }
-            },
+            }
             ActionMessage::ChildrenLoaded(parent_key, result) => {
-                self.loading_children.remove(&parent_key);
-                match result {
-                    Ok(children) => {
-                        // Pre-collapse expandable children so only one level
-                        // is visible at a time.
-                        for child in &children {
-                            if is_expandable_type(child) {
-                                self.collapsed_stories.insert(child.key.clone());
-                            }
-                        }
-                        self.story_children.insert(parent_key, children);
-                        self.rebuild_display_rows();
-                    }
-                    Err(err) => {
-                        self.status_message =
-                            format!("Failed to load children for {parent_key}: {err}");
-                    }
-                }
+                self.handle_children_loaded_message(parent_key, result);
             }
-            ActionMessage::AutoLabeled(_key, _result) => {
-                // Silent — auto-labeling is best-effort
-            }
-            ActionMessage::LabelAdded(result) => match result {
-                Ok((issue_key, label)) => {
-                    self.status_message = format!("Added label {label} to {issue_key}");
+            ActionMessage::ConvertedToStory(_, result) => {
+                if result.is_ok() {
                     self.spawn_refresh();
                 }
-                Err(err) => {
-                    self.status_message = format!("Failed to add label: {err}");
+            }
+            ActionMessage::CiLogsFetched(_, _) => {}
+            ActionMessage::FixCiOpened(result) => {
+                if let Ok(branch) = result {
+                    self.current_branch = branch;
+                    self.spawn_active_branches();
                 }
-            },
+            }
             ActionMessage::TaskStarted(name) => {
                 self.running_tasks.insert(name);
-                self.update_task_status();
+                self.status_bar.handle_task_started(&self.running_tasks);
             }
             ActionMessage::TaskFinished(name) => {
                 self.running_tasks.remove(&name);
-                self.completed_tasks.push_back((name, 50));
-                self.update_task_status();
+                self.status_bar
+                    .handle_task_finished(name, &self.running_tasks);
             }
-            ActionMessage::Progress(progress) => {
-                self.status_message = progress.to_string();
+            ActionMessage::Progress(_) => {}
+        }
+    }
+
+    fn handle_issues_message(&mut self, result: Result<Vec<Issue>>) {
+        match result {
+            Ok(issues) => {
+                let selected_key = self.selected_issue().map(|issue| issue.key.clone());
+                self.issues = issues;
+                self.story_children.clear();
+                self.rebuild_display_rows();
+                let next_index = selected_key
+                    .and_then(|key| {
+                        self.display_rows.iter().position(|row| {
+                            self.issue_for_display_row(row)
+                                .map(|issue| issue.key == key)
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(0);
+                self.selected_index = if self.display_rows.is_empty() {
+                    0
+                } else {
+                    next_index.min(self.display_rows.len() - 1)
+                };
+                self.loading = false;
+                self.spawn_active_branches();
+                self.spawn_github_prs();
+                self.spawn_link_jira_repos();
+            }
+            Err(_) => {
+                self.loading = false;
             }
         }
+    }
+
+    fn handle_github_prs_message(&mut self, all_prs: Vec<PrInfo>) {
+        let previous_prs = self.sidebar.begin_pr_refresh(&self.github_prs);
+
+        self.github_prs.clear();
+        self.github_statuses.clear();
+        for issue in &self.issues {
+            let key_lower = issue.key.to_lowercase();
+            let matched = all_prs
+                .iter()
+                .find(|pr| pr.head_branch.to_lowercase().starts_with(&key_lower));
+            if let Some(pr) = matched {
+                self.github_prs.insert(issue.key.clone(), pr.clone());
+                self.github_statuses
+                    .insert(issue.key.clone(), GithubStatus::Found(pr.clone()));
+            }
+        }
+
+        self.sidebar
+            .handle_pr_refresh(&mut self.github_prs, &previous_prs);
+        self.record_check_durations();
+        self.save_cache();
+        self.spawn_auto_label();
+        self.github_loading = false;
+        self.refresh_latest_activity();
+        self.prefetch_selected_pr_detail();
+    }
+
+    fn handle_inline_created_message(&mut self, result: Result<String>) {
+        match result {
+            Ok(key) => {
+                self.input_mode = InputMode::Normal;
+                let found_index = self.display_rows.iter().position(|row| {
+                    self.issue_for_display_row(row)
+                        .map(|issue| issue.key == key)
+                        .unwrap_or(false)
+                });
+                if let Some(index) = found_index {
+                    self.selected_index = index;
+                }
+                self.status_bar
+                    .handle_inline_created(&key, found_index.is_some());
+            }
+            Err(err) => {
+                self.status_bar.message = format!("Failed: {err}");
+                self.input_mode = InputMode::Normal;
+                self.cancel_inline_new();
+            }
+        }
+    }
+
+    fn handle_children_loaded_message(&mut self, parent_key: String, result: Result<Vec<Issue>>) {
+        let Ok(children) = result else {
+            return;
+        };
+
+        for child in &children {
+            if is_expandable_type(child) {
+                self.collapsed_stories.insert(child.key.clone());
+            }
+        }
+        self.story_children.insert(parent_key, children);
+        self.rebuild_display_rows();
     }
 
     /// Spawn pick-up issue in background.
@@ -664,7 +538,7 @@ impl App {
         let issue_description = issue.description().unwrap_or_default();
         let repos = self.repo_matches(issue);
         if repos.is_empty() {
-            self.status_message = format!("Cannot pick up {issue_key}: no linked repo");
+            self.status_bar.message = format!("Cannot pick up {issue_key}: no linked repo");
             return;
         }
 
@@ -687,7 +561,7 @@ impl App {
         let issue_key = issue.key.clone();
         let repos = self.repo_matches(issue);
         if repos.is_empty() {
-            self.status_message = format!("Cannot open diff for {issue_key}: no linked repo");
+            self.status_bar.message = format!("Cannot open diff for {issue_key}: no linked repo");
             return;
         }
 
@@ -701,7 +575,7 @@ impl App {
         };
         let issue_key = issue.key.clone();
         let Some(pr) = self.github_prs.get(&issue_key) else {
-            self.status_message = format!("No PR found for {issue_key}");
+            self.status_bar.message = format!("No PR found for {issue_key}");
             return;
         };
 
@@ -717,7 +591,7 @@ impl App {
         let issue_summary = issue.summary().unwrap_or_default();
         let repos = self.repo_matches(issue);
         if repos.is_empty() {
-            self.status_message = format!("Cannot finish {issue_key}: no linked repo");
+            self.status_bar.message = format!("Cannot finish {issue_key}: no linked repo");
             return;
         }
 
@@ -748,11 +622,10 @@ impl App {
                 .map(|children| !children.is_empty())
                 .unwrap_or(false);
             if has_children {
-                self.status_message =
-                    format!("{issue_key} has children — remove them first");
+                self.status_bar.message = format!("{issue_key} has children — remove them first");
                 return;
             }
-            self.status_message = "Reverting to task...".to_string();
+            self.status_bar.message = "Reverting to task...".to_string();
             actions::convert_to_story::spawn(
                 self.bg_tx.clone(),
                 self.client.clone(),
@@ -762,7 +635,7 @@ impl App {
             return;
         }
 
-        self.status_message = "Converting to story...".to_string();
+        self.status_bar.message = "Converting to story...".to_string();
         actions::convert_to_story::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
@@ -780,7 +653,7 @@ impl App {
         if summary.is_empty() {
             self.remove_inline_row(state.row_index);
             self.input_mode = InputMode::Normal;
-            self.status_message = "Summary cannot be empty".into();
+            self.status_bar.message = "Summary cannot be empty".into();
             return;
         }
 
@@ -808,10 +681,16 @@ impl App {
     /// Returns the issue for a given display row, if any.
     fn issue_for_display_row(&self, row: &DisplayRow) -> Option<&Issue> {
         match row {
-            DisplayRow::Issue { index, child_of: None, .. } => self.issues.get(*index),
-            DisplayRow::Issue { index, child_of: Some(parent_key), .. } => {
-                self.story_children.get(parent_key)?.get(*index)
-            }
+            DisplayRow::Issue {
+                index,
+                child_of: None,
+                ..
+            } => self.issues.get(*index),
+            DisplayRow::Issue {
+                index,
+                child_of: Some(parent_key),
+                ..
+            } => self.story_children.get(parent_key)?.get(*index),
             DisplayRow::StoryHeader { key, .. } => self.find_issue_by_key(key),
             DisplayRow::InlineNew { .. }
             | DisplayRow::Loading { .. }
@@ -894,10 +773,12 @@ impl App {
         // Find child issues under this story that have an issue type suggesting
         // they could be stories (Story, Epic, Task with children, etc.)
         // We fetch children for ALL child issues of this story to discover sub-stories.
-        if self.loading_children.contains(parent_key) || self.story_children.contains_key(parent_key) {
+        if self.list_view.loading_children.contains(parent_key)
+            || self.story_children.contains_key(parent_key)
+        {
             return;
         }
-        self.loading_children.insert(parent_key.to_string());
+        self.list_view.start_loading_children(parent_key);
         actions::fetch_children::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
@@ -1087,12 +968,12 @@ impl App {
                 TopLevel::Standalone(idx) => {
                     let issue = &self.issues[idx];
                     let issue_key = issue.key.clone();
-                    let expandable = is_expandable_type(issue)
-                        || self.story_children.contains_key(&issue_key);
+                    let expandable =
+                        is_expandable_type(issue) || self.story_children.contains_key(&issue_key);
                     if expandable {
                         // Default to collapsed until explicitly expanded
                         if !self.story_children.contains_key(&issue_key)
-                            && !self.loading_children.contains(&issue_key)
+                            && !self.list_view.loading_children.contains(&issue_key)
                         {
                             self.collapsed_stories.insert(issue_key.clone());
                         }
@@ -1144,7 +1025,7 @@ impl App {
                             if expandable {
                                 // Default nested stories to collapsed
                                 if !self.story_children.contains_key(&child_key)
-                                    && !self.loading_children.contains(&child_key)
+                                    && !self.list_view.loading_children.contains(&child_key)
                                 {
                                     self.collapsed_stories.insert(child_key.clone());
                                 }
@@ -1178,7 +1059,7 @@ impl App {
 
     /// Append children for a nested story header, handling loading/empty states.
     fn append_nested_children(&self, parent_key: &str, depth: u8, rows: &mut Vec<DisplayRow>) {
-        if self.loading_children.contains(parent_key) {
+        if self.list_view.loading_children.contains(parent_key) {
             rows.push(DisplayRow::Loading { depth });
             return;
         }
@@ -1194,8 +1075,8 @@ impl App {
         }
         for (idx, child) in children.iter().enumerate() {
             let child_key = child.key.clone();
-            let expandable = is_expandable_type(child)
-                || self.story_children.contains_key(&child_key);
+            let expandable =
+                is_expandable_type(child) || self.story_children.contains_key(&child_key);
             if expandable {
                 let child_summary = child.summary().unwrap_or_default();
                 rows.push(DisplayRow::StoryHeader {
@@ -1311,8 +1192,10 @@ impl App {
             let group_end = self.find_story_group_end(self.selected_index);
             // If the last row in the group is an Empty placeholder, replace it
             // so the inline editor appears nested inside the story group.
-            let replace_empty =
-                matches!(self.display_rows.get(group_end), Some(DisplayRow::Empty { .. }));
+            let replace_empty = matches!(
+                self.display_rows.get(group_end),
+                Some(DisplayRow::Empty { .. })
+            );
             if replace_empty {
                 (group_end, child_depth, Some(parent))
             } else {
@@ -1323,7 +1206,10 @@ impl App {
             (at, 0u8, None)
         };
 
-        if matches!(self.display_rows.get(insert_at), Some(DisplayRow::Empty { .. })) {
+        if matches!(
+            self.display_rows.get(insert_at),
+            Some(DisplayRow::Empty { .. })
+        ) {
             self.display_rows[insert_at] = DisplayRow::InlineNew { depth };
         } else {
             self.display_rows
@@ -1454,7 +1340,7 @@ impl App {
                 let message = format!("Failed to scan repos: {err}");
                 self.repo_entries.clear();
                 self.repo_error = Some(message.clone());
-                self.status_message = message;
+                self.status_bar.message = message;
             }
         }
     }
@@ -1463,108 +1349,60 @@ impl App {
         self.reload_repo_entries();
         if self.repo_entries.is_empty() {
             if self.repo_error.is_none() {
-                self.status_message = "No repositories found in REPOS_DIR".to_string();
+                self.status_bar.message = "No repositories found in REPOS_DIR".to_string();
             }
             return;
         }
-        self.label_picker = Some(LabelPickerState {
-            selected: 0,
-            filter: String::new(),
-        });
+        self.list_view.open_label_picker();
     }
 
     pub fn close_label_picker(&mut self) {
-        self.label_picker = None;
-    }
-
-    pub fn label_picker_active(&self) -> bool {
-        self.label_picker.is_some()
-    }
-
-    pub fn filtered_repo_entries(&self) -> Vec<&RepoEntry> {
-        let Some(picker) = &self.label_picker else {
-            return Vec::new();
-        };
-        if picker.filter.is_empty() {
-            return self.repo_entries.iter().collect();
-        }
-        let query = picker.filter.to_lowercase();
-        self.repo_entries
-            .iter()
-            .filter(|e| e.label.to_lowercase().contains(&query))
-            .collect()
+        self.list_view.close_label_picker();
     }
 
     pub fn move_label_picker_selection(&mut self, down: bool) {
-        let count = self.filtered_repo_entries().len();
-        let Some(picker) = self.label_picker.as_mut() else {
-            return;
-        };
-        if count == 0 {
-            picker.selected = 0;
-            return;
-        }
-        if down {
-            picker.selected = (picker.selected + 1).min(count - 1);
-            return;
-        }
-        if picker.selected == 0 {
-            return;
-        }
-        picker.selected -= 1;
+        self.list_view
+            .move_label_picker_selection(&self.repo_entries, down);
     }
 
     pub fn label_picker_entry(&self) -> Option<&RepoEntry> {
-        let picker = self.label_picker.as_ref()?;
-        self.filtered_repo_entries().get(picker.selected).copied()
+        self.list_view.label_picker_entry(&self.repo_entries)
     }
 
     pub fn label_picker_type_char(&mut self, ch: char) {
-        let Some(picker) = self.label_picker.as_mut() else {
-            return;
-        };
-        picker.filter.push(ch);
-        picker.selected = 0;
+        self.list_view.label_picker_type_char(ch);
     }
 
     pub fn label_picker_backspace(&mut self) {
-        let Some(picker) = self.label_picker.as_mut() else {
-            return;
-        };
-        picker.filter.pop();
-        picker.selected = 0;
+        self.list_view.label_picker_backspace();
     }
 
     pub fn open_ci_log_popup(&mut self) {
         let Some(issue) = self.selected_issue() else {
-            self.status_message = "No issue selected".to_string();
+            self.status_bar.message = "No issue selected".to_string();
             return;
         };
         let issue_key = issue.key.clone();
         let Some(pr) = self.github_prs.get(&issue_key) else {
-            self.status_message = "No linked PR".to_string();
+            self.status_bar.message = "No linked PR".to_string();
             return;
         };
         if pr.check_runs.is_empty() {
-            self.status_message = "No CI checks".to_string();
+            self.status_bar.message = "No CI checks".to_string();
             return;
         }
-        self.ci_log_popup_tab = 0;
-        self.ci_log_popup_scroll = Some(usize::MAX);
+        self.ci_log_popup.open();
         self.spawn_ci_log_fetch(&issue_key);
     }
 
     /// Spawn CI log fetch if logs aren't already cached or in-flight.
     fn spawn_ci_log_fetch(&mut self, issue_key: &str) {
-        if self.ci_logs_loaded.contains(issue_key)
-            || self.ci_logs_loading.contains(issue_key)
-        {
-            return;
-        }
         let Some(pr) = self.github_prs.get(issue_key) else {
             return;
         };
-        self.ci_logs_loading.insert(issue_key.to_string());
+        if !self.ci_log_popup.start_loading(issue_key) {
+            return;
+        }
         actions::fetch_ci_logs::spawn(
             self.bg_tx.clone(),
             issue_key.to_string(),
@@ -1576,19 +1414,19 @@ impl App {
     /// Checkout the PR branch and open opencode with the CI error as prompt.
     pub fn spawn_fix_ci(&mut self) {
         let Some(issue) = self.selected_issue() else {
-            self.status_message = "No issue selected".to_string();
+            self.status_bar.message = "No issue selected".to_string();
             return;
         };
         let issue_key = issue.key.clone();
         let repo_path = match self.repo_matches(issue).first() {
             Some(entry) => entry.path.clone(),
             None => {
-                self.status_message = format!("Cannot fix CI for {issue_key}: no linked repo");
+                self.status_bar.message = format!("Cannot fix CI for {issue_key}: no linked repo");
                 return;
             }
         };
         let Some(pr) = self.github_prs.get(&issue_key) else {
-            self.status_message = "No linked PR".to_string();
+            self.status_bar.message = "No linked PR".to_string();
             return;
         };
 
@@ -1608,22 +1446,16 @@ impl App {
             .join("\n\n");
 
         self.close_ci_log_popup();
-        self.status_message = "Checking out branch and opening opencode...".to_string();
+        self.status_bar.message = "Checking out branch and opening opencode...".to_string();
         actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
     }
 
     pub fn close_ci_log_popup(&mut self) {
-        self.ci_log_popup_scroll = None;
-    }
-
-    pub fn ci_log_popup_active(&self) -> bool {
-        self.ci_log_popup_scroll.is_some()
+        self.ci_log_popup.close();
     }
 
     pub fn scroll_ci_log_popup(&mut self, delta: isize) {
-        if let Some(scroll) = self.ci_log_popup_scroll.as_mut() {
-            *scroll = (*scroll as isize + delta).max(0) as usize;
-        }
+        self.ci_log_popup.scroll_by(delta);
     }
 
     pub fn cycle_ci_log_tab(&mut self, delta: isize) {
@@ -1638,10 +1470,7 @@ impl App {
         if check_run_count == 0 {
             return;
         }
-        let current = self.ci_log_popup_tab as isize;
-        let new_index = (current + delta).rem_euclid(check_run_count as isize) as usize;
-        self.ci_log_popup_tab = new_index;
-        self.ci_log_popup_scroll = Some(0);
+        self.ci_log_popup.cycle_tab(delta, check_run_count);
     }
 
     pub fn start_search(&mut self) {
@@ -1693,7 +1522,7 @@ impl App {
     /// Sets each issue to Loading first, then resolves them one by one so the
     /// UI can show incremental progress.
     pub fn tick_spinner(&mut self) {
-        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        self.animation.tick_spinner();
     }
 
     /// Returns `true` when any background work is in progress.
@@ -1701,7 +1530,7 @@ impl App {
         self.loading
             || self.github_loading
             || !self.running_tasks.is_empty()
-            || self.status_message.starts_with('[')
+            || self.status_bar.message.starts_with('[')
     }
 
     /// Returns `true` when any tracked PR has pending CI checks.
@@ -1769,29 +1598,26 @@ impl App {
     /// - No timing data: returns None
     pub fn check_run_timing(&self, pr: &PrInfo, run: &CheckRun) -> Option<String> {
         match run.status {
-            CheckStatus::Pass | CheckStatus::Fail => {
-                run.completed_at.as_deref().map(|completed| {
-                    let elapsed = parse_duration_secs(
-                        run.started_at.as_deref().unwrap_or(completed),
-                        completed,
-                    );
-                    match elapsed {
-                        Some(secs) => format_duration(secs),
-                        None => "done".to_string(),
-                    }
-                })
-            }
+            CheckStatus::Pass | CheckStatus::Fail => run.completed_at.as_deref().map(|completed| {
+                let elapsed =
+                    parse_duration_secs(run.started_at.as_deref().unwrap_or(completed), completed);
+                match elapsed {
+                    Some(secs) => format_duration(secs),
+                    None => "done".to_string(),
+                }
+            }),
             CheckStatus::Pending => {
-                let elapsed = run
-                    .started_at
-                    .as_deref()
-                    .and_then(elapsed_since_iso)?;
+                let elapsed = run.started_at.as_deref().and_then(elapsed_since_iso)?;
                 let cache_key = format!("{}/{}", pr.repo_slug, run.name);
                 let eta = self.check_durations.get(&cache_key).map(|&historical| {
                     let remaining = historical.saturating_sub(elapsed);
                     format!(" (~{})", format_duration(remaining))
                 });
-                Some(format!("{}{}", format_duration(elapsed), eta.unwrap_or_default()))
+                Some(format!(
+                    "{}{}",
+                    format_duration(elapsed),
+                    eta.unwrap_or_default()
+                ))
             }
         }
     }
@@ -1817,12 +1643,8 @@ impl App {
                 })
             }
             CheckStatus::Pending => {
-                let elapsed = step
-                    .started_at
-                    .as_deref()
-                    .and_then(elapsed_since_iso)?;
-                let cache_key =
-                    format!("{}/{}/{}", pr.repo_slug, run.name, step.name);
+                let elapsed = step.started_at.as_deref().and_then(elapsed_since_iso)?;
+                let cache_key = format!("{}/{}/{}", pr.repo_slug, run.name, step.name);
                 let eta = self.check_durations.get(&cache_key).map(|&historical| {
                     let remaining = historical.saturating_sub(elapsed);
                     format!(" (~{})", format_duration(remaining))
@@ -1836,31 +1658,18 @@ impl App {
         }
     }
 
-    /// Compose `status_message` from currently running and recently completed tasks.
-    fn update_task_status(&mut self) {
-        if !self.running_tasks.is_empty() {
-            let names: Vec<_> = self.running_tasks.iter().map(|s| s.as_str()).collect();
-            self.status_message = format!("[{}]", names.join(", "));
-        } else if let Some((name, _)) = self.completed_tasks.back() {
-            self.status_message = format!("{name} done");
-        }
-    }
-
     /// Tick down completed-task display timers; called from the main loop tick.
     pub fn tick_completed_tasks(&mut self) {
-        self.completed_tasks.retain_mut(|(_, ticks)| {
-            *ticks = ticks.saturating_sub(1);
-            *ticks > 0
-        });
+        self.status_bar.tick_completed_tasks();
     }
 
     pub fn add_label_from_picker(&mut self) -> bool {
         let Some(entry) = self.label_picker_entry().cloned() else {
-            self.status_message = "No repository selected".to_string();
+            self.status_bar.message = "No repository selected".to_string();
             return false;
         };
         let Some(issue) = self.selected_issue() else {
-            self.status_message = "No issue selected".to_string();
+            self.status_bar.message = "No issue selected".to_string();
             return false;
         };
         let issue_key = issue.key.clone();
@@ -1870,7 +1679,7 @@ impl App {
             .iter()
             .any(|l| repos::normalize_label(l) == target_normalized);
         if already_has {
-            self.status_message = format!("{issue_key} already labeled with {}", entry.label);
+            self.status_bar.message = format!("{issue_key} already labeled with {}", entry.label);
             return false;
         }
         actions::add_label::spawn(
@@ -1891,7 +1700,7 @@ impl App {
 
         let url = format!("{}/browse/{}", self.jira_base_url, issue_key);
         open_url_in_browser(&url).await?;
-        self.status_message = format!("Opened {} in browser", url);
+        self.status_bar.message = format!("Opened {} in browser", url);
         Ok(())
     }
 
@@ -1909,27 +1718,9 @@ impl App {
         let url = pr.url.clone();
         let number = pr.number;
         open_url_in_browser(&url).await?;
-        self.status_message = format!("Opened PR #{number} in browser");
+        self.status_bar.message = format!("Opened PR #{number} in browser");
         Ok(())
     }
-}
-
-/// Returns true if the set of check runs has changed between refreshes,
-/// meaning we need to re-fetch detail data (logs, annotations, etc.).
-/// Compares run names and their pass/fail/pending status.
-fn check_runs_changed(
-    old_runs: &[crate::apis::github::CheckRun],
-    new_runs: &[crate::apis::github::CheckRun],
-) -> bool {
-    if old_runs.len() != new_runs.len() {
-        return true;
-    }
-    for (old, new) in old_runs.iter().zip(new_runs.iter()) {
-        if old.name != new.name || old.status != new.status {
-            return true;
-        }
-    }
-    false
 }
 
 /// Returns true if the issue type suggests this issue can contain child issues

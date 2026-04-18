@@ -13,7 +13,9 @@ use super::ActionMessage;
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_number: u64) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Approving & merging".to_string()));
+        let _ = tx.send(ActionMessage::TaskStarted(
+            "Approving & merging".to_string(),
+        ));
         let result = async {
             // Enable auto-merge
             let merge_output = Command::new("gh")
@@ -71,7 +73,9 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_num
             Ok(pr_number)
         }
         .await;
-        let _ = tx.send(ActionMessage::TaskFinished("Approving & merging".to_string()));
+        let _ = tx.send(ActionMessage::TaskFinished(
+            "Approving & merging".to_string(),
+        ));
         let _ = tx.send(ActionMessage::ApproveAutoMerged(result));
     });
 }

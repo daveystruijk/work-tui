@@ -304,7 +304,9 @@ impl JiraClient {
                 "issuetype": { "id": target_type.id }
             }
         });
-        self.jira.put::<(), _>("api", &format!("/issue/{issue_key}"), payload).await?;
+        self.jira
+            .put::<(), _>("api", &format!("/issue/{issue_key}"), payload)
+            .await?;
         Ok(())
     }
 
