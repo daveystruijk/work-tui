@@ -331,6 +331,8 @@ async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
         KeyCode::Enter => app.spawn_fix_ci(),
         KeyCode::Char('j') | KeyCode::Down => app.scroll_ci_log_popup(1),
         KeyCode::Char('k') | KeyCode::Up => app.scroll_ci_log_popup(-1),
+        KeyCode::Char('h') | KeyCode::Left => app.cycle_ci_log_tab(-1),
+        KeyCode::Char('l') | KeyCode::Right => app.cycle_ci_log_tab(1),
         KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             app.scroll_ci_log_popup(20);
         }

@@ -112,7 +112,7 @@ async fn fetch_pr_detail_cmd(args: &[String]) -> Result<()> {
 async fn fetch_ci_logs(args: &[String]) -> Result<()> {
     let (slug, pr_number) = parse_pr_args(args)?;
     let detail = github::fetch_pr_detail(&slug, pr_number).await?;
-    let logs = github::fetch_failed_check_run_logs(&slug, &detail.check_runs).await?;
+    let logs = github::fetch_check_run_logs(&slug, &detail.check_runs).await?;
 
     for (run, log_output) in detail.check_runs.iter().zip(logs.iter()) {
         if run.status != CheckStatus::Fail {
@@ -234,7 +234,7 @@ async fn pick_up(args: &[String]) -> Result<()> {
     println!("WARNING: WRITE operation: pick-up workflow");
     let myself = client.get_myself().await?;
     let account_id = myself.account_id.unwrap_or_default();
-    println!("my_account_id: {}", account_id);
+    println!("my_account_id: {:?}", account_id);
     let clean = work_tui::git::is_clean(&repo_path).await?;
     println!("working_tree_clean: {}", clean);
     work_tui::git::fetch_origin(&repo_path).await?;

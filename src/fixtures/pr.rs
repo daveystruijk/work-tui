@@ -19,7 +19,7 @@ pub(crate) fn test_pr() -> PrInfo {
                 details_url: String::new(),
                 summary: String::new(),
                 text: String::new(),
-                failed_log_excerpt: String::new(),
+                log_excerpt: String::new(),
                 steps: vec![CheckStep {
                     name: "cargo fmt".to_string(),
                     status: CheckStatus::Pass,
@@ -36,7 +36,7 @@ pub(crate) fn test_pr() -> PrInfo {
                 details_url: String::new(),
                 summary: String::new(),
                 text: String::new(),
-                failed_log_excerpt: String::new(),
+                log_excerpt: String::new(),
                 steps: vec![
                     CheckStep {
                         name: "compile".to_string(),

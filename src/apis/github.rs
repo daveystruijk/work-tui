@@ -24,7 +24,7 @@ pub struct CheckRun {
     pub details_url: String,
     pub summary: String,
     pub text: String,
-    pub failed_log_excerpt: String,
+    pub log_excerpt: String,
     pub steps: Vec<CheckStep>,
     pub annotations: Vec<CheckAnnotation>,
 }
@@ -225,7 +225,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                     details_url: c.details_url.clone(),
                     summary: String::new(),
                     text: String::new(),
-                    failed_log_excerpt: String::new(),
+                    log_excerpt: String::new(),
                     steps: Vec::new(),
                     annotations: Vec::new(),
                 })
@@ -453,7 +453,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                     details_url: c.details_url.clone(),
                     summary: String::new(),
                     text: String::new(),
-                    failed_log_excerpt: String::new(),
+                    log_excerpt: String::new(),
                     steps: Vec::new(),
                     annotations: Vec::new(),
                 })
@@ -631,7 +631,7 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                 details_url: check.details_url,
                 summary: String::new(),
                 text: String::new(),
-                failed_log_excerpt: String::new(),
+                log_excerpt: String::new(),
                 steps,
                 annotations: Vec::new(),
             }
@@ -666,9 +666,9 @@ fn parse_job_id_from_details_url(details_url: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-async fn fetch_failed_job_log_text(repo_slug: &str, job_id: u64) -> Option<String> {
+async fn fetch_job_log_text(repo_slug: &str, job_id: u64) -> Option<String> {
     let output = Command::new("gh")
-        .args(["run", "view", "--repo", repo_slug, "--job", &job_id.to_string(), "--log-failed"])
+        .args(["run", "view", "--repo", repo_slug, "--job", &job_id.to_string(), "--log"])
         .output()
         .await
         .ok()?;
@@ -678,12 +678,12 @@ async fn fetch_failed_job_log_text(repo_slug: &str, job_id: u64) -> Option<Strin
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    sanitize_failed_log_excerpt(&stdout)
+    sanitize_log_excerpt(&stdout)
 }
 
 /// Strip ANSI sequences, `gh` log prefixes and timestamps, then extract
 /// `##[error]` lines with surrounding context.
-fn sanitize_failed_log_excerpt(output: &str) -> Option<String> {
+fn sanitize_log_excerpt(output: &str) -> Option<String> {
     let without_ansi = strip_ansi_sequences(output);
     let lines: Vec<&str> = without_ansi
         .lines()
@@ -743,7 +743,7 @@ fn extract_error_context<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     result
 }
 
-/// Strip the `<job>\t<step>\t` prefix that `gh run view --log-failed` adds.
+/// Strip the `<job>\t<step>\t` prefix that `gh run view --log` adds.
 /// Format: "Lint and Test / test\tUNKNOWN STEP\t<content>"
 fn strip_gh_log_prefix(line: &str) -> &str {
     let mut remainder = line;
@@ -789,21 +789,16 @@ fn strip_ansi_sequences(input: &str) -> String {
     output
 }
 
-pub async fn fetch_failed_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> Result<Vec<String>> {
+pub async fn fetch_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> Result<Vec<String>> {
     let mut logs = Vec::with_capacity(check_runs.len());
     for run in check_runs {
-        if run.status != CheckStatus::Fail {
-            logs.push(String::new());
-            continue;
-        }
-
         let Some(job_id) = parse_job_id_from_details_url(&run.details_url) else {
             logs.push(String::new());
             continue;
         };
 
         logs.push(
-            fetch_failed_job_log_text(repo_slug, job_id)
+            fetch_job_log_text(repo_slug, job_id)
                 .await
                 .unwrap_or_default(),
         );

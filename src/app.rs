@@ -169,6 +169,8 @@ pub struct App {
     pub last_updated: Option<std::time::Instant>,
     /// When `Some`, the CI logs popup is open with this scroll offset.
     pub ci_log_popup_scroll: Option<usize>,
+    /// Selected tab index in the CI logs popup (indexes into failed check runs).
+    pub ci_log_popup_tab: usize,
     /// Issue keys for which CI logs have already been fetched.
     pub ci_logs_loaded: HashSet<String>,
     /// Issue keys for which CI logs are currently being fetched.
@@ -224,6 +226,7 @@ impl App {
             last_ci_refresh: std::time::Instant::now(),
             last_updated: None,
             ci_log_popup_scroll: None,
+            ci_log_popup_tab: 0,
             ci_logs_loaded: Default::default(),
             ci_logs_loading: Default::default(),
         };
@@ -520,7 +523,7 @@ impl App {
                     Ok(logs) => {
                         if let Some(pr) = self.github_prs.get_mut(&issue_key) {
                             for (run, log) in pr.check_runs.iter_mut().zip(logs) {
-                                run.failed_log_excerpt = log;
+                                run.log_excerpt = log;
                             }
                         }
                         self.ci_logs_loaded.insert(issue_key);
@@ -1542,11 +1545,11 @@ impl App {
             self.status_message = "No linked PR".to_string();
             return;
         };
-        let has_failed = pr.check_runs.iter().any(|r| r.status == CheckStatus::Fail);
-        if !has_failed {
-            self.status_message = "No failed CI checks".to_string();
+        if pr.check_runs.is_empty() {
+            self.status_message = "No CI checks".to_string();
             return;
         }
+        self.ci_log_popup_tab = 0;
         self.ci_log_popup_scroll = Some(usize::MAX);
         self.spawn_ci_log_fetch(&issue_key);
     }
@@ -1595,8 +1598,8 @@ impl App {
             .iter()
             .filter(|r| r.status == CheckStatus::Fail)
             .map(|r| {
-                if !r.failed_log_excerpt.trim().is_empty() {
-                    format!("## {}\n{}", r.name, r.failed_log_excerpt.trim())
+                if !r.log_excerpt.trim().is_empty() {
+                    format!("## {}\n{}", r.name, r.log_excerpt.trim())
                 } else {
                     format!("## {} (no logs available)", r.name)
                 }
@@ -1621,6 +1624,24 @@ impl App {
         if let Some(scroll) = self.ci_log_popup_scroll.as_mut() {
             *scroll = (*scroll as isize + delta).max(0) as usize;
         }
+    }
+
+    pub fn cycle_ci_log_tab(&mut self, delta: isize) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let Some(pr) = self.github_prs.get(&issue_key) else {
+            return;
+        };
+        let check_run_count = pr.check_runs.len();
+        if check_run_count == 0 {
+            return;
+        }
+        let current = self.ci_log_popup_tab as isize;
+        let new_index = (current + delta).rem_euclid(check_run_count as isize) as usize;
+        self.ci_log_popup_tab = new_index;
+        self.ci_log_popup_scroll = Some(0);
     }
 
     pub fn start_search(&mut self) {
