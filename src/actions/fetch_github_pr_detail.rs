@@ -9,15 +9,15 @@ pub fn spawn(
     repo_slug: String,
     pr_number: u64,
 ) {
-    let _ = tx.send(ActionMessage::TaskStarted(format!(
-        "Fetching PR detail for {issue_key}"
-    )));
-    let tx = tx.clone();
     tokio::spawn(async move {
-        let result = github::fetch_pr_detail(&repo_slug, pr_number).await;
-        let _ = tx.send(ActionMessage::TaskFinished(format!(
-            "Fetching PR detail for {issue_key}"
-        )));
+        let task_name = format!("Fetching PR detail for {issue_key}");
+        let _ = tx.send(ActionMessage::TaskStarted(task_name.clone()));
+        let result = run(&repo_slug, pr_number).await;
+        let _ = tx.send(ActionMessage::TaskFinished(task_name));
         let _ = tx.send(ActionMessage::GithubPrDetail(issue_key, result));
     });
+}
+
+async fn run(repo_slug: &str, pr_number: u64) -> color_eyre::Result<github::PrDetail> {
+    github::fetch_pr_detail(repo_slug, pr_number).await
 }

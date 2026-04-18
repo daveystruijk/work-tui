@@ -21,11 +21,14 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repos: Vec<String>) {
         return;
     }
 
-    let _ = tx.send(ActionMessage::TaskStarted("Fetching PRs".to_string()));
-    let tx = tx.clone();
     tokio::spawn(async move {
-        let (all_prs, errors) = github::list_all_repo_prs(&repos).await;
+        let _ = tx.send(ActionMessage::TaskStarted("Fetching PRs".to_string()));
+        let (all_prs, errors) = run(&repos).await.expect("fetch PRs");
         let _ = tx.send(ActionMessage::TaskFinished("Fetching PRs".to_string()));
         let _ = tx.send(ActionMessage::GithubPrs(all_prs, errors));
     });
+}
+
+async fn run(repos: &[String]) -> color_eyre::Result<(Vec<github::PrInfo>, Vec<String>)> {
+    Ok(github::list_all_repo_prs(repos).await)
 }

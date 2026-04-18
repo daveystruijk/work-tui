@@ -11,9 +11,6 @@
 //! - [`ActionMessage::Issues`]
 //! - [`ActionMessage::Progress`] (one per sub-task)
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
 
 use super::ActionMessage;
@@ -23,69 +20,51 @@ use crate::git;
 
 /// Spawn all initialization tasks concurrently.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: String) {
-    let _ = tx.send(ActionMessage::TaskStarted("Initializing".to_string()));
-    let done = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(async move {
+        let _ = tx.send(ActionMessage::TaskStarted("Initializing".to_string()));
+        run(&tx, &client, &jql).await;
+        let _ = tx.send(ActionMessage::TaskFinished("Initializing".to_string()));
+    });
+}
 
-    // 1. Resolve current git branch
-    {
-        let tx = tx.clone();
-        let done = Arc::clone(&done);
-        tokio::spawn(async move {
-            let _ = tx.send(ActionMessage::Progress(Progress {
-                action: "initialize",
-                message: "Resolving git branch...".into(),
-                current: 1,
-                total: 3,
-            }));
-            let branch = git::current_branch()
-                .await
-                .unwrap_or_else(|_| "(detached)".to_string());
-            let _ = tx.send(ActionMessage::CurrentBranch(branch));
-            if done.fetch_add(1, Ordering::Relaxed) == 2 {
-                let _ = tx.send(ActionMessage::TaskFinished("Initializing".to_string()));
-            }
-        });
-    }
+async fn run(tx: &mpsc::UnboundedSender<ActionMessage>, client: &JiraClient, jql: &str) {
+    let current_branch = async {
+        let _ = tx.send(ActionMessage::Progress(Progress {
+            action: "initialize",
+            message: "Resolving git branch...".into(),
+            current: 1,
+            total: 3,
+        }));
+        let branch = git::current_branch()
+            .await
+            .unwrap_or_else(|_| "(detached)".to_string());
+        let _ = tx.send(ActionMessage::CurrentBranch(branch));
+    };
 
-    // 2. Fetch Jira user identity
-    {
-        let tx = tx.clone();
-        let client = client.clone();
-        let done = Arc::clone(&done);
-        tokio::spawn(async move {
-            let _ = tx.send(ActionMessage::Progress(Progress {
-                action: "initialize",
-                message: "Fetching Jira identity...".into(),
-                current: 2,
-                total: 3,
-            }));
-            let result = client
-                .get_myself()
-                .await
-                .map(|u| u.account_id.unwrap_or_default());
-            let _ = tx.send(ActionMessage::Myself(result));
-            if done.fetch_add(1, Ordering::Relaxed) == 2 {
-                let _ = tx.send(ActionMessage::TaskFinished("Initializing".to_string()));
-            }
-        });
-    }
+    let myself = async {
+        let _ = tx.send(ActionMessage::Progress(Progress {
+            action: "initialize",
+            message: "Fetching Jira identity...".into(),
+            current: 2,
+            total: 3,
+        }));
+        let result = client
+            .get_myself()
+            .await
+            .map(|u| u.account_id.unwrap_or_default());
+        let _ = tx.send(ActionMessage::Myself(result));
+    };
 
-    // 3. Fetch issues
-    {
-        let tx = tx.clone();
-        let done = Arc::clone(&done);
-        tokio::spawn(async move {
-            let _ = tx.send(ActionMessage::Progress(Progress {
-                action: "initialize",
-                message: "Fetching issues...".into(),
-                current: 3,
-                total: 3,
-            }));
-            let result = client.search(&jql).await;
-            let _ = tx.send(ActionMessage::Issues(result));
-            if done.fetch_add(1, Ordering::Relaxed) == 2 {
-                let _ = tx.send(ActionMessage::TaskFinished("Initializing".to_string()));
-            }
-        });
-    }
+    let issues = async {
+        let _ = tx.send(ActionMessage::Progress(Progress {
+            action: "initialize",
+            message: "Fetching issues...".into(),
+            current: 3,
+            total: 3,
+        }));
+        let result = client.search(jql).await;
+        let _ = tx.send(ActionMessage::Issues(result));
+    };
+
+    tokio::join!(current_branch, myself, issues);
 }

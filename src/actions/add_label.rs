@@ -15,16 +15,25 @@ pub fn spawn(
     client: JiraClient,
     issue_key: String,
     label: String,
-    mut labels: Vec<String>,
+    labels: Vec<String>,
 ) {
-    let _ = tx.send(ActionMessage::TaskStarted("Adding label".to_string()));
     tokio::spawn(async move {
-        labels.push(label.clone());
-        let result = client
-            .update_labels(&issue_key, &labels)
-            .await
-            .map(|_| (issue_key, label));
+        let _ = tx.send(ActionMessage::TaskStarted("Adding label".to_string()));
+        let result = run(&client, &issue_key, &label, labels).await;
         let _ = tx.send(ActionMessage::TaskFinished("Adding label".to_string()));
         let _ = tx.send(ActionMessage::LabelAdded(result));
     });
+}
+
+async fn run(
+    client: &JiraClient,
+    issue_key: &str,
+    label: &str,
+    mut labels: Vec<String>,
+) -> color_eyre::Result<(String, String)> {
+    labels.push(label.to_string());
+    client
+        .update_labels(issue_key, &labels)
+        .await
+        .map(|_| (issue_key.to_string(), label.to_string()))
 }

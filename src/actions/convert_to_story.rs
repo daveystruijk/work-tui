@@ -18,8 +18,16 @@ pub fn spawn(
     tokio::spawn(async move {
         let label = format!("Converting to {target_type}");
         let _ = tx.send(ActionMessage::TaskStarted(label.clone()));
-        let result = client.update_issue_type(&issue_key, target_type).await;
+        let result = run(&client, &issue_key, target_type).await;
         let _ = tx.send(ActionMessage::TaskFinished(label));
         let _ = tx.send(ActionMessage::ConvertedToStory(issue_key, result));
     });
+}
+
+async fn run(
+    client: &JiraClient,
+    issue_key: &str,
+    target_type: &'static str,
+) -> color_eyre::Result<()> {
+    client.update_issue_type(issue_key, target_type).await
 }

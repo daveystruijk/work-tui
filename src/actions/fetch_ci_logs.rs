@@ -15,7 +15,13 @@ pub fn spawn(
     check_runs: Vec<CheckRun>,
 ) {
     tokio::spawn(async move {
-        let result = fetch_check_run_logs(&repo_slug, &check_runs).await;
+        let _ = tx.send(ActionMessage::TaskStarted("Fetching CI logs".to_string()));
+        let result = run(&repo_slug, check_runs).await;
+        let _ = tx.send(ActionMessage::TaskFinished("Fetching CI logs".to_string()));
         let _ = tx.send(ActionMessage::CiLogsFetched(issue_key, result));
     });
+}
+
+async fn run(repo_slug: &str, check_runs: Vec<CheckRun>) -> color_eyre::Result<Vec<String>> {
+    fetch_check_run_logs(repo_slug, &check_runs).await
 }
