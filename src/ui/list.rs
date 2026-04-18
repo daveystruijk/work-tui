@@ -9,7 +9,10 @@ use ratatui::{
 };
 
 use crate::actions::ActionMessage;
-use crate::apis::{github::CheckStatus, jira::Issue};
+use crate::apis::{
+    github::{CheckStatus, MergeableState},
+    jira::Issue,
+};
 use crate::app::{App, DisplayRow, InlineNewState};
 use crate::repos::RepoEntry;
 use crate::theme::Theme;
@@ -399,10 +402,14 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'stat
         } else {
             Theme::Info
         };
-        cells.insert(
-            "PR",
-            Line::styled(format!("#{}", pr.number), Style::default().fg(pr_color)),
-        );
+        let mut pr_spans = vec![Span::styled(
+            format!("#{}", pr.number),
+            Style::default().fg(pr_color),
+        )];
+        if pr.mergeable == Some(MergeableState::Conflicting) {
+            pr_spans.push(Span::styled(" !", Style::default().fg(Theme::Error)));
+        }
+        cells.insert("PR", Line::from(pr_spans));
 
         let mut ci_spans = Vec::new();
         for run in &pr.check_runs {
