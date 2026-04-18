@@ -27,8 +27,8 @@ pub mod refresh;
 
 use std::collections::HashMap;
 use std::fmt;
-
 use color_eyre::Result;
+use tokio::sync::mpsc;
 
 use crate::apis::{
     github::{PrDetail, PrInfo},
@@ -119,4 +119,25 @@ pub enum ActionMessage {
     ///
     /// Rendered in the status bar with step-by-step feedback.
     Progress(Progress),
+}
+
+/// Spawn a background action with automatic [`ActionMessage::TaskStarted`] /
+/// [`ActionMessage::TaskFinished`] bookkeeping.
+///
+/// The closure receives a clone of `tx` for sending result and progress
+/// messages. `spawn_action` wraps it with the start/finish lifecycle messages.
+pub fn spawn_action<F, Fut>(
+    tx: mpsc::UnboundedSender<ActionMessage>,
+    task_name: impl Into<String>,
+    action: F,
+) where
+    F: FnOnce(mpsc::UnboundedSender<ActionMessage>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    let task_name = task_name.into();
+    tokio::spawn(async move {
+        let _ = tx.send(ActionMessage::TaskStarted(task_name.clone()));
+        action(tx.clone()).await;
+        let _ = tx.send(ActionMessage::TaskFinished(task_name));
+    });
 }

@@ -33,75 +33,65 @@ pub fn spawn(
     summary: String,
     parent_key: Option<String>,
 ) {
-    tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Creating issue".to_string()));
+    super::spawn_action(tx, "Creating issue", |tx| async move {
         let _ = tx.send(ActionMessage::Progress(Progress {
             action: "create_inline_issue",
             message: "Creating issue...".into(),
             current: 1,
             total: 1,
         }));
-        let result = run(&tx, &client, &project_key, &summary, parent_key.as_deref(), &jql).await;
-        let _ = tx.send(ActionMessage::TaskFinished("Creating issue".to_string()));
+        let result: color_eyre::Result<RunResult> = async {
+            let issue_types = client.get_issue_types(&project_key).await?;
+            let issue_type = if parent_key.is_some() {
+                issue_types
+                    .iter()
+                    .find(|t| t.subtask)
+                    .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
+            } else {
+                issue_types
+                    .iter()
+                    .find(|t| !t.subtask && t.name.eq_ignore_ascii_case("task"))
+                    .or_else(|| issue_types.iter().find(|t| !t.subtask))
+                    .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?
+            };
+
+            let created_key = client
+                .create_issue(&project_key, &issue_type.id, &summary, None, parent_key.as_deref())
+                .await?;
+
+            let mut last_issues = None;
+            for attempt in 0..6 {
+                if let Ok(issues) = client.search(&jql).await {
+                    if issues.iter().any(|issue| issue.key == created_key) {
+                        return Ok(RunResult { created_key, refreshed_issues: Some(issues) });
+                    }
+                    last_issues = Some(issues);
+                }
+
+                if attempt < 5 {
+                    let _ = tx.send(ActionMessage::Progress(Progress {
+                        action: "create_inline_issue",
+                        message: format!("Waiting for Jira to index {created_key}..."),
+                        current: attempt + 2,
+                        total: 7,
+                    }));
+                    sleep(Duration::from_millis(250)).await;
+                }
+            }
+
+            Ok(RunResult { created_key, refreshed_issues: last_issues })
+        }
+        .await;
         match result {
-            Ok(result) => {
-                if let Some(issues) = result.refreshed_issues {
+            Ok(run_result) => {
+                if let Some(issues) = run_result.refreshed_issues {
                     let _ = tx.send(ActionMessage::Issues(Ok(issues)));
                 }
-                let _ = tx.send(ActionMessage::InlineCreated(Ok(result.created_key)));
+                let _ = tx.send(ActionMessage::InlineCreated(Ok(run_result.created_key)));
             }
             Err(error) => {
                 let _ = tx.send(ActionMessage::InlineCreated(Err(error)));
             }
         }
     });
-}
-
-async fn run(
-    tx: &mpsc::UnboundedSender<ActionMessage>,
-    client: &JiraClient,
-    project_key: &str,
-    summary: &str,
-    parent_key: Option<&str>,
-    jql: &str,
-) -> color_eyre::Result<RunResult> {
-    let issue_types = client.get_issue_types(project_key).await?;
-    let issue_type = if parent_key.is_some() {
-        issue_types
-            .iter()
-            .find(|t| t.subtask)
-            .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
-    } else {
-        issue_types
-            .iter()
-            .find(|t| !t.subtask && t.name.eq_ignore_ascii_case("task"))
-            .or_else(|| issue_types.iter().find(|t| !t.subtask))
-            .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?
-    };
-
-    let created_key = client
-        .create_issue(project_key, &issue_type.id, summary, None, parent_key)
-        .await?;
-
-    let mut last_issues = None;
-    for attempt in 0..6 {
-        if let Ok(issues) = client.search(jql).await {
-            if issues.iter().any(|issue| issue.key == created_key) {
-                return Ok(RunResult { created_key, refreshed_issues: Some(issues) });
-            }
-            last_issues = Some(issues);
-        }
-
-        if attempt < 5 {
-            let _ = tx.send(ActionMessage::Progress(Progress {
-                action: "create_inline_issue",
-                message: format!("Waiting for Jira to index {created_key}..."),
-                current: attempt + 2,
-                total: 7,
-            }));
-            sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    Ok(RunResult { created_key, refreshed_issues: last_issues })
 }

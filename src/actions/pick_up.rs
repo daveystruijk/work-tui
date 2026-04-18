@@ -32,107 +32,86 @@ pub fn spawn(
     repo_path: PathBuf,
     my_account_id: String,
 ) {
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Picking up".to_string()));
-        let result = run(
-            &tx,
-            &client,
-            &issue_key,
-            &issue_summary,
-            &issue_description,
-            &repo_path,
-            &my_account_id,
-        )
+    super::spawn_action(tx, "Picking up", |tx| async move {
+        let result: color_eyre::Result<PickUpResult> = async {
+            let _ = tx.send(ActionMessage::Progress(Progress {
+                action: "pick_up",
+                message: "Inspecting working tree...".into(),
+                current: 1,
+                total: 6,
+            }));
+            let has_uncommitted_changes = !git::is_clean(&repo_path).await?;
+
+            let _ = tx.send(ActionMessage::Progress(Progress {
+                action: "pick_up",
+                message: "Fetching origin...".into(),
+                current: 2,
+                total: 6,
+            }));
+            git::fetch_origin(&repo_path).await?;
+
+            let _ = tx.send(ActionMessage::Progress(Progress {
+                action: "pick_up",
+                message: "Creating or reusing branch...".into(),
+                current: 3,
+                total: 6,
+            }));
+            let branch_setup = git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
+
+            let _ = tx.send(ActionMessage::Progress(Progress {
+                action: "pick_up",
+                message: "Assigning issue...".into(),
+                current: 4,
+                total: 6,
+            }));
+            client.assign_issue(&issue_key, &my_account_id).await?;
+
+            let _ = tx.send(ActionMessage::Progress(Progress {
+                action: "pick_up",
+                message: "Transitioning to In Progress and moving issue to board...".into(),
+                current: 5,
+                total: 6,
+            }));
+            let transitions = client.get_transitions(&issue_key).await?;
+            let progress = transitions.into_iter().find(|t| t.name.to_lowercase().contains("progress"));
+            if let Some(t) = progress {
+                client.transition_issue(&issue_key, &t.id).await?;
+            }
+            client.move_issue_to_active_board(&issue_key).await?;
+
+            let should_open_opencode = branch_setup.reused_existing || !has_uncommitted_changes;
+            if should_open_opencode {
+                let _ = tx.send(ActionMessage::Progress(Progress {
+                    action: "pick_up",
+                    message: "Opening opencode session...".into(),
+                    current: 6,
+                    total: 6,
+                }));
+                let prompt = format!("{issue_summary}\n\n{issue_description}");
+                let escaped_prompt = prompt.replace('\'', "'\\''");
+                let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
+                let repo_dir = repo_path.display().to_string();
+
+                let _ = Command::new("tmux").args(["new-window", "-c", &repo_dir]).output().await;
+                let _ = Command::new("tmux")
+                    .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
+                    .output()
+                    .await;
+            } else {
+                let _ = tx.send(ActionMessage::Progress(Progress {
+                    action: "pick_up",
+                    message: "Skipping opencode (uncommitted changes)...".into(),
+                    current: 6,
+                    total: 6,
+                }));
+            }
+
+            Ok(PickUpResult {
+                branch: branch_setup.branch_name,
+                skipped_opencode: has_uncommitted_changes && !branch_setup.reused_existing,
+            })
+        }
         .await;
-        let _ = tx.send(ActionMessage::TaskFinished("Picking up".to_string()));
         let _ = tx.send(ActionMessage::PickedUp(result));
     });
-}
-
-async fn run(
-    tx: &mpsc::UnboundedSender<ActionMessage>,
-    client: &JiraClient,
-    issue_key: &str,
-    issue_summary: &str,
-    issue_description: &str,
-    repo_path: &PathBuf,
-    my_account_id: &str,
-) -> color_eyre::Result<PickUpResult> {
-    let _ = tx.send(ActionMessage::Progress(Progress {
-        action: "pick_up",
-        message: "Inspecting working tree...".into(),
-        current: 1,
-        total: 6,
-    }));
-    let has_uncommitted_changes = !git::is_clean(repo_path).await?;
-
-    let _ = tx.send(ActionMessage::Progress(Progress {
-        action: "pick_up",
-        message: "Fetching origin...".into(),
-        current: 2,
-        total: 6,
-    }));
-    git::fetch_origin(repo_path).await?;
-
-    let _ = tx.send(ActionMessage::Progress(Progress {
-        action: "pick_up",
-        message: "Creating or reusing branch...".into(),
-        current: 3,
-        total: 6,
-    }));
-    let branch_setup = git::create_branch_from_origin_main(repo_path, issue_key, issue_summary).await?;
-
-    let _ = tx.send(ActionMessage::Progress(Progress {
-        action: "pick_up",
-        message: "Assigning issue...".into(),
-        current: 4,
-        total: 6,
-    }));
-    client.assign_issue(issue_key, my_account_id).await?;
-
-    let _ = tx.send(ActionMessage::Progress(Progress {
-        action: "pick_up",
-        message: "Transitioning to In Progress and moving issue to board...".into(),
-        current: 5,
-        total: 6,
-    }));
-    let transitions = client.get_transitions(issue_key).await?;
-    let progress = transitions.into_iter().find(|t| t.name.to_lowercase().contains("progress"));
-    if let Some(t) = progress {
-        client.transition_issue(issue_key, &t.id).await?;
-    }
-    client.move_issue_to_active_board(issue_key).await?;
-
-    let should_open_opencode = branch_setup.reused_existing || !has_uncommitted_changes;
-    if should_open_opencode {
-        let _ = tx.send(ActionMessage::Progress(Progress {
-            action: "pick_up",
-            message: "Opening opencode session...".into(),
-            current: 6,
-            total: 6,
-        }));
-        let prompt = format!("{issue_summary}\n\n{issue_description}");
-        let escaped_prompt = prompt.replace('\'', "'\\''");
-        let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
-        let repo_dir = repo_path.display().to_string();
-
-        let _ = Command::new("tmux").args(["new-window", "-c", &repo_dir]).output().await;
-        let _ = Command::new("tmux")
-            .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
-            .output()
-            .await;
-    } else {
-        let _ = tx.send(ActionMessage::Progress(Progress {
-            action: "pick_up",
-            message: "Skipping opencode (uncommitted changes)...".into(),
-            current: 6,
-            total: 6,
-        }));
-    }
-
-    Ok(PickUpResult {
-        branch: branch_setup.branch_name,
-        skipped_opencode: has_uncommitted_changes && !branch_setup.reused_existing,
-    })
 }

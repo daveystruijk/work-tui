@@ -3,25 +3,17 @@
 //! # Channel messages produced
 //! - [`ActionMessage::CiLogsFetched`]
 
-use tokio::sync::mpsc;
-
 use super::ActionMessage;
 use crate::apis::github::{fetch_check_run_logs, CheckRun};
 
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: tokio::sync::mpsc::UnboundedSender<ActionMessage>,
     issue_key: String,
     repo_slug: String,
     check_runs: Vec<CheckRun>,
 ) {
-    tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Fetching CI logs".to_string()));
-        let result = run(&repo_slug, check_runs).await;
-        let _ = tx.send(ActionMessage::TaskFinished("Fetching CI logs".to_string()));
+    super::spawn_action(tx, "Fetching CI logs", |tx| async move {
+        let result = fetch_check_run_logs(&repo_slug, &check_runs).await;
         let _ = tx.send(ActionMessage::CiLogsFetched(issue_key, result));
     });
-}
-
-async fn run(repo_slug: &str, check_runs: Vec<CheckRun>) -> color_eyre::Result<Vec<String>> {
-    fetch_check_run_logs(repo_slug, &check_runs).await
 }

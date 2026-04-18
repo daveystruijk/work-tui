@@ -40,42 +40,30 @@ pub fn spawn(
         return;
     }
 
-    tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted("Linking repos".to_string()));
-        run(&tx, &client, &unlinked, &repo_normalized_names, &github_org).await;
-        let _ = tx.send(ActionMessage::TaskFinished("Linking repos".to_string()));
+    super::spawn_action(tx, "Linking repos", |tx| async move {
+        let discovered = match search_org_prs(&github_org).await {
+            Ok(prs) => prs,
+            Err(_) => return,
+        };
+
+        for (issue_key, current_labels) in &unlinked {
+            let key_lower = issue_key.to_lowercase();
+            let matched_pr = discovered.iter().find(|pr| pr.branch.to_lowercase().starts_with(&key_lower));
+            let Some(pr) = matched_pr else { continue; };
+
+            let pr_normalized = repos::normalize_label(&pr.repo_name);
+            let already_labeled = current_labels.iter().any(|l| repos::normalize_label(l) == pr_normalized);
+            if already_labeled { continue; }
+
+            let local_match = repo_normalized_names.iter().find(|(_, normalized)| *normalized == pr_normalized);
+            let Some((original_label, _)) = local_match else { continue; };
+
+            let mut new_labels = current_labels.clone();
+            new_labels.push(original_label.clone());
+            let result = client.update_labels(issue_key, &new_labels).await;
+            let _ = tx.send(ActionMessage::AutoLabeled(issue_key.clone(), result.map(|_| ())));
+        }
     });
-}
-
-async fn run(
-    tx: &mpsc::UnboundedSender<ActionMessage>,
-    client: &JiraClient,
-    unlinked: &[UnlinkedIssue],
-    repo_normalized_names: &[(String, String)],
-    github_org: &str,
-) {
-    let discovered = match search_org_prs(github_org).await {
-        Ok(prs) => prs,
-        Err(_) => return,
-    };
-
-    for (issue_key, current_labels) in unlinked {
-        let key_lower = issue_key.to_lowercase();
-        let matched_pr = discovered.iter().find(|pr| pr.branch.to_lowercase().starts_with(&key_lower));
-        let Some(pr) = matched_pr else { continue; };
-
-        let pr_normalized = repos::normalize_label(&pr.repo_name);
-        let already_labeled = current_labels.iter().any(|l| repos::normalize_label(l) == pr_normalized);
-        if already_labeled { continue; }
-
-        let local_match = repo_normalized_names.iter().find(|(_, normalized)| *normalized == pr_normalized);
-        let Some((original_label, _)) = local_match else { continue; };
-
-        let mut new_labels = current_labels.clone();
-        new_labels.push(original_label.clone());
-        let result = client.update_labels(issue_key, &new_labels).await;
-        let _ = tx.send(ActionMessage::AutoLabeled(issue_key.clone(), result.map(|_| ()))) ;
-    }
 }
 
 /// Search GitHub for all open PRs in the given org via a single GraphQL query.
