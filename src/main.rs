@@ -226,12 +226,17 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                     app.spawn_approve_merge();
                 }
                 'c' => app.open_ci_log_popup(),
+                'h' => {
+                    app.collapse_story();
+                }
+                'l' => {
+                    app.expand_story();
+                }
+                ' ' => {
+                    app.toggle_story_collapse();
+                }
                 _ => {}
             }
-        }
-        KeyCode::Enter => {
-            app.pending_g = false;
-            app.toggle_story_collapse();
         }
         KeyCode::Esc => {
             app.pending_g = false;

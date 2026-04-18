@@ -767,6 +767,34 @@ impl App {
         true
     }
 
+    /// Expand the story at the current selection (no-op if already expanded or not a story).
+    pub fn expand_story(&mut self) -> bool {
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+            _ => return false,
+        };
+        if self.collapsed_stories.remove(&key) {
+            self.spawn_fetch_children_for_story(&key);
+            self.rebuild_display_rows();
+            return true;
+        }
+        false
+    }
+
+    /// Collapse the story at the current selection (no-op if already collapsed or not a story).
+    pub fn collapse_story(&mut self) -> bool {
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+            _ => return false,
+        };
+        if !self.collapsed_stories.contains(&key) {
+            self.collapsed_stories.insert(key);
+            self.rebuild_display_rows();
+            return true;
+        }
+        false
+    }
+
     /// Fetch children for a story's child issues that might themselves be parents.
     /// This enables multi-level expansion.
     fn spawn_fetch_children_for_story(&mut self, parent_key: &str) {
