@@ -215,6 +215,7 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
                 'V' => app.spawn_approve_merge(),
                 'c' => app.open_ci_log_popup(),
                 'e' => app.spawn_openspec_propose(),
+                'i' => app.spawn_import_tasks(),
                 'h' => {
                     app.collapse_story();
                 }

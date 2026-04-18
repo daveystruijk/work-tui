@@ -420,6 +420,17 @@ impl App {
                 }
             }
             ActionMessage::OpenspecProposeOpened(_) => {}
+            ActionMessage::TasksImported(issue_key, result) => {
+                match result {
+                    Ok(()) => {
+                        self.status_bar.message = format!("Tasks imported for {issue_key}");
+                        self.spawn_refresh();
+                    }
+                    Err(err) => {
+                        self.status_bar.message = format!("Import failed: {err}");
+                    }
+                }
+            }
             ActionMessage::TaskStarted(name) => {
                 self.running_tasks.insert(name);
                 self.status_bar.handle_task_started(&self.running_tasks);
@@ -1487,6 +1498,37 @@ impl App {
         self.close_ci_log_popup();
         self.status_bar.message = "Checking out branch and opening opencode...".to_string();
         actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
+    }
+
+    /// Import tasks from a tasks.json file in the opencode changes directory.
+    pub fn spawn_import_tasks(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+        let issue_key = issue.key.clone();
+        let issue_type_name = issue
+            .issue_type()
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        let project_key = self.derive_project_key();
+
+        let repos_dir = match std::env::var("REPOS_DIR") {
+            Ok(dir) => std::path::PathBuf::from(dir),
+            Err(_) => {
+                self.status_bar.message = "REPOS_DIR is not set".to_string();
+                return;
+            }
+        };
+
+        self.status_bar.message = format!("Importing tasks for {issue_key}...");
+        actions::import_tasks::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            repos_dir,
+            issue_key,
+            issue_type_name,
+            project_key,
+        );
     }
 
     /// Open an opencode session to propose an openspec change for the selected issue.

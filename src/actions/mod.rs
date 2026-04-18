@@ -15,6 +15,7 @@ pub mod convert_to_story;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_children;
+pub mod import_tasks;
 pub mod fetch_ci_logs;
 pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
@@ -115,6 +116,9 @@ pub enum ActionMessage {
     /// Opencode session opened for openspec propose (from [`openspec_propose`]).
     /// Carries the slug.
     OpenspecProposeOpened(Result<String>),
+    /// Tasks imported from tasks.json (from [`import_tasks`]).
+    /// Carries (issue_key, result).
+    TasksImported(String, Result<()>),
     /// A background task has started. The payload is the human-readable task name.
     TaskStarted(String),
     /// A background task has finished. The payload is the human-readable task name.

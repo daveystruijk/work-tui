@@ -336,6 +336,31 @@ impl JiraClient {
         Ok(created.key)
     }
 
+    pub async fn get_issue(&self, issue_key: &str) -> Result<Issue> {
+        let path = format!("/issue/{issue_key}");
+        let issue: Issue = self.jira.get("api", &path).await?;
+        Ok(issue)
+    }
+
+    pub async fn append_description(&self, issue_key: &str, extra_text: &str) -> Result<()> {
+        let issue = self.get_issue(issue_key).await?;
+        let existing = issue.description().unwrap_or_default();
+        let new_description = if existing.is_empty() {
+            extra_text.to_string()
+        } else {
+            format!("{existing}\n\n{extra_text}")
+        };
+        let payload = json!({
+            "fields": {
+                "description": new_description
+            }
+        });
+        self.jira
+            .put::<(), _>("api", &format!("/issue/{issue_key}"), payload)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_issue_types(&self, project_key: &str) -> Result<Vec<IssueType>> {
         let path = format!("/project/{project_key}");
         let value: Value = self.jira.get("api", &path).await?;
