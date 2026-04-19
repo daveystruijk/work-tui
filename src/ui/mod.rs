@@ -1,11 +1,13 @@
-mod ci_logs;
-mod import_tasks;
-mod list;
+pub mod ci_logs;
+pub mod import_tasks;
+pub mod label_picker;
+pub mod list;
 mod sidebar;
 mod status_bar;
 
 pub use ci_logs::CiLogPopupState;
 pub use import_tasks::ImportTasksPopupState;
+pub use label_picker::LabelPickerState;
 pub use list::ListViewState;
 pub use sidebar::SidebarState;
 pub use status_bar::StatusBarState;
@@ -82,7 +84,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     match app.input_focus {
         InputFocus::ImportTasksPopup => import_tasks::render_import_tasks_popup(app, frame),
         InputFocus::CiLogPopup => ci_logs::render_ci_log_popup(app, frame),
-        InputFocus::LabelPicker => {} // rendered inside render_list
+        InputFocus::LabelPicker => label_picker::render_label_picker(app, frame),
         _ => {}
     }
 }

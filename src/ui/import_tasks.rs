@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -13,6 +14,16 @@ use crate::app::App;
 use crate::theme::Theme;
 
 use super::wrap_text;
+
+pub fn handle_import_tasks_popup(app: &mut App, key_event: KeyEvent) {
+    match key_event.code {
+        KeyCode::Esc => app.close_import_tasks_popup(),
+        KeyCode::Enter => app.confirm_import_tasks(),
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_import_tasks_popup(1),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_import_tasks_popup(-1),
+        _ => {}
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ImportTasksPopupState {

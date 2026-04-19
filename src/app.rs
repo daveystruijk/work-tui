@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use color_eyre::{eyre::eyre, Result};
+use crossterm::event::KeyEvent;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -16,8 +17,8 @@ use crate::{
     events::{Event, EventLevel, EventSource},
     repos::{self, RepoEntry},
     ui::{
-        CiLogPopupState, ImportTasksPopupState, ListViewState, SidebarState, StatusBarState,
-        UiAnimationState,
+        CiLogPopupState, ImportTasksPopupState, LabelPickerState, ListViewState, SidebarState,
+        StatusBarState, UiAnimationState,
     },
 };
 
@@ -113,12 +114,13 @@ pub struct App {
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
     pub list_view: ListViewState,
+    pub label_picker: Option<LabelPickerState>,
     pub status_bar: StatusBarState,
     pub loading: bool,
     pub client: JiraClient,
     pub my_account_id: String,
     pub current_branch: String,
-    pub pending_g: bool,
+    pub previous_key: Option<KeyEvent>,
     /// Maps issue key -> repo label for issues whose branch is currently checked out
     pub active_branches: HashMap<String, String>,
     /// Maps issue key -> GitHub PR status
@@ -171,12 +173,13 @@ impl App {
             repo_entries: Vec::new(),
             repo_error: None,
             list_view: ListViewState::default(),
+            label_picker: None,
             status_bar: StatusBarState::default(),
             loading: true,
             client,
             my_account_id: String::new(),
             current_branch: String::new(),
-            pending_g: false,
+            previous_key: None,
             active_branches: HashMap::new(),
             github_statuses: HashMap::new(),
             github_loading: false,
@@ -1413,30 +1416,40 @@ impl App {
             }
             return;
         }
-        self.list_view.open_label_picker();
+        self.label_picker = Some(LabelPickerState::default());
         self.input_focus = InputFocus::LabelPicker;
     }
 
     pub fn close_label_picker(&mut self) {
-        self.list_view.close_label_picker();
+        self.label_picker = None;
         self.input_focus = InputFocus::List;
     }
 
     pub fn move_label_picker_selection(&mut self, down: bool) {
-        self.list_view
-            .move_label_picker_selection(&self.repo_entries, down);
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.move_selection(&self.repo_entries, down);
     }
 
     pub fn label_picker_entry(&self) -> Option<&RepoEntry> {
-        self.list_view.label_picker_entry(&self.repo_entries)
+        self.label_picker
+            .as_ref()
+            .and_then(|picker| picker.selected_entry(&self.repo_entries))
     }
 
     pub fn label_picker_type_char(&mut self, ch: char) {
-        self.list_view.label_picker_type_char(ch);
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.type_char(ch);
     }
 
     pub fn label_picker_backspace(&mut self) {
-        self.list_view.label_picker_backspace();
+        let Some(picker) = self.label_picker.as_mut() else {
+            return;
+        };
+        picker.backspace();
     }
 
     pub fn open_ci_log_popup(&mut self) {

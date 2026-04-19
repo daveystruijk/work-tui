@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -15,6 +16,32 @@ use crate::app::App;
 use crate::theme::Theme;
 
 use super::{wrap_text, SPINNER_FRAMES};
+
+pub async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
+    match key_event.code {
+        KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => app.close_ci_log_popup(),
+        KeyCode::Enter => app.spawn_fix_ci(),
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_ci_log_popup(1),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_ci_log_popup(-1),
+        KeyCode::Char('h') | KeyCode::Left => app.cycle_ci_log_tab(-1),
+        KeyCode::Char('l') | KeyCode::Right => app.cycle_ci_log_tab(1),
+        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_ci_log_popup(20);
+        }
+        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_ci_log_popup(-20);
+        }
+        KeyCode::Char('G') => app.scroll_ci_log_popup(isize::MAX / 2),
+        KeyCode::Char('g')
+            if app
+                .previous_key
+                .is_some_and(|key| key.code == KeyCode::Char('g')) =>
+        {
+            app.ci_log_popup.scroll = Some(0);
+        }
+        _ => {}
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct CiLogPopupState {
