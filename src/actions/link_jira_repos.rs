@@ -73,10 +73,7 @@ pub fn spawn(
             let mut new_labels = current_labels.clone();
             new_labels.push(original_label.clone());
             let result = client.update_labels(issue_key, &new_labels).await;
-            let _ = tx.send(Message::AutoLabeled(
-                issue_key.clone(),
-                result.map(|_| ()),
-            ));
+            let _ = tx.send(Message::AutoLabeled(issue_key.clone(), result.map(|_| ())));
         }
     });
 }

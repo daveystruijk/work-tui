@@ -20,11 +20,7 @@ pub type LabelUpdate = (String, Vec<String>);
 /// Spawn auto-labeling for the given issues.
 ///
 /// No-ops if `to_label` is empty.
-pub fn spawn(
-    tx: mpsc::UnboundedSender<Message>,
-    client: JiraClient,
-    to_label: Vec<LabelUpdate>,
-) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, to_label: Vec<LabelUpdate>) {
     if to_label.is_empty() {
         return;
     }

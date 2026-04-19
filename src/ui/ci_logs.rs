@@ -91,11 +91,7 @@ impl CiLogsView {
         self.scroll = Some(0);
     }
 
-    pub fn handle_message(
-        &mut self,
-        msg: &Message,
-        github_prs: &mut HashMap<String, PrInfo>,
-    ) {
+    pub fn handle_message(&mut self, msg: &Message, github_prs: &mut HashMap<String, PrInfo>) {
         match msg {
             Message::GithubPrs(_, _) => {
                 self.loaded_issues.clear();

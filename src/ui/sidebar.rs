@@ -45,11 +45,7 @@ impl SidebarView {
         previous_prs
     }
 
-    pub fn handle_message(
-        &mut self,
-        msg: &Message,
-        github_prs: &mut HashMap<String, PrInfo>,
-    ) {
+    pub fn handle_message(&mut self, msg: &Message, github_prs: &mut HashMap<String, PrInfo>) {
         match msg {
             Message::GithubPrDetail(issue_key, result) => {
                 self.detail_loading.remove(issue_key);

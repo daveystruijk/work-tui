@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
 
     let config = config::AppConfig::from_env()?;
 
-    // File watcher for opencode changes — triggers re-scan of pending import tasks.
+    // File watcher for openspec changes.
     // The watcher must stay alive for the duration of the app.
     let (_watcher, fs_rx) = setup_file_watcher(&config.repos_dir);
 
@@ -67,8 +67,8 @@ async fn main() -> Result<()> {
 const AUTO_REFRESH: Duration = Duration::from_secs(60);
 const CI_AUTO_REFRESH: Duration = Duration::from_secs(10);
 
-/// Set up a file watcher on `$REPOS_DIR/opencode/changes/` that sends a signal
-/// when any `tasks.json` file is created or modified.
+/// Set up a file watcher on openspec changes and send a signal when any
+/// `tasks.json` file is created or modified.
 fn setup_file_watcher(
     repos_dir: &std::path::Path,
 ) -> (
@@ -76,33 +76,30 @@ fn setup_file_watcher(
     tokio::sync::mpsc::UnboundedReceiver<()>,
 ) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let watcher = try_setup_watcher(tx, repos_dir);
-
-    (watcher, rx)
+    (try_setup_watcher(tx, repos_dir), rx)
 }
 
 fn try_setup_watcher(
     tx: tokio::sync::mpsc::UnboundedSender<()>,
     repos_dir: &std::path::Path,
 ) -> Option<notify::RecommendedWatcher> {
-    let changes_dir = repos_dir.join("opencode").join("changes");
-
-    if !changes_dir.is_dir() {
+    let Some(changes_dir) = actions::import_tasks::openspec_changes_dir(repos_dir) else {
         return None;
-    }
+    };
 
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         let Ok(event) = result else {
             return;
         };
-        let is_tasks_json = event
+        let has_tasks_json_path = event
             .paths
             .iter()
             .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("tasks.json"));
-        if is_tasks_json {
-            let _ = tx.send(());
+        if !has_tasks_json_path {
+            return;
         }
+
+        let _ = tx.send(());
     })
     .ok()?;
 

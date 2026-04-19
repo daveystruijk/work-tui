@@ -18,7 +18,9 @@ pub struct LabelPickerView {
 }
 
 impl LabelPickerView {
-    pub fn open() -> Self { Self::default() }
+    pub fn open() -> Self {
+        Self::default()
+    }
 
     pub fn filtered_repo_entries<'a>(&self, repo_entries: &'a [RepoEntry]) -> Vec<&'a RepoEntry> {
         if self.filter.is_empty() {
@@ -48,7 +50,9 @@ impl LabelPickerView {
     }
 
     pub fn selected_entry<'a>(&self, repo_entries: &'a [RepoEntry]) -> Option<&'a RepoEntry> {
-        self.filtered_repo_entries(repo_entries).get(self.selected).copied()
+        self.filtered_repo_entries(repo_entries)
+            .get(self.selected)
+            .copied()
     }
 
     pub fn type_char(&mut self, ch: char) {
@@ -108,7 +112,9 @@ pub fn render(app: &AppView, frame: &mut Frame) {
     let popup = Block::bordered()
         .title(Span::styled(
             " Add repo label ",
-            Style::default().fg(Theme::Accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Theme::Accent)
+                .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(Theme::Surface))
         .border_style(Style::default().fg(Theme::Accent));
@@ -134,7 +140,9 @@ pub fn render(app: &AppView, frame: &mut Frame) {
                 ListItem::new(vec![
                     Line::from(vec![Span::styled(
                         entry.label.clone(),
-                        Style::default().fg(Theme::Text).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Theme::Text)
+                            .add_modifier(Modifier::BOLD),
                     )]),
                     Line::from(vec![Span::styled(path, Style::default().fg(Theme::Muted))]),
                 ])
@@ -168,7 +176,11 @@ pub fn render(app: &AppView, frame: &mut Frame) {
     };
     let modal_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(3), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
         .split(inner);
 
     frame.render_widget(

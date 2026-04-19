@@ -156,7 +156,7 @@ pub struct AppView {
     pub last_ci_refresh: std::time::Instant,
     pub ci_log_popup: CiLogsView,
     pub import_tasks_popup: Option<ImportTasksView>,
-    /// Issue keys that have pending tasks to import from opencode changes.
+    /// Issue keys that have pending tasks to import from openspec changes.
     pub pending_import_keys: HashSet<String>,
 }
 
@@ -371,12 +371,9 @@ impl AppView {
     /// Process a background message. Called from the event loop.
     pub fn handle_message(&mut self, msg: Message) {
         self.list.handle_message(&msg);
-        self.status_bar
-            .handle_message(&msg, &self.running_tasks);
-        self.sidebar
-            .handle_message(&msg, &mut self.github_prs);
-        self.ci_log_popup
-            .handle_message(&msg, &mut self.github_prs);
+        self.status_bar.handle_message(&msg, &self.running_tasks);
+        self.sidebar.handle_message(&msg, &mut self.github_prs);
+        self.ci_log_popup.handle_message(&msg, &mut self.github_prs);
 
         match msg {
             Message::CurrentBranch(branch) => {
@@ -1494,7 +1491,7 @@ impl AppView {
         actions::fix_ci::spawn(self.message_tx.clone(), repo_path, head_branch, ci_error);
     }
 
-    /// Scan opencode changes for pending import tasks.
+    /// Scan openspec changes for pending import tasks.
     pub fn spawn_scan_import_tasks(&self) {
         actions::scan_import_tasks::spawn(self.message_tx.clone(), self.config.repos_dir.clone());
     }
@@ -1545,7 +1542,6 @@ impl AppView {
         self.input_focus = InputFocus::ImportTasksPopup;
     }
 
-    /// Close the import tasks popup without importing.
     /// Confirm and execute the import from the popup.
     pub fn confirm_import_tasks(&mut self) {
         let Some(popup) = self.import_tasks_popup.take() else {
@@ -1565,7 +1561,6 @@ impl AppView {
         );
     }
 
-    /// Scroll the import tasks popup.
     /// Open an opencode session to propose an openspec change for the selected issue.
     pub fn spawn_openspec_propose(&mut self) {
         let Some(issue) = self.selected_issue() else {

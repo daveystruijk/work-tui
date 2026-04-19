@@ -60,7 +60,6 @@ impl ListView {
     pub fn start_loading_children(&mut self, parent_key: &str) {
         self.loading_children.insert(parent_key.to_string());
     }
-
 }
 
 pub fn render(app: &mut AppView, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -149,7 +148,6 @@ pub fn render(app: &mut AppView, frame: &mut Frame, area: ratatui::layout::Rect)
         .block(Block::default().style(Style::default().bg(Theme::Panel)));
     frame.render_stateful_widget(table, area, &mut state);
     app.list.scroll_offset = state.offset();
-
 }
 
 pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
@@ -157,7 +155,10 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
         crate::app::InputFocus::List => {
             let previous_was_g = matches!(
                 app.previous_key,
-                Some(KeyEvent { code: KeyCode::Char('g'), .. })
+                Some(KeyEvent {
+                    code: KeyCode::Char('g'),
+                    ..
+                })
             );
 
             if key_event.modifiers.contains(KeyModifiers::CONTROL) {
@@ -194,7 +195,9 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
                         },
                         't' => match app.open_selected_issue_in_browser().await {
                             Ok(_) => {}
-                            Err(err) => app.status_bar.message = format!("Failed to open issue: {err}"),
+                            Err(err) => {
+                                app.status_bar.message = format!("Failed to open issue: {err}")
+                            }
                         },
                         'n' => {
                             app.start_inline_new();
@@ -238,7 +241,10 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
             KeyCode::Enter => app.confirm_search(),
             KeyCode::Backspace => app.search_backspace(),
             KeyCode::Char(c) => {
-                if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                if !key_event
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
                     app.search_type_char(c);
                 }
             }
@@ -268,7 +274,10 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
                     }
                 }
                 KeyCode::Char(c) => {
-                    if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    if !key_event
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    {
                         if let Some(state) = app.inline_new.as_mut() {
                             state.summary.push(c);
                         }

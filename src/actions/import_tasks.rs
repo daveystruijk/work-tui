@@ -1,6 +1,6 @@
-//! **Import Tasks** — imports tasks from a `tasks.json` file in the opencode directory.
+//! **Import Tasks** — imports tasks from a `tasks.json` file in openspec changes.
 //!
-//! Discovers `$REPOS_DIR/opencode/changes/<issue-key-lowercased>-*/tasks.json`,
+//! Discovers `$REPOS_DIR/openspec/changes/<issue-key-lowercased>-*/tasks.json`,
 //! reads the task list, and creates Jira subtasks under the current issue.
 //!
 //! If there is only one task, updates the current issue directly instead of
@@ -34,19 +34,24 @@ pub struct TaskEntry {
     pub key: Option<String>,
 }
 
-/// Find the tasks.json path for the given issue key under `$REPOS_DIR/opencode/changes/`.
+/// Resolve the openspec changes directory if it exists.
+pub fn openspec_changes_dir(repos_dir: &Path) -> Option<PathBuf> {
+    let path = repos_dir.join("openspec").join("changes");
+    path.is_dir().then_some(path)
+}
+
+/// Find the tasks.json path for the given issue key under openspec changes.
 pub fn find_tasks_json(repos_dir: &Path, issue_key: &str) -> Result<PathBuf> {
-    let changes_dir = repos_dir.join("opencode").join("changes");
-    if !changes_dir.is_dir() {
+    let Some(changes_dir) = openspec_changes_dir(repos_dir) else {
         return Err(eyre!(
-            "Changes directory does not exist: {}",
-            changes_dir.display()
+            "No openspec/changes directory found under {}",
+            repos_dir.display()
         ));
-    }
+    };
 
     let prefix = format!("{}-", issue_key.to_lowercase());
     let entries = std::fs::read_dir(&changes_dir)
-        .map_err(|err| eyre!("Failed to read changes dir: {err}"))?;
+        .map_err(|err| eyre!("Failed to read {}: {err}", changes_dir.display()))?;
 
     for entry in entries {
         let entry = entry.map_err(|err| eyre!("Failed to read entry: {err}"))?;
@@ -126,9 +131,10 @@ async fn run(
         return Err(eyre!("All tasks already have keys assigned"));
     }
 
-    let total_steps = pending_tasks.len() + 1;
+    let pending_task_count = pending_tasks.len();
+    let base_progress_total = pending_task_count + 1;
 
-    if pending_tasks.len() == 1 {
+    if pending_task_count == 1 {
         let task_index = pending_tasks[0];
         let task = &tasks[task_index];
 
@@ -136,7 +142,7 @@ async fn run(
             action: "import_tasks",
             message: format!("Updating {issue_key}..."),
             current: 1,
-            total: total_steps,
+            total: base_progress_total,
         }));
 
         client
@@ -150,15 +156,17 @@ async fn run(
     }
 
     // Multiple tasks: ensure the issue is a Story first
-    let is_story = issue_type_name.to_lowercase().contains("story")
-        || issue_type_name.to_lowercase().contains("epic");
+    let issue_type_name = issue_type_name.to_lowercase();
+    let is_story = issue_type_name.contains("story") || issue_type_name.contains("epic");
+    let multi_task_progress_total = base_progress_total + 1;
+    let first_create_step = 2;
 
     if !is_story {
         let _ = tx.send(Message::Progress(Progress {
             action: "import_tasks",
             message: format!("Converting {issue_key} to Story..."),
             current: 1,
-            total: total_steps + 1,
+            total: multi_task_progress_total,
         }));
         client.update_issue_type(issue_key, "Story").await?;
     }
@@ -177,8 +185,8 @@ async fn run(
         let _ = tx.send(Message::Progress(Progress {
             action: "import_tasks",
             message: format!("Creating subtask: {}...", task.title),
-            current: step + 2,
-            total: total_steps + 1,
+            current: step + first_create_step,
+            total: multi_task_progress_total,
         }));
 
         let created_key = client
@@ -204,4 +212,73 @@ fn write_tasks_json(path: &Path, tasks: &[TaskEntry]) -> Result<()> {
     std::fs::write(path, format!("{json}\n"))
         .map_err(|err| eyre!("Failed to write {}: {err}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestReposDir {
+        path: PathBuf,
+    }
+
+    impl TestReposDir {
+        fn new(name: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("work-tui-{name}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TestReposDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn finds_tasks_json_in_openspec_changes() {
+        let repos_dir = TestReposDir::new("finds-openspec-tasks-json");
+        let tasks_path = repos_dir
+            .path
+            .join("openspec")
+            .join("changes")
+            .join("ini-4347-add-note")
+            .join("tasks.json");
+
+        fs::create_dir_all(tasks_path.parent().unwrap()).unwrap();
+        fs::write(&tasks_path, "[]\n").unwrap();
+
+        let found_path = find_tasks_json(&repos_dir.path, "INI-4347").unwrap();
+
+        assert_eq!(found_path, tasks_path);
+    }
+
+    #[test]
+    fn does_not_accept_opencode_changes() {
+        let repos_dir = TestReposDir::new("rejects-opencode-tasks-json");
+
+        let tasks_path = repos_dir
+            .path
+            .join("opencode")
+            .join("changes")
+            .join("ini-4347-add-note")
+            .join("tasks.json");
+
+        fs::create_dir_all(tasks_path.parent().unwrap()).unwrap();
+        fs::write(&tasks_path, "[]\n").unwrap();
+
+        let err = find_tasks_json(&repos_dir.path, "INI-4347").unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("No openspec/changes directory found"));
+    }
 }
