@@ -559,7 +559,7 @@ impl ListView {
                     let issue = &issues[idx];
                     let issue_key = issue.key.clone();
                     let expandable =
-                        is_expandable_type(issue) || story_children.contains_key(&issue_key);
+                        crate::issue::is_expandable(issue) || story_children.contains_key(&issue_key);
                     if expandable {
                         if !story_children.contains_key(&issue_key)
                             && !self.loading_children.contains(&issue_key)
@@ -608,7 +608,7 @@ impl ListView {
                         for child_idx in children {
                             let child_issue = &issues[child_idx];
                             let child_key = child_issue.key.clone();
-                            let expandable = is_expandable_type(child_issue)
+                            let expandable = crate::issue::is_expandable(child_issue)
                                 || story_children.contains_key(&child_key);
                             if expandable {
                                 if !story_children.contains_key(&child_key)
@@ -671,7 +671,7 @@ impl ListView {
         }
         for (idx, child) in children.iter().enumerate() {
             let child_key = child.key.clone();
-            let expandable = is_expandable_type(child) || story_children.contains_key(&child_key);
+            let expandable = crate::issue::is_expandable(child) || story_children.contains_key(&child_key);
             if expandable {
                 let child_summary = child.summary().unwrap_or_default();
                 rows.push(DisplayRow::StoryHeader {
@@ -1054,6 +1054,8 @@ fn spawn_pick_up(app: &mut AppView) {
         }
     };
 
+    let ancestors = crate::issue::ancestors(issue);
+
     actions::pick_up::spawn(
         app.message_tx.clone(),
         app.client.clone(),
@@ -1062,6 +1064,7 @@ fn spawn_pick_up(app: &mut AppView) {
         issue_description,
         repo_path,
         app.my_account_id.clone(),
+        ancestors,
     );
 }
 
@@ -1326,18 +1329,7 @@ fn spawn_openspec_propose(app: &mut AppView) {
         .filter_map(|entry| entry.github_slug.clone())
         .collect();
 
-    let mut parent_stories = Vec::new();
-    let mut current_issue = app
-        .list
-        .selected_issue(&app.issues, &app.story_children)
-        .cloned();
-    while let Some(parent) = current_issue.as_ref().and_then(|i| i.parent()) {
-        parent_stories.push(actions::openspec_propose::StoryContext {
-            summary: parent.summary().unwrap_or_default(),
-            description: parent.description().unwrap_or_default(),
-        });
-        current_issue = Some(parent);
-    }
+    let ancestors = crate::issue::ancestors(issue);
 
     actions::openspec_propose::spawn(
         app.message_tx.clone(),
@@ -1345,7 +1337,7 @@ fn spawn_openspec_propose(app: &mut AppView) {
         issue_key,
         issue_summary,
         issue_description,
-        parent_stories,
+        ancestors,
         repo_slugs,
     );
 }
@@ -1683,15 +1675,7 @@ fn pr_eta(check_durations: &HashMap<String, u64>, pr: &PrInfo) -> Option<String>
     max_remaining.map(|r| format!("~{}", crate::utils::time::format_duration(r)))
 }
 
-/// Returns true if the issue type suggests this issue can contain child issues.
-pub(crate) fn is_expandable_type(issue: &Issue) -> bool {
-    let type_name = issue
-        .issue_type()
-        .map(|ty| ty.name)
-        .unwrap_or_default()
-        .to_lowercase();
-    type_name.contains("story") || type_name.contains("epic")
-}
+
 
 /// Numeric rank for sorting issues by status.
 fn status_rank(issue: &Issue) -> u8 {

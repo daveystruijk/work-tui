@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use super::{Message, PickUpResult};
 use crate::actions::Progress;
-use crate::apis::jira::JiraClient;
+use crate::apis::jira::{Issue, JiraClient};
 use crate::git;
 
 /// Spawn the pick-up workflow for a single issue.
@@ -31,6 +31,7 @@ pub fn spawn(
     issue_description: String,
     repo_path: PathBuf,
     my_account_id: String,
+    ancestors: Vec<Issue>,
 ) {
     super::spawn_action(tx, "pick_up", "Picking up", |tx| async move {
         let result: color_eyre::Result<PickUpResult> = async {
@@ -90,8 +91,10 @@ pub fn spawn(
                     current: 6,
                     total: 6,
                 }));
-                let prompt = format!("{issue_summary}\n\n{issue_description}");
-                let escaped_prompt = prompt.replace('\'', "'\\''");
+                let mut context =
+                    format!("{issue_summary}\n\n{issue_description}");
+                context.push_str(&crate::issue::format_ancestor_context(&ancestors));
+                let escaped_prompt = context.replace('\'', "'\\''");
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
                 let repo_dir = repo_path.display().to_string();
 

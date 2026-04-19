@@ -498,7 +498,7 @@ impl AppView {
         };
 
         for child in &children {
-            if crate::ui::list::is_expandable_type(child) {
+            if crate::issue::is_expandable(child) {
                 self.list.collapsed_stories.insert(child.key.clone());
             }
         }

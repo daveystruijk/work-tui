@@ -7,6 +7,7 @@ mod config;
 mod fixtures;
 mod git;
 mod repos;
+mod issue;
 mod theme;
 mod ui;
 mod utils;

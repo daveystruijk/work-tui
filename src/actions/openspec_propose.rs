@@ -15,12 +15,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use super::Message;
+use crate::apis::jira::Issue;
 use crate::git;
-
-pub struct StoryContext {
-    pub summary: String,
-    pub description: String,
-}
 
 pub fn spawn(
     tx: mpsc::UnboundedSender<Message>,
@@ -28,7 +24,7 @@ pub fn spawn(
     issue_key: String,
     issue_summary: String,
     issue_description: String,
-    parent_stories: Vec<StoryContext>,
+    ancestors: Vec<Issue>,
     repo_slugs: Vec<String>,
 ) {
     super::spawn_action(
@@ -42,15 +38,7 @@ pub fn spawn(
                 let mut context = format!(
                     "This change solves the following ticket: {issue_summary}\n{issue_description}"
                 );
-                for story in &parent_stories {
-                    context.push_str(&format!(
-                        "\n\nThis ticket is part of the following story: {}",
-                        story.summary
-                    ));
-                    if !story.description.is_empty() {
-                        context.push_str(&format!("\n{}", story.description));
-                    }
-                }
+                context.push_str(&crate::issue::format_ancestor_context(&ancestors));
                 if !repo_slugs.is_empty() {
                     context.push_str(&format!(
                         "\n\nLinked repositories: {}",
