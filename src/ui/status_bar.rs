@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashSet, VecDeque},
-    time::Instant,
-};
+use std::{collections::HashSet, time::Instant};
 
 use crossterm::event::KeyEvent;
 use ratatui::{
@@ -21,7 +18,6 @@ use super::SPINNER_FRAMES;
 #[derive(Debug, Clone, Default)]
 pub struct StatusBarView {
     pub message: String,
-    pub completed_tasks: VecDeque<(String, usize)>,
     pub last_updated: Option<Instant>,
 }
 
@@ -122,16 +118,8 @@ impl StatusBarView {
         self.refresh_task_message(running_tasks);
     }
 
-    pub fn handle_task_finished(&mut self, name: String, running_tasks: &HashSet<String>) {
-        self.completed_tasks.push_back((name, 50));
+    pub fn handle_task_finished(&mut self, running_tasks: &HashSet<String>) {
         self.refresh_task_message(running_tasks);
-    }
-
-    pub fn tick_completed_tasks(&mut self) {
-        self.completed_tasks.retain_mut(|(_, ticks)| {
-            *ticks = ticks.saturating_sub(1);
-            *ticks > 0
-        });
     }
 
     fn refresh_task_message(&mut self, running_tasks: &HashSet<String>) {
@@ -141,14 +129,16 @@ impl StatusBarView {
             return;
         }
 
-        if let Some((name, _)) = self.completed_tasks.back() {
-            self.message = format!("{name} done");
+        if self.message.starts_with('[') {
+            self.message.clear();
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
 

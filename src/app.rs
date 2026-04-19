@@ -450,8 +450,7 @@ impl AppView {
             }
             Message::ActionFinished(name) => {
                 self.running_tasks.remove(&name);
-                self.status_bar
-                    .handle_task_finished(name, &self.running_tasks);
+                self.status_bar.handle_task_finished(&self.running_tasks);
             }
             Message::Progress(_) => {}
         }
@@ -1787,11 +1786,6 @@ impl AppView {
                 ))
             }
         }
-    }
-
-    /// Tick down completed-task display timers; called from the main loop tick.
-    pub fn tick_completed_tasks(&mut self) {
-        self.status_bar.tick_completed_tasks();
     }
 
     pub fn add_label_from_picker(&mut self) -> bool {
