@@ -2,6 +2,7 @@ mod actions;
 mod apis;
 mod app;
 mod cache;
+mod config;
 mod events;
 #[cfg(test)]
 mod fixtures;
@@ -22,6 +23,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use notify::{RecursiveMode, Watcher};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 type Backend = CrosstermBackend<io::Stdout>;
@@ -30,7 +32,13 @@ type Backend = CrosstermBackend<io::Stdout>;
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let mut app = App::new()?;
+    let config = config::AppConfig::from_env()?;
+
+    // File watcher for opencode changes — triggers re-scan of pending import tasks.
+    // The watcher must stay alive for the duration of the app.
+    let (_watcher, fs_rx) = setup_file_watcher(&config.repos_dir);
+
+    let mut app = App::new(config)?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -43,7 +51,7 @@ async fn main() -> Result<()> {
 
     app.spawn_initialize();
 
-    let app_result = run_app(&mut terminal, app).await;
+    let app_result = run_app(&mut terminal, app, fs_rx).await;
 
     disable_raw_mode()?;
     execute!(
@@ -59,7 +67,55 @@ async fn main() -> Result<()> {
 const AUTO_REFRESH: Duration = Duration::from_secs(60);
 const CI_AUTO_REFRESH: Duration = Duration::from_secs(10);
 
-async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
+/// Set up a file watcher on `$REPOS_DIR/opencode/changes/` that sends a signal
+/// when any `tasks.json` file is created or modified.
+fn setup_file_watcher(
+    repos_dir: &std::path::Path,
+) -> (
+    Option<notify::RecommendedWatcher>,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let watcher = try_setup_watcher(tx, repos_dir);
+
+    (watcher, rx)
+}
+
+fn try_setup_watcher(
+    tx: tokio::sync::mpsc::UnboundedSender<()>,
+    repos_dir: &std::path::Path,
+) -> Option<notify::RecommendedWatcher> {
+    let changes_dir = repos_dir.join("opencode").join("changes");
+
+    if !changes_dir.is_dir() {
+        return None;
+    }
+
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        let Ok(event) = result else {
+            return;
+        };
+        let is_tasks_json = event
+            .paths
+            .iter()
+            .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("tasks.json"));
+        if is_tasks_json {
+            let _ = tx.send(());
+        }
+    })
+    .ok()?;
+
+    watcher.watch(&changes_dir, RecursiveMode::Recursive).ok()?;
+
+    Some(watcher)
+}
+
+async fn run_app(
+    terminal: &mut Terminal<Backend>,
+    mut app: App,
+    mut fs_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::render(&mut app, frame))?;
 
@@ -69,6 +125,15 @@ async fn run_app(terminal: &mut Terminal<Backend>, mut app: App) -> Result<()> {
         // Drain all pending background messages (non-blocking)
         while let Ok(msg) = app.bg_rx.try_recv() {
             app.handle_bg_msg(msg);
+        }
+
+        // Drain file watcher events (debounced: one scan per loop tick)
+        let mut rescan_imports = false;
+        while fs_rx.try_recv().is_ok() {
+            rescan_imports = true;
+        }
+        if rescan_imports {
+            app.spawn_scan_import_tasks();
         }
 
         // Auto-refresh: every 10s when CI checks are pending, every 60s otherwise

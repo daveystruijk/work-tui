@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -14,10 +14,9 @@ pub struct RepoEntry {
     pub github_slug: Option<String>,
 }
 
-pub fn scan_repos() -> Result<Vec<RepoEntry>> {
-    let base = repos_dir()?;
+pub fn scan_repos(base: &Path) -> Result<Vec<RepoEntry>> {
     let read_dir =
-        fs::read_dir(&base).map_err(|err| eyre!("Failed to read {}: {err}", base.display()))?;
+        fs::read_dir(base).map_err(|err| eyre!("Failed to read {}: {err}", base.display()))?;
 
     let mut repos = Vec::new();
     for entry in read_dir {
@@ -76,18 +75,6 @@ fn extract_github_slug(repo_path: &Path) -> Option<String> {
     }
 
     Some(slug.to_string())
-}
-
-fn repos_dir() -> Result<PathBuf> {
-    let dir = env::var("REPOS_DIR").map_err(|_| eyre!("REPOS_DIR is not set"))?;
-    let path = PathBuf::from(dir);
-    if !path.exists() {
-        return Err(eyre!("{} does not exist", path.display()));
-    }
-    if !path.is_dir() {
-        return Err(eyre!("{} is not a directory", path.display()));
-    }
-    Ok(path)
 }
 
 pub fn normalize_label(input: &str) -> String {

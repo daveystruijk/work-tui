@@ -155,7 +155,8 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
                 depth,
             } => {
                 let collapsed = app.collapsed_stories.contains(key);
-                story_header_row(key, summary, row_idx, collapsed, *depth)
+                let has_pending_import = app.pending_import_keys.contains(key);
+                story_header_row(key, summary, row_idx, collapsed, *depth, has_pending_import)
             }
             DisplayRow::Issue {
                 index,
@@ -236,6 +237,7 @@ fn story_header_row(
     _idx: usize,
     collapsed: bool,
     depth: u8,
+    has_pending_import: bool,
 ) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted);
 
@@ -246,11 +248,17 @@ fn story_header_row(
         .fg(Theme::AccentSoft)
         .add_modifier(Modifier::BOLD);
 
+    let key_line = if has_pending_import {
+        Line::from(vec![
+            Span::styled(format!("{}{} {}", indent, icon, key), header_style),
+            Span::styled(" *", Style::default().fg(Theme::Warning)),
+        ])
+    } else {
+        Line::styled(format!("{}{} {}", indent, icon, key), header_style)
+    };
+
     let cells = HashMap::from([
-        (
-            "Key",
-            Line::styled(format!("{}{} {}", indent, icon, key), header_style),
-        ),
+        ("Key", key_line),
         (
             "Summary",
             Line::styled(format!("§ {}", first_line), header_style),
@@ -354,16 +362,28 @@ fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'stat
         String::new()
     };
 
-    let mut cells = HashMap::from([
-        (
-            "Key",
-            Line::styled(
+    let has_pending_import = app.pending_import_keys.contains(&issue.key);
+    let key_line = if has_pending_import {
+        Line::from(vec![
+            Span::styled(
                 format!("{}{}", key_prefix, issue.key),
                 Style::default()
                     .fg(Theme::Accent)
                     .add_modifier(Modifier::BOLD),
             ),
-        ),
+            Span::styled(" *", Style::default().fg(Theme::Warning)),
+        ])
+    } else {
+        Line::styled(
+            format!("{}{}", key_prefix, issue.key),
+            Style::default()
+                .fg(Theme::Accent)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let mut cells = HashMap::from([
+        ("Key", key_line),
         (
             "Summary",
             Line::styled(

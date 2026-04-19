@@ -9,12 +9,16 @@ use crate::{
     actions::{self, ActionMessage},
     apis::{
         github::{CheckRun, CheckStatus, CheckStep, GithubStatus, PrInfo},
-        jira::{Issue, JiraClient, JiraConfig},
+        jira::{Issue, JiraClient},
     },
     cache::{self, Cache},
+    config::AppConfig,
     events::{Event, EventLevel, EventSource},
     repos::{self, RepoEntry},
-    ui::{CiLogPopupState, ImportTasksPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
+    ui::{
+        CiLogPopupState, ImportTasksPopupState, ListViewState, SidebarState, StatusBarState,
+        UiAnimationState,
+    },
 };
 
 /// Compute duration in seconds between two ISO 8601 timestamps.
@@ -108,14 +112,13 @@ pub struct App {
     pub input_mode: InputMode,
     pub issues: Vec<Issue>,
     pub selected_index: usize,
-    pub jql: String,
+    pub config: AppConfig,
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
     pub list_view: ListViewState,
     pub status_bar: StatusBarState,
     pub loading: bool,
     pub client: JiraClient,
-    pub jira_base_url: String,
     pub my_account_id: String,
     pub current_branch: String,
     pub pending_g: bool,
@@ -154,14 +157,13 @@ pub struct App {
     pub last_ci_refresh: std::time::Instant,
     pub ci_log_popup: CiLogPopupState,
     pub import_tasks_popup: Option<ImportTasksPopupState>,
+    /// Issue keys that have pending tasks to import from opencode changes.
+    pub pending_import_keys: HashSet<String>,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
-        let config = JiraConfig::from_env()?;
-        let jira_base_url = config.base_url.trim_end_matches('/').to_string();
-        let client = JiraClient::new(&config)?;
-        let jql = config.default_jql.clone();
+    pub fn new(config: AppConfig) -> Result<Self> {
+        let client = JiraClient::new(&config.jira)?;
         let (bg_tx, bg_rx) = mpsc::unbounded_channel();
         let mut app = Self {
             should_quit: false,
@@ -169,14 +171,13 @@ impl App {
             input_mode: InputMode::Normal,
             issues: Vec::new(),
             selected_index: 0,
-            jql,
+            config,
             repo_entries: Vec::new(),
             repo_error: None,
             list_view: ListViewState::default(),
             status_bar: StatusBarState::default(),
             loading: true,
             client,
-            jira_base_url,
             my_account_id: String::new(),
             current_branch: String::new(),
             pending_g: false,
@@ -199,6 +200,7 @@ impl App {
             last_ci_refresh: std::time::Instant::now(),
             ci_log_popup: CiLogPopupState::default(),
             import_tasks_popup: None,
+            pending_import_keys: HashSet::new(),
         };
 
         app.status_bar.message = "Loading...".to_string();
@@ -212,12 +214,20 @@ impl App {
 
     /// Kick off all initialization work as background tasks.
     pub fn spawn_initialize(&self) {
-        actions::initialize::spawn(self.bg_tx.clone(), self.client.clone(), self.jql.clone());
+        actions::initialize::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            self.config.jira.jira_jql.clone(),
+        );
     }
 
     /// Spawn a full refresh (issues + PRs + statuses).
     pub fn spawn_refresh(&mut self) {
-        actions::refresh::spawn(self.bg_tx.clone(), self.client.clone(), self.jql.clone());
+        actions::refresh::spawn(
+            self.bg_tx.clone(),
+            self.client.clone(),
+            self.config.jira.jira_jql.clone(),
+        );
         self.last_ci_refresh = std::time::Instant::now();
     }
 
@@ -422,16 +432,18 @@ impl App {
                 }
             }
             ActionMessage::OpenspecProposeOpened(_) => {}
-            ActionMessage::TasksImported(issue_key, result) => {
-                match result {
-                    Ok(()) => {
-                        self.status_bar.message = format!("Tasks imported for {issue_key}");
-                        self.spawn_refresh();
-                    }
-                    Err(err) => {
-                        self.status_bar.message = format!("Import failed: {err}");
-                    }
+            ActionMessage::TasksImported(issue_key, result) => match result {
+                Ok(()) => {
+                    self.status_bar.message = format!("Tasks imported for {issue_key}");
+                    self.spawn_refresh();
+                    self.spawn_scan_import_tasks();
                 }
+                Err(err) => {
+                    self.status_bar.message = format!("Import failed: {err}");
+                }
+            },
+            ActionMessage::PendingImportKeys(keys) => {
+                self.pending_import_keys = keys;
             }
             ActionMessage::TaskStarted(name) => {
                 self.running_tasks.insert(name);
@@ -471,6 +483,7 @@ impl App {
                 self.spawn_active_branches();
                 self.spawn_github_prs();
                 self.spawn_link_jira_repos();
+                self.spawn_scan_import_tasks();
             }
             Err(_) => {
                 self.loading = false;
@@ -579,7 +592,8 @@ impl App {
         let repo_path = match self.repo_matches(issue).first() {
             Some(entry) => entry.path.clone(),
             None => {
-                self.status_bar.message = format!("Cannot open diff for {issue_key}: no linked repo");
+                self.status_bar.message =
+                    format!("Cannot open diff for {issue_key}: no linked repo");
                 return;
             }
         };
@@ -684,7 +698,7 @@ impl App {
         actions::create_inline_issue::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
-            self.jql.clone(),
+            self.config.jira.jira_jql.clone(),
             state.project_key,
             summary,
             state.parent_key,
@@ -1358,7 +1372,9 @@ impl App {
 
     fn derive_project_key(&self) -> String {
         if let Some(cap) = self
-            .jql
+            .config
+            .jira
+            .jira_jql
             .split_whitespace()
             .collect::<Vec<_>>()
             .windows(3)
@@ -1383,7 +1399,7 @@ impl App {
     }
 
     pub fn reload_repo_entries(&mut self) {
-        match repos::scan_repos() {
+        match repos::scan_repos(&self.config.repos_dir) {
             Ok(entries) => {
                 self.repo_entries = entries;
                 self.repo_error = None;
@@ -1502,6 +1518,11 @@ impl App {
         actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
     }
 
+    /// Scan opencode changes for pending import tasks.
+    pub fn spawn_scan_import_tasks(&self) {
+        actions::scan_import_tasks::spawn(self.bg_tx.clone(), self.config.repos_dir.clone());
+    }
+
     /// Open the import tasks confirmation popup for the selected issue.
     pub fn open_import_tasks_popup(&mut self) {
         let Some(issue) = self.selected_issue() else {
@@ -1514,21 +1535,14 @@ impl App {
             .unwrap_or_default();
         let project_key = self.derive_project_key();
 
-        let repos_dir = match std::env::var("REPOS_DIR") {
-            Ok(dir) => std::path::PathBuf::from(dir),
-            Err(_) => {
-                self.status_bar.message = "REPOS_DIR is not set".to_string();
-                return;
-            }
-        };
-
-        let tasks_path = match actions::import_tasks::find_tasks_json(&repos_dir, &issue_key) {
-            Ok(path) => path,
-            Err(err) => {
-                self.status_bar.message = format!("{err}");
-                return;
-            }
-        };
+        let tasks_path =
+            match actions::import_tasks::find_tasks_json(&self.config.repos_dir, &issue_key) {
+                Ok(path) => path,
+                Err(err) => {
+                    self.status_bar.message = format!("{err}");
+                    return;
+                }
+            };
 
         let tasks = match actions::import_tasks::load_tasks(&tasks_path) {
             Ok(tasks) => tasks,
@@ -1609,18 +1623,10 @@ impl App {
             current_issue = Some(parent);
         }
 
-        let repos_dir = match std::env::var("REPOS_DIR") {
-            Ok(dir) => std::path::PathBuf::from(dir),
-            Err(_) => {
-                self.status_bar.message = "REPOS_DIR is not set".to_string();
-                return;
-            }
-        };
-
         self.status_bar.message = "Opening openspec propose...".to_string();
         actions::openspec_propose::spawn(
             self.bg_tx.clone(),
-            repos_dir,
+            self.config.repos_dir.clone(),
             issue_key,
             issue_summary,
             issue_description,
@@ -1877,7 +1883,7 @@ impl App {
             None => return Err(eyre!("No issue selected")),
         };
 
-        let url = format!("{}/browse/{}", self.jira_base_url, issue_key);
+        let url = format!("{}/browse/{}", self.config.jira.jira_url, issue_key);
         open_url_in_browser(&url).await?;
         self.status_bar.message = format!("Opened {} in browser", url);
         Ok(())

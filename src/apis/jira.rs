@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env};
+use std::collections::BTreeMap;
 
 use color_eyre::{eyre::eyre, Result};
 use futures::StreamExt;
@@ -12,31 +12,12 @@ use serde_json::{json, Value};
 
 pub use gouqi::{Issue, IssueType, TransitionOption, User};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct JiraConfig {
-    pub base_url: String,
-    pub email: String,
-    pub api_token: String,
-    pub default_jql: String,
-}
-
-impl JiraConfig {
-    pub fn from_env() -> Result<Self> {
-        let required = |name: &str| -> Result<String> {
-            env::var(name).map_err(|_| eyre!("{name} is not set"))
-        };
-
-        let base_url = required("JIRA_URL")?;
-        let email = required("JIRA_EMAIL")?;
-        let api_token = required("JIRA_API_TOKEN")?;
-        let default_jql = required("JIRA_JQL")?;
-        Ok(Self {
-            base_url,
-            email,
-            api_token,
-            default_jql,
-        })
-    }
+    pub jira_url: String,
+    pub jira_email: String,
+    pub jira_api_token: String,
+    pub jira_jql: String,
 }
 
 #[derive(Clone)]
@@ -47,13 +28,13 @@ pub struct JiraClient {
 
 impl JiraClient {
     pub fn new(config: &JiraConfig) -> Result<Self> {
-        let host = config.base_url.trim_end_matches('/').to_string();
-        let credentials = Credentials::Basic(config.email.clone(), config.api_token.clone());
+        let host = config.jira_url.trim_end_matches('/').to_string();
+        let credentials = Credentials::Basic(config.jira_email.clone(), config.jira_api_token.clone());
         let jira = GouqiJira::new(&host, credentials)?;
 
         Ok(Self {
             jira,
-            email: config.email.clone(),
+            email: config.jira_email.clone(),
         })
     }
 

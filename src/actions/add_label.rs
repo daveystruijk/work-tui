@@ -20,7 +20,10 @@ pub fn spawn(
     super::spawn_action(tx, "Adding label", |tx| async move {
         let mut labels = labels;
         labels.push(label.clone());
-        let result = client.update_labels(&issue_key, &labels).await.map(|_| (issue_key, label));
+        let result = client
+            .update_labels(&issue_key, &labels)
+            .await
+            .map(|_| (issue_key, label));
         let _ = tx.send(ActionMessage::LabelAdded(result));
     });
 }

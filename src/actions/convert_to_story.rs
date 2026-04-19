@@ -13,8 +13,12 @@ pub fn spawn(
     issue_key: String,
     target_type: &'static str,
 ) {
-    super::spawn_action(tx, format!("Converting to {target_type}"), move |tx| async move {
-        let result = client.update_issue_type(&issue_key, target_type).await;
-        let _ = tx.send(ActionMessage::ConvertedToStory(issue_key, result));
-    });
+    super::spawn_action(
+        tx,
+        format!("Converting to {target_type}"),
+        move |tx| async move {
+            let result = client.update_issue_type(&issue_key, target_type).await;
+            let _ = tx.send(ActionMessage::ConvertedToStory(issue_key, result));
+        },
+    );
 }

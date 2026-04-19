@@ -56,7 +56,8 @@ pub fn spawn(
                 current: 3,
                 total: 6,
             }));
-            let branch_setup = git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
+            let branch_setup =
+                git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
 
             let _ = tx.send(ActionMessage::Progress(Progress {
                 action: "pick_up",
@@ -73,7 +74,9 @@ pub fn spawn(
                 total: 6,
             }));
             let transitions = client.get_transitions(&issue_key).await?;
-            let progress = transitions.into_iter().find(|t| t.name.to_lowercase().contains("progress"));
+            let progress = transitions
+                .into_iter()
+                .find(|t| t.name.to_lowercase().contains("progress"));
             if let Some(t) = progress {
                 client.transition_issue(&issue_key, &t.id).await?;
             }
@@ -92,7 +95,10 @@ pub fn spawn(
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
                 let repo_dir = repo_path.display().to_string();
 
-                let _ = Command::new("tmux").args(["new-window", "-c", &repo_dir]).output().await;
+                let _ = Command::new("tmux")
+                    .args(["new-window", "-c", &repo_dir])
+                    .output()
+                    .await;
                 let _ = Command::new("tmux")
                     .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
                     .output()

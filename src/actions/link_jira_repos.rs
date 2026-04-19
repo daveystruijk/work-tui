@@ -48,20 +48,35 @@ pub fn spawn(
 
         for (issue_key, current_labels) in &unlinked {
             let key_lower = issue_key.to_lowercase();
-            let matched_pr = discovered.iter().find(|pr| pr.branch.to_lowercase().starts_with(&key_lower));
-            let Some(pr) = matched_pr else { continue; };
+            let matched_pr = discovered
+                .iter()
+                .find(|pr| pr.branch.to_lowercase().starts_with(&key_lower));
+            let Some(pr) = matched_pr else {
+                continue;
+            };
 
             let pr_normalized = repos::normalize_label(&pr.repo_name);
-            let already_labeled = current_labels.iter().any(|l| repos::normalize_label(l) == pr_normalized);
-            if already_labeled { continue; }
+            let already_labeled = current_labels
+                .iter()
+                .any(|l| repos::normalize_label(l) == pr_normalized);
+            if already_labeled {
+                continue;
+            }
 
-            let local_match = repo_normalized_names.iter().find(|(_, normalized)| *normalized == pr_normalized);
-            let Some((original_label, _)) = local_match else { continue; };
+            let local_match = repo_normalized_names
+                .iter()
+                .find(|(_, normalized)| *normalized == pr_normalized);
+            let Some((original_label, _)) = local_match else {
+                continue;
+            };
 
             let mut new_labels = current_labels.clone();
             new_labels.push(original_label.clone());
             let result = client.update_labels(issue_key, &new_labels).await;
-            let _ = tx.send(ActionMessage::AutoLabeled(issue_key.clone(), result.map(|_| ())));
+            let _ = tx.send(ActionMessage::AutoLabeled(
+                issue_key.clone(),
+                result.map(|_| ()),
+            ));
         }
     });
 }

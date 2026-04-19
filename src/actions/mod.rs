@@ -15,21 +15,22 @@ pub mod convert_to_story;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
 pub mod fetch_children;
-pub mod import_tasks;
 pub mod fetch_ci_logs;
 pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
 pub mod finish;
 pub mod fix_ci;
+pub mod import_tasks;
 pub mod initialize;
 pub mod link_jira_repos;
 pub mod openspec_propose;
 pub mod pick_up;
 pub mod refresh;
+pub mod scan_import_tasks;
 
-use std::collections::HashMap;
-use std::fmt;
 use color_eyre::Result;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use tokio::sync::mpsc;
 
 use crate::apis::{
@@ -119,6 +120,8 @@ pub enum ActionMessage {
     /// Tasks imported from tasks.json (from [`import_tasks`]).
     /// Carries (issue_key, result).
     TasksImported(String, Result<()>),
+    /// Issue keys that have pending import tasks (from [`scan_import_tasks`]).
+    PendingImportKeys(HashSet<String>),
     /// A background task has started. The payload is the human-readable task name.
     TaskStarted(String),
     /// A background task has finished. The payload is the human-readable task name.

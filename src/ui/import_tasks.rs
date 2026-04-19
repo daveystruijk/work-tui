@@ -107,7 +107,10 @@ pub fn render_import_tasks_popup(app: &App, frame: &mut Frame) {
     let skipped_count = popup.tasks.iter().filter(|t| t.key.is_some()).count();
     if skipped_count > 0 {
         lines.push(Line::from(Span::styled(
-            format!("  ({skipped_count} task{} already imported, skipped)", if skipped_count == 1 { "" } else { "s" }),
+            format!(
+                "  ({skipped_count} task{} already imported, skipped)",
+                if skipped_count == 1 { "" } else { "s" }
+            ),
             Style::default().fg(Theme::Muted),
         )));
         lines.push(Line::from(""));

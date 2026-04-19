@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
 
 fn jira_client() -> Result<(JiraClient, String)> {
     let config = JiraConfig::from_env()?;
-    let jql = config.default_jql.clone();
+    let jql = config.jira_jql.clone();
     let client = JiraClient::new(&config)?;
     Ok((client, jql))
 }
@@ -176,7 +176,9 @@ async fn fetch_children(args: &[String]) -> Result<()> {
 }
 
 async fn scan_repos() -> Result<()> {
-    let repos = work_tui::repos::scan_repos()?;
+    let dir =
+        std::env::var("REPOS_DIR").map_err(|_| color_eyre::eyre::eyre!("REPOS_DIR is not set"))?;
+    let repos = work_tui::repos::scan_repos(std::path::Path::new(&dir))?;
     for repo in repos {
         println!("label: {}", repo.label);
         println!("  normalized: {}", repo.normalized);

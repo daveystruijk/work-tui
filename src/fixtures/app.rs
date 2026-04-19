@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use crate::{
     apis::jira::{JiraClient, JiraConfig},
     app::{App, DisplayRow},
+    config::AppConfig,
     ui::{CiLogPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
 };
 
@@ -10,10 +11,14 @@ use super::{issue::test_issue, pr::test_pr};
 
 pub fn test_app() -> App {
     let config = JiraConfig {
-        base_url: "http://localhost".to_string(),
-        email: "tester@example.com".to_string(),
-        api_token: "token".to_string(),
-        default_jql: "project = TEST".to_string(),
+        jira_url: "http://localhost".to_string(),
+        jira_email: "tester@example.com".to_string(),
+        jira_api_token: "token".to_string(),
+        jira_jql: "project = TEST".to_string(),
+    };
+    let app_config = AppConfig {
+        jira: config.clone(),
+        repos_dir: std::path::PathBuf::from("/tmp/test-repos"),
     };
     let client = JiraClient::new(&config).expect("jira client");
     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
@@ -24,14 +29,13 @@ pub fn test_app() -> App {
         input_mode: crate::app::InputMode::Normal,
         issues: Vec::new(),
         selected_index: 0,
-        jql: config.default_jql,
+        config: app_config,
         repo_entries: Vec::new(),
         repo_error: None,
         list_view: ListViewState::default(),
         status_bar: StatusBarState::default(),
         loading: false,
         client,
-        jira_base_url: config.base_url,
         my_account_id: String::new(),
         current_branch: String::new(),
         pending_g: false,
@@ -54,6 +58,7 @@ pub fn test_app() -> App {
         last_ci_refresh: std::time::Instant::now(),
         ci_log_popup: CiLogPopupState::default(),
         import_tasks_popup: None,
+        pending_import_keys: Default::default(),
     }
 }
 

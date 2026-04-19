@@ -28,7 +28,9 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: 
                 current: 1,
                 total: 3,
             }));
-            let branch = git::current_branch().await.unwrap_or_else(|_| "(detached)".to_string());
+            let branch = git::current_branch()
+                .await
+                .unwrap_or_else(|_| "(detached)".to_string());
             let _ = tx.send(ActionMessage::CurrentBranch(branch));
         };
 
@@ -39,7 +41,10 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: 
                 current: 2,
                 total: 3,
             }));
-            let result = client.get_myself().await.map(|u| u.account_id.unwrap_or_default());
+            let result = client
+                .get_myself()
+                .await
+                .map(|u| u.account_id.unwrap_or_default());
             let _ = tx.send(ActionMessage::Myself(result));
         };
 

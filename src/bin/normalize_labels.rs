@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::env;
 
-use color_eyre::{eyre::eyre, Result};
+use color_eyre::Result;
 use futures::StreamExt;
 use gouqi::{r#async::Jira, Credentials, SearchOptions};
 
@@ -63,14 +63,11 @@ async fn main() -> Result<()> {
 
     let apply = env::args().any(|a| a == "--apply");
 
-    let base_url = env::var("JIRA_URL").map_err(|_| eyre!("JIRA_URL is not set"))?;
-    let email = env::var("JIRA_EMAIL").map_err(|_| eyre!("JIRA_EMAIL is not set"))?;
-    let api_token = env::var("JIRA_API_TOKEN").map_err(|_| eyre!("JIRA_API_TOKEN is not set"))?;
-    let jql = env::var("JIRA_JQL").map_err(|_| eyre!("JIRA_JQL is not set"))?;
-
-    let host = base_url.trim_end_matches('/');
-    let credentials = Credentials::Basic(email, api_token);
-    let jira = Jira::new(host, credentials)?;
+    let config = work_tui::apis::jira::JiraConfig::from_env()?;
+    let host = config.jira_url.trim_end_matches('/').to_string();
+    let credentials = Credentials::Basic(config.jira_email, config.jira_api_token);
+    let jira = Jira::new(&host, credentials)?;
+    let jql = config.jira_jql;
 
     println!("Searching issues with: {jql}");
     if !apply {

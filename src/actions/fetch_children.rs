@@ -12,8 +12,14 @@ use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira child issue fetch.
 pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, parent_key: String) {
-    super::spawn_action(tx, format!("Fetching children for {parent_key}"), |tx| async move {
-        let result = client.search(&format!("parent = {parent_key} ORDER BY created DESC")).await;
-        let _ = tx.send(ActionMessage::ChildrenLoaded(parent_key, result));
-    });
+    super::spawn_action(
+        tx,
+        format!("Fetching children for {parent_key}"),
+        |tx| async move {
+            let result = client
+                .search(&format!("parent = {parent_key} ORDER BY created DESC"))
+                .await;
+            let _ = tx.send(ActionMessage::ChildrenLoaded(parent_key, result));
+        },
+    );
 }

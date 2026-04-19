@@ -56,14 +56,23 @@ pub fn spawn(
             };
 
             let created_key = client
-                .create_issue(&project_key, &issue_type.id, &summary, None, parent_key.as_deref())
+                .create_issue(
+                    &project_key,
+                    &issue_type.id,
+                    &summary,
+                    None,
+                    parent_key.as_deref(),
+                )
                 .await?;
 
             let mut last_issues = None;
             for attempt in 0..6 {
                 if let Ok(issues) = client.search(&jql).await {
                     if issues.iter().any(|issue| issue.key == created_key) {
-                        return Ok(RunResult { created_key, refreshed_issues: Some(issues) });
+                        return Ok(RunResult {
+                            created_key,
+                            refreshed_issues: Some(issues),
+                        });
                     }
                     last_issues = Some(issues);
                 }
@@ -79,7 +88,10 @@ pub fn spawn(
                 }
             }
 
-            Ok(RunResult { created_key, refreshed_issues: last_issues })
+            Ok(RunResult {
+                created_key,
+                refreshed_issues: last_issues,
+            })
         }
         .await;
         match result {
