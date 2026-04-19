@@ -117,6 +117,7 @@ async fn run_app(
         terminal.draw(|frame| ui::render(&mut app, frame))?;
 
         app.tick_spinner();
+        app.status_bar.expire_alerts();
 
         // Drain all pending background messages (non-blocking)
         while let Ok(msg) = app.message_rx.try_recv() {

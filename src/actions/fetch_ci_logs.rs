@@ -12,7 +12,8 @@ pub fn spawn(
     repo_slug: String,
     check_runs: Vec<CheckRun>,
 ) {
-    super::spawn_action(tx, "fetch_ci_logs", "Fetching CI logs", |tx| async move {
+    let label = format!("Fetching CI logs for {issue_key}");
+    super::spawn_action(tx, "fetch_ci_logs", label, |tx| async move {
         let result = fetch_check_run_logs(&repo_slug, &check_runs).await;
         let _ = tx.send(Message::CiLogsFetched(issue_key, result));
     });

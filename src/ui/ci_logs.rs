@@ -349,7 +349,8 @@ fn spawn_fix_ci(app: &mut AppView) {
         }
     };
     let Some(pr) = app.github_prs.get(&issue_key) else {
-        app.status_bar.set_warning("No linked PR");
+        app.status_bar
+            .set_warning(format!("No linked PR for {issue_key}"));
         return;
     };
 

@@ -1235,11 +1235,13 @@ fn open_ci_log_popup(app: &mut AppView) {
     };
     let issue_key = issue.key.clone();
     let Some(pr) = app.github_prs.get(&issue_key) else {
-        app.status_bar.set_warning("No linked PR");
+        app.status_bar
+            .set_warning(format!("No linked PR for {issue_key}"));
         return;
     };
     if pr.check_runs.is_empty() {
-        app.status_bar.set_warning("No CI checks");
+        app.status_bar
+            .set_warning(format!("No CI checks for {issue_key}"));
         return;
     }
     app.ci_log_popup.open();

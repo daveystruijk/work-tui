@@ -25,6 +25,7 @@ pub enum AlertLevel {
 pub struct StatusAlert {
     pub level: AlertLevel,
     pub message: String,
+    pub created_at: Instant,
 }
 
 /// Read-only shared state passed to StatusBarView for rendering.
@@ -47,6 +48,7 @@ impl StatusBarView {
         self.alerts = vec![StatusAlert {
             level: AlertLevel::Error,
             message: message.into(),
+            created_at: Instant::now(),
         }];
     }
 
@@ -54,7 +56,14 @@ impl StatusBarView {
         self.alerts = vec![StatusAlert {
             level: AlertLevel::Warning,
             message: message.into(),
+            created_at: Instant::now(),
         }];
+    }
+
+    /// Remove alerts older than 3 seconds.
+    pub fn expire_alerts(&mut self) {
+        self.alerts
+            .retain(|alert| alert.created_at.elapsed().as_secs() < 3);
     }
 
     pub fn handle_message(&mut self, msg: &Message) {
