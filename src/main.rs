@@ -3,13 +3,13 @@ mod apis;
 mod app;
 mod cache;
 mod config;
-mod events;
 #[cfg(test)]
 mod fixtures;
 mod git;
 mod repos;
 mod theme;
 mod ui;
+mod utils;
 
 use std::{io, time::Duration};
 
@@ -167,15 +167,16 @@ async fn run_app(
                 },
                 InputFocus::List | InputFocus::Search | InputFocus::InlineNew => {
                     match mouse_event.kind {
-                        MouseEventKind::ScrollDown => ui::list::scroll_viewport(&mut app, 3),
-                        MouseEventKind::ScrollUp => ui::list::scroll_viewport(&mut app, -3),
+                        MouseEventKind::ScrollDown => app.list.scroll_viewport(3),
+                        MouseEventKind::ScrollUp => app.list.scroll_viewport(-3),
                         MouseEventKind::Down(MouseButton::Left) => {
                             let clicked_row = mouse_event.row as usize;
                             let data_row = clicked_row.saturating_sub(1);
                             let target = app.list.scroll_offset + data_row;
-                            if target < app.display_rows.len() {
-                                app.selected_index = target;
-                                ui::list::adjust_scroll_offset(&mut app);
+                            if target < app.list.display_rows.len() {
+                                app.list.selected_index = target;
+                                app.list.adjust_scroll_offset();
+                                app.prefetch_selected_pr_detail();
                             }
                         }
                         _ => {}
@@ -200,12 +201,12 @@ async fn handle_key_event(app: &mut AppView, key_event: KeyEvent) {
 
     match app.input_focus {
         InputFocus::Search | InputFocus::InlineNew | InputFocus::List => {
-            ui::list::handle_input(app, key_event).await
+            ui::list::update(app, key_event).await
         }
-        InputFocus::ImportTasksPopup => ui::import_tasks::handle_input(app, key_event),
-        InputFocus::CiLogPopup => ui::ci_logs::handle_input(app, key_event).await,
-        InputFocus::LabelPicker => ui::label_picker::handle_input(app, key_event).await,
+        InputFocus::ImportTasksPopup => ui::import_tasks::update(app, key_event),
+        InputFocus::CiLogPopup => ui::ci_logs::update(app, key_event).await,
+        InputFocus::LabelPicker => ui::label_picker::update(app, key_event).await,
     }
 
-    app.previous_key = Some(key_event);
+    app.previous_key = Some(key_event.code);
 }

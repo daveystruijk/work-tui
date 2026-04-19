@@ -7,7 +7,12 @@ use ratatui::{
     Frame,
 };
 
-use crate::{app::AppView, repos::RepoEntry, theme::Theme};
+use crate::{
+    actions,
+    app::AppView,
+    repos::{self, RepoEntry},
+    theme::Theme,
+};
 
 use super::centered_rect;
 
@@ -64,16 +69,104 @@ impl LabelPickerView {
         self.filter.pop();
         self.selected = 0;
     }
+
+    pub fn render(&self, frame: &mut Frame, repo_entries: &[RepoEntry]) {
+        let area = centered_rect(60, 70, frame.area());
+        frame.render_widget(Clear, area);
+
+        let popup = Block::bordered()
+            .title(Span::styled(
+                " Add repo label ",
+                Style::default()
+                    .fg(Theme::Accent)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(Theme::Surface))
+            .border_style(Style::default().fg(Theme::Accent));
+        let inner = popup.inner(area);
+        frame.render_widget(popup, area);
+
+        let filtered = self.filtered_repo_entries(repo_entries);
+        let items: Vec<ListItem> = if filtered.is_empty() {
+            let msg = if repo_entries.is_empty() {
+                "No repositories available"
+            } else {
+                "No matches"
+            };
+            vec![ListItem::new(Line::from(vec![Span::styled(
+                msg,
+                Style::default().fg(Theme::Muted),
+            )]))]
+        } else {
+            filtered
+                .iter()
+                .map(|entry| {
+                    let path = entry.path.display().to_string();
+                    ListItem::new(vec![
+                        Line::from(vec![Span::styled(
+                            entry.label.clone(),
+                            Style::default()
+                                .fg(Theme::Text)
+                                .add_modifier(Modifier::BOLD),
+                        )]),
+                        Line::from(vec![Span::styled(path, Style::default().fg(Theme::Muted))]),
+                    ])
+                })
+                .collect()
+        };
+
+        let mut state = ListState::default();
+        if !filtered.is_empty() {
+            state.select(Some(self.selected));
+        }
+        let list = List::new(items).highlight_style(
+            Style::default()
+                .fg(Theme::Panel)
+                .bg(Theme::AccentSoft)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        let filter_display = format!(
+            " {} ",
+            if self.filter.is_empty() {
+                "Type to filter...".to_string()
+            } else {
+                self.filter.clone()
+            }
+        );
+        let filter_style = if self.filter.is_empty() {
+            Style::default().fg(Theme::Muted)
+        } else {
+            Style::default().fg(Theme::Text)
+        };
+        let modal_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(3),
+            ])
+            .split(inner);
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("/ ", Style::default().fg(Theme::Accent)),
+                Span::styled(filter_display, filter_style),
+            ])),
+            modal_layout[0],
+        );
+        frame.render_stateful_widget(list, modal_layout[1], &mut state);
+    }
 }
 
-pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
+pub async fn update(app: &mut AppView, key_event: KeyEvent) {
     match key_event.code {
         KeyCode::Esc => {
             app.label_picker = None;
             app.input_focus = crate::app::InputFocus::List;
         }
         KeyCode::Enter => {
-            if app.add_label_from_picker() {
+            if add_label_from_picker(app) {
                 app.label_picker = None;
                 app.input_focus = crate::app::InputFocus::List;
             }
@@ -102,93 +195,37 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
     }
 }
 
-pub fn render(app: &AppView, frame: &mut Frame) {
-    let Some(picker) = &app.label_picker else {
-        return;
+fn add_label_from_picker(app: &mut AppView) -> bool {
+    let Some(entry) = app
+        .label_picker
+        .as_ref()
+        .and_then(|picker| picker.selected_entry(&app.repo_entries))
+        .cloned()
+    else {
+        app.status_bar.set_warning("No repository selected");
+        return false;
     };
-    let area = centered_rect(60, 70, frame.area());
-    frame.render_widget(Clear, area);
-
-    let popup = Block::bordered()
-        .title(Span::styled(
-            " Add repo label ",
-            Style::default()
-                .fg(Theme::Accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(Theme::Surface))
-        .border_style(Style::default().fg(Theme::Accent));
-    let inner = popup.inner(area);
-    frame.render_widget(popup, area);
-
-    let filtered = picker.filtered_repo_entries(&app.repo_entries);
-    let items: Vec<ListItem> = if filtered.is_empty() {
-        let msg = if app.repo_entries.is_empty() {
-            "No repositories available"
-        } else {
-            "No matches"
-        };
-        vec![ListItem::new(Line::from(vec![Span::styled(
-            msg,
-            Style::default().fg(Theme::Muted),
-        )]))]
-    } else {
-        filtered
-            .iter()
-            .map(|entry| {
-                let path = entry.path.display().to_string();
-                ListItem::new(vec![
-                    Line::from(vec![Span::styled(
-                        entry.label.clone(),
-                        Style::default()
-                            .fg(Theme::Text)
-                            .add_modifier(Modifier::BOLD),
-                    )]),
-                    Line::from(vec![Span::styled(path, Style::default().fg(Theme::Muted))]),
-                ])
-            })
-            .collect()
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        app.status_bar.set_warning("No issue selected");
+        return false;
     };
-
-    let mut state = ListState::default();
-    if !filtered.is_empty() {
-        state.select(Some(picker.selected));
+    let issue_key = issue.key.clone();
+    let labels = issue.labels();
+    let target_normalized = repos::normalize_label(&entry.label);
+    let already_has = labels
+        .iter()
+        .any(|l| repos::normalize_label(l) == target_normalized);
+    if already_has {
+        app.status_bar
+            .set_warning(format!("{issue_key} already labeled with {}", entry.label));
+        return false;
     }
-    let list = List::new(items).highlight_style(
-        Style::default()
-            .fg(Theme::Panel)
-            .bg(Theme::AccentSoft)
-            .add_modifier(Modifier::BOLD),
+    actions::add_label::spawn(
+        app.message_tx.clone(),
+        app.client.clone(),
+        issue_key,
+        entry.label.clone(),
+        labels,
     );
-
-    let filter_display = format!(
-        " {} ",
-        if picker.filter.is_empty() {
-            "Type to filter...".to_string()
-        } else {
-            picker.filter.clone()
-        }
-    );
-    let filter_style = if picker.filter.is_empty() {
-        Style::default().fg(Theme::Muted)
-    } else {
-        Style::default().fg(Theme::Text)
-    };
-    let modal_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(3),
-            Constraint::Length(3),
-        ])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("/ ", Style::default().fg(Theme::Accent)),
-            Span::styled(filter_display, filter_style),
-        ])),
-        modal_layout[0],
-    );
-    frame.render_stateful_widget(list, modal_layout[1], &mut state);
+    true
 }

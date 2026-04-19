@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use color_eyre::{eyre::eyre, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::Constraint,
@@ -9,15 +10,21 @@ use ratatui::{
     Frame,
 };
 
+use crate::actions;
 use crate::actions::Message;
 use crate::apis::{
-    github::{CheckStatus, MergeableState},
+    github::{CheckStatus, MergeableState, PrInfo},
     jira::Issue,
 };
-use crate::app::{AppView, DisplayRow, InlineNewView};
+use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus};
+use crate::repos::RepoEntry;
 use crate::theme::Theme;
+use crate::ui::{ImportTasksView, LabelPickerView};
+use tokio::process::Command;
 
-use super::{issue_type_icon, max_col_width, status_color, CellMap, COLUMNS, SPINNER_FRAMES};
+use super::{
+    issue_type_icon, max_col_width, status_color, CellMap, UiAnimationView, COLUMNS, SPINNER_FRAMES,
+};
 
 #[cfg(test)]
 mod tests {
@@ -37,11 +44,29 @@ mod tests {
     }
 }
 
+/// Read-only shared state passed to ListView for rendering.
+pub struct ListRenderContext<'a> {
+    pub issues: &'a [Issue],
+    pub story_children: &'a HashMap<String, Vec<Issue>>,
+    pub github_prs: &'a HashMap<String, PrInfo>,
+    pub active_branches: &'a HashMap<String, String>,
+    pub repo_entries: &'a [RepoEntry],
+    pub check_durations: &'a HashMap<String, u64>,
+    pub animation: &'a UiAnimationView,
+    pub inline_new: Option<&'a InlineNewView>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ListView {
     pub area_height: u16,
     pub scroll_offset: usize,
     pub loading_children: HashSet<String>,
+    pub selected_index: usize,
+    pub display_rows: Vec<DisplayRow>,
+    pub search_filter: String,
+    pub collapsed_stories: HashSet<String>,
+    pub inline_new: Option<InlineNewView>,
+    pub pending_import_keys: HashSet<String>,
 }
 
 impl ListView {
@@ -53,6 +78,9 @@ impl ListView {
             Message::ChildrenLoaded(parent_key, _) => {
                 self.loading_children.remove(parent_key);
             }
+            Message::PendingImportKeys(keys) => {
+                self.pending_import_keys = keys.clone();
+            }
             _ => {}
         }
     }
@@ -60,114 +88,793 @@ impl ListView {
     pub fn start_loading_children(&mut self, parent_key: &str) {
         self.loading_children.insert(parent_key.to_string());
     }
-}
 
-pub fn render(app: &mut AppView, frame: &mut Frame, area: ratatui::layout::Rect) {
-    // Store visible list height for half-page scrolling
-    app.list.area_height = area.height.saturating_sub(1);
+    /// Returns the issue for the currently selected display row, if any.
+    pub fn selected_issue<'a>(
+        &self,
+        issues: &'a [Issue],
+        story_children: &'a HashMap<String, Vec<Issue>>,
+    ) -> Option<&'a Issue> {
+        self.issue_for_row(self.selected_index, issues, story_children)
+    }
 
-    // Build row data as (CellMap, Style) so we can measure before converting to Row.
-    let row_data: Vec<(CellMap, Style)> = app
-        .display_rows
-        .iter()
-        .enumerate()
-        .map(|(row_idx, display_row)| match display_row {
-            DisplayRow::StoryHeader {
-                key,
-                summary,
-                depth,
-            } => {
-                let collapsed = app.collapsed_stories.contains(key);
-                let has_pending_import = app.pending_import_keys.contains(key);
-                story_header_row(key, summary, row_idx, collapsed, *depth, has_pending_import)
-            }
+    /// Returns the issue for a given display row index, if any.
+    pub fn issue_for_row<'a>(
+        &self,
+        row_index: usize,
+        issues: &'a [Issue],
+        story_children: &'a HashMap<String, Vec<Issue>>,
+    ) -> Option<&'a Issue> {
+        let row = self.display_rows.get(row_index)?;
+        self.issue_for_display_row(row, issues, story_children)
+    }
+
+    /// Returns the issue for a given display row, if any.
+    pub fn issue_for_display_row<'a>(
+        &self,
+        row: &DisplayRow,
+        issues: &'a [Issue],
+        story_children: &'a HashMap<String, Vec<Issue>>,
+    ) -> Option<&'a Issue> {
+        match row {
             DisplayRow::Issue {
                 index,
-                depth,
-                child_of,
-            } => {
-                let issue = match child_of {
-                    Some(parent_key) => &app.story_children[parent_key][*index],
-                    None => &app.issues[*index],
-                };
-                issue_row(app, issue, row_idx, *depth)
+                child_of: None,
+                ..
+            } => issues.get(*index),
+            DisplayRow::Issue {
+                index,
+                child_of: Some(parent_key),
+                ..
+            } => story_children.get(parent_key)?.get(*index),
+            DisplayRow::StoryHeader { key, .. } => find_issue_by_key(issues, story_children, key),
+            DisplayRow::InlineNew { .. }
+            | DisplayRow::Loading { .. }
+            | DisplayRow::Empty { .. } => None,
+        }
+    }
+
+    /// Toggle collapse state for the story at the current selection.
+    /// Returns the key if expansion needs a children fetch, None otherwise.
+    pub fn toggle_story_collapse(
+        &mut self,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) -> Option<String> {
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+            _ => return None,
+        };
+        let needs_fetch = if self.collapsed_stories.remove(&key) {
+            self.maybe_needs_fetch(&key, story_children)
+        } else {
+            self.collapsed_stories.insert(key.clone());
+            None
+        };
+        self.rebuild_display_rows(issues, story_children);
+        needs_fetch
+    }
+
+    /// Expand the story at the current selection.
+    /// Returns the key if expansion needs a children fetch, None otherwise.
+    pub fn expand_story(
+        &mut self,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) -> Option<String> {
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+            _ => return None,
+        };
+        if !self.collapsed_stories.remove(&key) {
+            return None;
+        }
+        let needs_fetch = self.maybe_needs_fetch(&key, story_children);
+        self.rebuild_display_rows(issues, story_children);
+        needs_fetch
+    }
+
+    /// Collapse the story at the current selection.
+    pub fn collapse_story(
+        &mut self,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) -> bool {
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+            _ => return false,
+        };
+        if self.collapsed_stories.contains(&key) {
+            return false;
+        }
+        self.collapsed_stories.insert(key);
+        self.rebuild_display_rows(issues, story_children);
+        true
+    }
+
+    fn maybe_needs_fetch(
+        &self,
+        key: &str,
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) -> Option<String> {
+        if self.loading_children.contains(key) || story_children.contains_key(key) {
+            return None;
+        }
+        Some(key.to_string())
+    }
+
+    /// Returns the story key and depth if the current selection is inside a
+    /// story group.
+    fn enclosing_story_key_and_depth(&self) -> Option<(String, u8)> {
+        let current_depth = match &self.display_rows.get(self.selected_index)? {
+            DisplayRow::Issue { depth, .. }
+            | DisplayRow::InlineNew { depth }
+            | DisplayRow::Loading { depth }
+            | DisplayRow::Empty { depth } => *depth,
+            DisplayRow::StoryHeader { .. } => return None,
+        };
+        if current_depth == 0 {
+            return None;
+        }
+        for i in (0..self.selected_index).rev() {
+            match &self.display_rows[i] {
+                DisplayRow::StoryHeader { key, depth, .. } if *depth < current_depth => {
+                    return Some((key.clone(), *depth));
+                }
+                DisplayRow::Issue { depth: 0, .. } => return None,
+                _ => continue,
             }
-            DisplayRow::InlineNew { depth } => {
-                inline_new_row(app.inline_new.as_ref(), row_idx, *depth)
+        }
+        None
+    }
+
+    /// Returns the story key and its depth for inline creation.
+    fn selected_story_or_enclosing(&self) -> Option<(String, u8)> {
+        if let Some(DisplayRow::StoryHeader { key, depth, .. }) =
+            self.display_rows.get(self.selected_index)
+        {
+            return Some((key.clone(), *depth));
+        }
+        self.enclosing_story_key_and_depth()
+    }
+
+    /// Start an inline new-issue row.
+    pub fn start_inline_new(&mut self, project_key: String) -> bool {
+        let story_key = self.selected_story_or_enclosing();
+
+        let (insert_at, depth, parent_key) = if let Some((parent, story_depth)) = story_key {
+            let child_depth = story_depth + 1;
+            let group_end = self.find_story_group_end(self.selected_index);
+            let replace_empty = matches!(
+                self.display_rows.get(group_end),
+                Some(DisplayRow::Empty { .. })
+            );
+            if replace_empty {
+                (group_end, child_depth, Some(parent))
+            } else {
+                (group_end + 1, child_depth, Some(parent))
             }
-            DisplayRow::Loading { depth } => {
-                loading_row(app.animation.spinner_tick, row_idx, *depth)
+        } else {
+            let at = self.selected_index + 1;
+            (at, 0u8, None)
+        };
+
+        if matches!(
+            self.display_rows.get(insert_at),
+            Some(DisplayRow::Empty { .. })
+        ) {
+            self.display_rows[insert_at] = DisplayRow::InlineNew { depth };
+        } else {
+            self.display_rows
+                .insert(insert_at, DisplayRow::InlineNew { depth });
+        }
+
+        let state = InlineNewView {
+            summary: String::new(),
+            parent_key,
+            project_key,
+            row_index: insert_at,
+        };
+        self.inline_new = Some(state);
+        self.selected_index = insert_at;
+        true
+    }
+
+    /// Cancel the inline new issue and remove the placeholder row.
+    pub fn cancel_inline_new(&mut self) {
+        let Some(state) = self.inline_new.take() else {
+            return;
+        };
+        self.remove_inline_row(state.row_index);
+    }
+
+    /// Find the last row index belonging to the story group that contains `from`.
+    fn find_story_group_end(&self, from: usize) -> usize {
+        let base_depth = match &self.display_rows[from] {
+            DisplayRow::StoryHeader { depth, .. }
+            | DisplayRow::Issue { depth, .. }
+            | DisplayRow::InlineNew { depth }
+            | DisplayRow::Loading { depth }
+            | DisplayRow::Empty { depth } => *depth,
+        };
+        let mut end = from;
+        for i in (from + 1)..self.display_rows.len() {
+            let row_depth = match &self.display_rows[i] {
+                DisplayRow::StoryHeader { depth, .. }
+                | DisplayRow::Issue { depth, .. }
+                | DisplayRow::InlineNew { depth }
+                | DisplayRow::Loading { depth }
+                | DisplayRow::Empty { depth } => *depth,
+            };
+            if row_depth > base_depth {
+                end = i;
+            } else {
+                break;
             }
-            DisplayRow::Empty { depth } => empty_row(row_idx, *depth),
-        })
-        .collect();
+        }
+        end
+    }
 
-    let constraints = [
-        Constraint::Length(max_col_width(&row_data, "Key").min(16)),
-        Constraint::Min(10), // Summary (flex fill)
-        Constraint::Length(max_col_width(&row_data, "PR").min(8)),
-        Constraint::Length(max_col_width(&row_data, "CI").min(14)),
-        Constraint::Length(max_col_width(&row_data, "Status").min(14)),
-        Constraint::Length(max_col_width(&row_data, "Assignee").min(20)),
-        Constraint::Length(max_col_width(&row_data, "Repo").min(24)),
-    ];
+    /// Remove the InlineNew row at the given index and fix up selection.
+    pub fn remove_inline_row(&mut self, row_index: usize) {
+        if row_index < self.display_rows.len() {
+            if let DisplayRow::InlineNew { depth } = self.display_rows[row_index] {
+                let is_only_child_of_story = depth > 0
+                    && row_index > 0
+                    && matches!(
+                        self.display_rows.get(row_index - 1),
+                        Some(DisplayRow::StoryHeader { .. })
+                    )
+                    && !matches!(
+                        self.display_rows.get(row_index + 1),
+                        Some(
+                            DisplayRow::Issue { depth: d, .. }
+                            | DisplayRow::Loading { depth: d }
+                            | DisplayRow::Empty { depth: d }
+                        ) if *d > 0
+                    );
+                if is_only_child_of_story {
+                    self.display_rows[row_index] = DisplayRow::Empty { depth };
+                } else {
+                    self.display_rows.remove(row_index);
+                }
+            }
+        }
+        if !self.display_rows.is_empty() {
+            self.selected_index = self.selected_index.min(self.display_rows.len() - 1);
+        } else {
+            self.selected_index = 0;
+        }
+    }
 
-    // Convert CellMaps to ordered Rows.
-    let mut state = TableState::default()
-        .with_offset(app.list.scroll_offset)
-        .with_selected(Some(app.selected_index));
+    pub fn start_search(&mut self) {
+        // Focus is handled by caller
+    }
 
-    let rows: Vec<Row> = row_data
-        .into_iter()
-        .map(|(mut cells, style)| {
-            let ordered: Vec<Cell> = COLUMNS
-                .iter()
-                .map(|col| Cell::from(cells.remove(col).unwrap_or_default()))
-                .collect();
-            Row::new(ordered).style(style)
-        })
-        .collect();
+    pub fn confirm_search(&mut self) {
+        // Focus is handled by caller
+    }
 
-    let table = Table::new(rows, constraints)
-        .header(
-            Row::new(COLUMNS.iter().copied())
-                .style(
-                    Style::default()
-                        .fg(Theme::Muted)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .bottom_margin(0),
-        )
-        .column_spacing(2)
-        .row_highlight_style(
-            Style::default()
-                .fg(Theme::Text)
-                .bg(Theme::SurfaceAlt)
-                .add_modifier(Modifier::BOLD),
-        )
-        .block(Block::default().style(Style::default().bg(Theme::Panel)));
-    frame.render_stateful_widget(table, area, &mut state);
-    app.list.scroll_offset = state.offset();
+    pub fn cancel_search(
+        &mut self,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) {
+        self.search_filter.clear();
+        self.rebuild_display_rows(issues, story_children);
+    }
+
+    pub fn search_type_char(
+        &mut self,
+        ch: char,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) {
+        self.search_filter.push(ch);
+        self.selected_index = 0;
+        self.rebuild_display_rows(issues, story_children);
+    }
+
+    pub fn search_backspace(
+        &mut self,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) {
+        self.search_filter.pop();
+        self.selected_index = 0;
+        self.rebuild_display_rows(issues, story_children);
+    }
+
+    /// Build the flattened display rows from the current issues list.
+    pub fn rebuild_display_rows(
+        &mut self,
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) {
+        use std::collections::HashMap as StdMap;
+
+        let matching_indices: Option<HashSet<usize>> = if self.search_filter.is_empty() {
+            None
+        } else {
+            let query = self.search_filter.to_lowercase();
+            Some(
+                issues
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, issue)| {
+                        issue.key.to_lowercase().contains(&query)
+                            || issue
+                                .summary()
+                                .unwrap_or_default()
+                                .to_lowercase()
+                                .contains(&query)
+                            || issue
+                                .assignee()
+                                .map(|u| u.display_name.to_lowercase().contains(&query))
+                                .unwrap_or(false)
+                            || issue
+                                .status()
+                                .map(|s| s.name.to_lowercase().contains(&query))
+                                .unwrap_or(false)
+                    })
+                    .map(|(idx, _)| idx)
+                    .collect(),
+            )
+        };
+
+        let mut parent_groups: StdMap<String, (String, Vec<usize>)> = StdMap::new();
+        let mut standalone_indices: Vec<usize> = Vec::new();
+
+        for (idx, issue) in issues.iter().enumerate() {
+            if let Some(ref matching) = matching_indices {
+                if !matching.contains(&idx) {
+                    continue;
+                }
+            }
+            if let Some(parent) = issue.parent() {
+                let parent_key = parent.key.clone();
+                let parent_summary = parent.summary().unwrap_or_default();
+                let entry = parent_groups
+                    .entry(parent_key)
+                    .or_insert_with(|| (parent_summary, Vec::new()));
+                entry.1.push(idx);
+            } else {
+                standalone_indices.push(idx);
+            }
+        }
+
+        for (_, children) in parent_groups.values_mut() {
+            children.sort_by(|a, b| {
+                status_rank(&issues[*a])
+                    .cmp(&status_rank(&issues[*b]))
+                    .then_with(|| {
+                        issue_created_str(&issues[*b]).cmp(&issue_created_str(&issues[*a]))
+                    })
+            });
+        }
+
+        let parent_key_set: HashSet<String> = parent_groups.keys().cloned().collect();
+
+        enum TopLevel {
+            Standalone(usize),
+            StoryGroup {
+                key: String,
+                summary: String,
+                parent_issue_idx: Option<usize>,
+                children: Vec<usize>,
+            },
+        }
+
+        let mut top_levels: Vec<TopLevel> = Vec::new();
+        let mut emitted_parents: HashSet<String> = HashSet::new();
+
+        for &idx in &standalone_indices {
+            let issue_key = &issues[idx].key;
+            if parent_key_set.contains(issue_key) {
+                emitted_parents.insert(issue_key.clone());
+                let (_, children) = parent_groups.remove(issue_key.as_str()).unwrap();
+                top_levels.push(TopLevel::StoryGroup {
+                    key: issue_key.clone(),
+                    summary: issues[idx].summary().unwrap_or_default(),
+                    parent_issue_idx: Some(idx),
+                    children,
+                });
+            } else {
+                top_levels.push(TopLevel::Standalone(idx));
+            }
+        }
+
+        for (parent_key, (summary, children)) in parent_groups {
+            top_levels.push(TopLevel::StoryGroup {
+                key: parent_key,
+                summary,
+                parent_issue_idx: None,
+                children,
+            });
+        }
+
+        top_levels.sort_by(|a, b| {
+            let rank_a = top_level_status_rank(a, issues);
+            let rank_b = top_level_status_rank(b, issues);
+            rank_a
+                .cmp(&rank_b)
+                .then_with(|| top_level_created(b, issues).cmp(&top_level_created(a, issues)))
+        });
+
+        fn top_level_created(entry: &TopLevel, issues: &[Issue]) -> String {
+            match entry {
+                TopLevel::Standalone(idx) => issue_created_str(&issues[*idx]),
+                TopLevel::StoryGroup {
+                    parent_issue_idx,
+                    children,
+                    ..
+                } => {
+                    let parent_created =
+                        parent_issue_idx.map(|idx| issue_created_str(&issues[idx]));
+                    let child_max = children
+                        .iter()
+                        .map(|idx| issue_created_str(&issues[*idx]))
+                        .max();
+                    parent_created
+                        .into_iter()
+                        .chain(child_max)
+                        .max()
+                        .unwrap_or_default()
+                }
+            }
+        }
+
+        fn issue_created_str(issue: &Issue) -> String {
+            issue
+                .field::<String>("created")
+                .and_then(|r| r.ok())
+                .unwrap_or_default()
+        }
+
+        fn top_level_status_rank(entry: &TopLevel, issues: &[Issue]) -> u8 {
+            match entry {
+                TopLevel::Standalone(idx) => status_rank(&issues[*idx]),
+                TopLevel::StoryGroup {
+                    parent_issue_idx,
+                    children,
+                    ..
+                } => {
+                    let child_min = children
+                        .iter()
+                        .map(|idx| status_rank(&issues[*idx]))
+                        .min()
+                        .unwrap_or(u8::MAX);
+                    let parent_rank = parent_issue_idx
+                        .map(|idx| status_rank(&issues[idx]))
+                        .unwrap_or(u8::MAX);
+                    child_min.min(parent_rank)
+                }
+            }
+        }
+
+        let mut rows = Vec::new();
+        for entry in top_levels {
+            match entry {
+                TopLevel::Standalone(idx) => {
+                    let issue = &issues[idx];
+                    let issue_key = issue.key.clone();
+                    let expandable =
+                        is_expandable_type(issue) || story_children.contains_key(&issue_key);
+                    if expandable {
+                        if !story_children.contains_key(&issue_key)
+                            && !self.loading_children.contains(&issue_key)
+                        {
+                            self.collapsed_stories.insert(issue_key.clone());
+                        }
+                        let summary = issue.summary().unwrap_or_default();
+                        rows.push(DisplayRow::StoryHeader {
+                            key: issue_key.clone(),
+                            summary,
+                            depth: 0,
+                        });
+                        if !self.collapsed_stories.contains(&issue_key) {
+                            self.append_nested_children(&issue_key, 1, &mut rows, story_children);
+                        }
+                    } else {
+                        rows.push(DisplayRow::Issue {
+                            index: idx,
+                            depth: 0,
+                            child_of: None,
+                        });
+                    }
+                }
+                TopLevel::StoryGroup {
+                    key,
+                    summary,
+                    parent_issue_idx,
+                    children,
+                } => {
+                    rows.push(DisplayRow::StoryHeader {
+                        key: key.clone(),
+                        summary,
+                        depth: 0,
+                    });
+                    if !self.collapsed_stories.contains(&key) {
+                        if let Some(idx) = parent_issue_idx {
+                            let issue_key = &issues[idx].key;
+                            if *issue_key != key {
+                                rows.push(DisplayRow::Issue {
+                                    index: idx,
+                                    depth: 1,
+                                    child_of: None,
+                                });
+                            }
+                        }
+                        for child_idx in children {
+                            let child_issue = &issues[child_idx];
+                            let child_key = child_issue.key.clone();
+                            let expandable = is_expandable_type(child_issue)
+                                || story_children.contains_key(&child_key);
+                            if expandable {
+                                if !story_children.contains_key(&child_key)
+                                    && !self.loading_children.contains(&child_key)
+                                {
+                                    self.collapsed_stories.insert(child_key.clone());
+                                }
+                                let child_summary = child_issue.summary().unwrap_or_default();
+                                rows.push(DisplayRow::StoryHeader {
+                                    key: child_key.clone(),
+                                    summary: child_summary,
+                                    depth: 1,
+                                });
+                                if !self.collapsed_stories.contains(&child_key) {
+                                    self.append_nested_children(
+                                        &child_key,
+                                        2,
+                                        &mut rows,
+                                        story_children,
+                                    );
+                                }
+                            } else {
+                                rows.push(DisplayRow::Issue {
+                                    index: child_idx,
+                                    depth: 1,
+                                    child_of: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.display_rows = rows;
+        if !self.display_rows.is_empty() && self.selected_index >= self.display_rows.len() {
+            self.selected_index = self.display_rows.len() - 1;
+        }
+    }
+
+    /// Append children for a nested story header.
+    fn append_nested_children(
+        &self,
+        parent_key: &str,
+        depth: u8,
+        rows: &mut Vec<DisplayRow>,
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) {
+        if self.loading_children.contains(parent_key) {
+            rows.push(DisplayRow::Loading { depth });
+            return;
+        }
+        let Some(children) = story_children.get(parent_key) else {
+            rows.push(DisplayRow::Loading { depth });
+            return;
+        };
+        if children.is_empty() {
+            rows.push(DisplayRow::Empty { depth });
+            return;
+        }
+        for (idx, child) in children.iter().enumerate() {
+            let child_key = child.key.clone();
+            let expandable = is_expandable_type(child) || story_children.contains_key(&child_key);
+            if expandable {
+                let child_summary = child.summary().unwrap_or_default();
+                rows.push(DisplayRow::StoryHeader {
+                    key: child_key.clone(),
+                    summary: child_summary,
+                    depth,
+                });
+                if !self.collapsed_stories.contains(&child_key) {
+                    self.append_nested_children(&child_key, depth + 1, rows, story_children);
+                }
+            } else {
+                rows.push(DisplayRow::Issue {
+                    index: idx,
+                    depth,
+                    child_of: Some(parent_key.to_string()),
+                });
+            }
+        }
+    }
+
+    pub fn move_selection_down(&mut self) {
+        if self.display_rows.is_empty() {
+            self.selected_index = 0;
+            return;
+        }
+        let last = self.display_rows.len() - 1;
+        if self.selected_index < last {
+            self.selected_index += 1;
+        }
+        self.adjust_scroll_offset();
+    }
+
+    pub fn move_selection_up(&mut self) {
+        if self.selected_index == 0 {
+            return;
+        }
+        self.selected_index -= 1;
+        self.adjust_scroll_offset();
+    }
+
+    pub fn move_selection_to_end(&mut self) {
+        if self.display_rows.is_empty() {
+            return;
+        }
+        self.selected_index = self.display_rows.len() - 1;
+        self.adjust_scroll_offset();
+    }
+
+    pub fn move_selection_by(&mut self, delta: isize) {
+        if self.display_rows.is_empty() {
+            return;
+        }
+        let last = self.display_rows.len() - 1;
+        let new_index = (self.selected_index as isize + delta).clamp(0, last as isize) as usize;
+        self.selected_index = new_index;
+        self.adjust_scroll_offset();
+    }
+
+    pub fn scroll_viewport(&mut self, delta: isize) {
+        if self.display_rows.is_empty() {
+            return;
+        }
+        let height = self.area_height as usize;
+        let max_offset = self.display_rows.len().saturating_sub(height);
+        let new_offset =
+            (self.scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
+        self.scroll_offset = new_offset;
+
+        let last = self.display_rows.len() - 1;
+        if self.selected_index < new_offset {
+            self.selected_index = new_offset;
+        } else if self.selected_index >= new_offset + height {
+            self.selected_index = (new_offset + height - 1).min(last);
+        }
+    }
+
+    pub fn adjust_scroll_offset(&mut self) {
+        let height = self.area_height as usize;
+        if height == 0 || self.display_rows.is_empty() {
+            return;
+        }
+
+        let margin = SCROLL_OFF.min(height / 2);
+        let selected = self.selected_index;
+        let offset = self.scroll_offset;
+
+        if selected < offset + margin {
+            self.scroll_offset = selected.saturating_sub(margin);
+        }
+
+        if selected + margin >= offset + height {
+            self.scroll_offset = (selected + margin + 1).saturating_sub(height);
+        }
+
+        let max_offset = self.display_rows.len().saturating_sub(height);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    pub fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        ctx: &ListRenderContext,
+    ) {
+        self.area_height = area.height.saturating_sub(1);
+
+        let row_data: Vec<(CellMap, Style)> = self
+            .display_rows
+            .iter()
+            .enumerate()
+            .map(|(row_idx, display_row)| match display_row {
+                DisplayRow::StoryHeader {
+                    key,
+                    summary,
+                    depth,
+                } => {
+                    let collapsed = self.collapsed_stories.contains(key);
+                    let has_pending_import = self.pending_import_keys.contains(key);
+                    story_header_row(key, summary, row_idx, collapsed, *depth, has_pending_import)
+                }
+                DisplayRow::Issue {
+                    index,
+                    depth,
+                    child_of,
+                } => {
+                    let issue = match child_of {
+                        Some(parent_key) => &ctx.story_children[parent_key][*index],
+                        None => &ctx.issues[*index],
+                    };
+                    issue_row(ctx, &self.pending_import_keys, issue, row_idx, *depth)
+                }
+                DisplayRow::InlineNew { depth } => inline_new_row(ctx.inline_new, row_idx, *depth),
+                DisplayRow::Loading { depth } => {
+                    loading_row(ctx.animation.spinner_tick, row_idx, *depth)
+                }
+                DisplayRow::Empty { depth } => empty_row(row_idx, *depth),
+            })
+            .collect();
+
+        let constraints = [
+            Constraint::Length(max_col_width(&row_data, "Key").min(16)),
+            Constraint::Min(10),
+            Constraint::Length(max_col_width(&row_data, "PR").min(8)),
+            Constraint::Length(max_col_width(&row_data, "CI").min(14)),
+            Constraint::Length(max_col_width(&row_data, "Status").min(14)),
+            Constraint::Length(max_col_width(&row_data, "Assignee").min(20)),
+            Constraint::Length(max_col_width(&row_data, "Repo").min(24)),
+        ];
+
+        let mut state = TableState::default()
+            .with_offset(self.scroll_offset)
+            .with_selected(Some(self.selected_index));
+
+        let rows: Vec<Row> = row_data
+            .into_iter()
+            .map(|(mut cells, style)| {
+                let ordered: Vec<Cell> = COLUMNS
+                    .iter()
+                    .map(|col| Cell::from(cells.remove(col).unwrap_or_default()))
+                    .collect();
+                Row::new(ordered).style(style)
+            })
+            .collect();
+
+        let table = Table::new(rows, constraints)
+            .header(
+                Row::new(COLUMNS.iter().copied())
+                    .style(
+                        Style::default()
+                            .fg(Theme::Muted)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .bottom_margin(0),
+            )
+            .column_spacing(2)
+            .row_highlight_style(
+                Style::default()
+                    .fg(Theme::Text)
+                    .bg(Theme::SurfaceAlt)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(Block::default().style(Style::default().bg(Theme::Panel)));
+        frame.render_stateful_widget(table, area, &mut state);
+        self.scroll_offset = state.offset();
+    }
 }
 
-pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
+pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
     match app.input_focus {
         crate::app::InputFocus::List => {
-            let previous_was_g = matches!(
-                app.previous_key,
-                Some(KeyEvent {
-                    code: KeyCode::Char('g'),
-                    ..
-                })
-            );
+            let previous_was_g = app.previous_key == Some(KeyCode::Char('g'));
 
             if key_event.modifiers.contains(KeyModifiers::CONTROL) {
                 match key_event.code {
                     KeyCode::Char('d') | KeyCode::Char('D') => {
-                        move_selection_by(app, app.list.area_height as isize / 2);
+                        app.list
+                            .move_selection_by(app.list.area_height as isize / 2);
+                        app.prefetch_selected_pr_detail();
                     }
                     KeyCode::Char('u') | KeyCode::Char('U') => {
-                        move_selection_by(app, -(app.list.area_height as isize / 2));
+                        app.list
+                            .move_selection_by(-(app.list.area_height as isize / 2));
+                        app.prefetch_selected_pr_detail();
                     }
                     _ => {}
                 }
@@ -177,75 +884,114 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
             match key_event.code {
                 KeyCode::Char(c) => {
                     if previous_was_g && c == 'g' {
-                        app.selected_index = 0;
-                        adjust_scroll_offset(app);
+                        app.list.selected_index = 0;
+                        app.list.adjust_scroll_offset();
+                        app.prefetch_selected_pr_detail();
                         return;
                     }
 
                     match c {
-                        'b' => app.spawn_branch_diff(),
-                        'j' => move_selection_down(app),
-                        'k' => move_selection_up(app),
-                        'G' => move_selection_to_end(app),
-                        'g' => {}
-                        'p' => app.spawn_pick_up(),
-                        'o' => match app.open_selected_pr_in_browser().await {
+                        'b' => spawn_branch_diff(app),
+                        'j' => {
+                            app.list.move_selection_down();
+                            app.prefetch_selected_pr_detail();
+                        }
+                        'k' => {
+                            app.list.move_selection_up();
+                            app.prefetch_selected_pr_detail();
+                        }
+                        'G' => {
+                            app.list.move_selection_to_end();
+                            app.prefetch_selected_pr_detail();
+                        }
+                        'p' => spawn_pick_up(app),
+                        'o' => match open_selected_pr_in_browser(app).await {
                             Ok(_) => {}
                             Err(err) => app.status_bar.set_error(format!("{err}")),
                         },
-                        't' => match app.open_selected_issue_in_browser().await {
+                        't' => match open_selected_issue_in_browser(app).await {
                             Ok(_) => {}
                             Err(err) => app
                                 .status_bar
                                 .set_error(format!("Failed to open issue: {err}")),
                         },
                         'n' => {
-                            app.start_inline_new();
+                            let project_key = derive_project_key(app);
+                            app.list.start_inline_new(project_key);
+                            app.input_focus = crate::app::InputFocus::InlineNew;
                         }
-                        'a' => app.open_label_picker(),
+                        'a' => open_label_picker(app),
                         'r' => {
                             app.loading = true;
                             app.spawn_refresh();
                         }
-                        's' => app.spawn_toggle_story_type(),
-                        'f' => app.spawn_finish(),
-                        '/' => app.start_search(),
-                        'V' => app.spawn_approve_merge(),
-                        'c' => app.open_ci_log_popup(),
-                        'e' => app.spawn_openspec_propose(),
-                        'i' => app.open_import_tasks_popup(),
+                        's' => spawn_toggle_story_type(app),
+                        'f' => spawn_finish(app),
+                        '/' => {
+                            app.list.start_search();
+                            app.input_focus = crate::app::InputFocus::Search;
+                        }
+                        'V' => spawn_approve_merge(app),
+                        'c' => open_ci_log_popup(app),
+                        'e' => spawn_openspec_propose(app),
+                        'i' => open_import_tasks_popup(app),
                         'h' => {
-                            app.collapse_story();
+                            app.list.collapse_story(&app.issues, &app.story_children);
                         }
                         'l' => {
-                            app.expand_story();
+                            if let Some(key) =
+                                app.list.expand_story(&app.issues, &app.story_children)
+                            {
+                                app.spawn_fetch_children(&key);
+                            }
                         }
                         ' ' => {
-                            app.toggle_story_collapse();
+                            if let Some(key) = app
+                                .list
+                                .toggle_story_collapse(&app.issues, &app.story_children)
+                            {
+                                app.spawn_fetch_children(&key);
+                            }
                         }
                         _ => {}
                     }
                 }
                 KeyCode::Esc => {
-                    if !app.search_filter.is_empty() {
-                        app.cancel_search();
+                    if !app.list.search_filter.is_empty() {
+                        app.list.cancel_search(&app.issues, &app.story_children);
+                        app.input_focus = crate::app::InputFocus::List;
                     }
                 }
-                KeyCode::Down => move_selection_down(app),
-                KeyCode::Up => move_selection_up(app),
+                KeyCode::Down => {
+                    app.list.move_selection_down();
+                    app.prefetch_selected_pr_detail();
+                }
+                KeyCode::Up => {
+                    app.list.move_selection_up();
+                    app.prefetch_selected_pr_detail();
+                }
                 _ => {}
             }
         }
         crate::app::InputFocus::Search => match key_event.code {
-            KeyCode::Esc => app.cancel_search(),
-            KeyCode::Enter => app.confirm_search(),
-            KeyCode::Backspace => app.search_backspace(),
+            KeyCode::Esc => {
+                app.list.cancel_search(&app.issues, &app.story_children);
+                app.input_focus = crate::app::InputFocus::List;
+            }
+            KeyCode::Enter => {
+                app.list.confirm_search();
+                app.input_focus = crate::app::InputFocus::List;
+            }
+            KeyCode::Backspace => {
+                app.list.search_backspace(&app.issues, &app.story_children);
+            }
             KeyCode::Char(c) => {
                 if !key_event
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 {
-                    app.search_type_char(c);
+                    app.list
+                        .search_type_char(c, &app.issues, &app.story_children);
                 }
             }
             _ => {}
@@ -254,7 +1000,7 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
             if key_event.modifiers.contains(KeyModifiers::CONTROL) {
                 match key_event.code {
                     KeyCode::Char('s') | KeyCode::Char('S') => {
-                        app.spawn_submit_inline_new();
+                        spawn_submit_inline_new(app);
                         return;
                     }
                     _ => {}
@@ -262,12 +1008,15 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
             }
 
             match key_event.code {
-                KeyCode::Esc => app.cancel_inline_new(),
+                KeyCode::Esc => {
+                    app.list.cancel_inline_new();
+                    app.input_focus = crate::app::InputFocus::List;
+                }
                 KeyCode::Enter => {
-                    app.spawn_submit_inline_new();
+                    spawn_submit_inline_new(app);
                 }
                 KeyCode::Backspace => {
-                    if let Some(state) = app.inline_new.as_mut() {
+                    if let Some(state) = app.list.inline_new.as_mut() {
                         state.summary.pop();
                     }
                 }
@@ -276,7 +1025,7 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     {
-                        if let Some(state) = app.inline_new.as_mut() {
+                        if let Some(state) = app.list.inline_new.as_mut() {
                             state.summary.push(c);
                         }
                     }
@@ -288,89 +1037,373 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
     }
 }
 
+/// Spawn pick-up issue in background.
+fn spawn_pick_up(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let issue_summary = issue.summary().unwrap_or_default();
+    let issue_description = issue.description().unwrap_or_default();
+    let repo_path = match app.repo_matches(issue).first() {
+        Some(entry) => entry.path.clone(),
+        None => {
+            app.status_bar
+                .set_warning(format!("Cannot pick up {issue_key}: no linked repo"));
+            return;
+        }
+    };
+
+    actions::pick_up::spawn(
+        app.message_tx.clone(),
+        app.client.clone(),
+        issue_key,
+        issue_summary,
+        issue_description,
+        repo_path,
+        app.my_account_id.clone(),
+    );
+}
+
+/// Spawn branch diff in background.
+fn spawn_branch_diff(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let repo_path = match app.repo_matches(issue).first() {
+        Some(entry) => entry.path.clone(),
+        None => {
+            app.status_bar
+                .set_warning(format!("Cannot open diff for {issue_key}: no linked repo"));
+            return;
+        }
+    };
+
+    actions::branch_diff::spawn(app.message_tx.clone(), issue_key, repo_path);
+}
+
+/// Spawn approve + auto-merge for the selected issue's PR.
+fn spawn_approve_merge(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let Some(pr) = app.github_prs.get(&issue_key) else {
+        app.status_bar
+            .set_warning(format!("No PR found for {issue_key}"));
+        return;
+    };
+
+    actions::approve_merge::spawn(app.message_tx.clone(), pr.repo_slug.clone(), pr.number);
+}
+
+/// Spawn finish workflow in background.
+fn spawn_finish(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let issue_summary = issue.summary().unwrap_or_default();
+    let repo_path = match app.repo_matches(issue).first() {
+        Some(entry) => entry.path.clone(),
+        None => {
+            app.status_bar
+                .set_warning(format!("Cannot finish {issue_key}: no linked repo"));
+            return;
+        }
+    };
+
+    actions::finish::spawn(
+        app.message_tx.clone(),
+        app.client.clone(),
+        issue_key,
+        issue_summary,
+        repo_path,
+    );
+}
+
+/// Spawn issue type toggle: Task → Story, or Story → Task if it has no children.
+fn spawn_toggle_story_type(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_type_name = issue
+        .issue_type()
+        .map(|t| t.name.to_lowercase())
+        .unwrap_or_default();
+    let issue_key = issue.key.clone();
+
+    if issue_type_name.contains("story") || issue_type_name.contains("epic") {
+        let has_children = app
+            .story_children
+            .get(&issue_key)
+            .map(|children| !children.is_empty())
+            .unwrap_or(false);
+        if has_children {
+            app.status_bar
+                .set_warning(format!("{issue_key} has children — remove them first"));
+            return;
+        }
+        actions::convert_to_story::spawn(
+            app.message_tx.clone(),
+            app.client.clone(),
+            issue_key,
+            "Task",
+        );
+        return;
+    }
+
+    actions::convert_to_story::spawn(
+        app.message_tx.clone(),
+        app.client.clone(),
+        issue_key,
+        "Story",
+    );
+}
+
+/// Spawn inline new issue creation in background.
+fn spawn_submit_inline_new(app: &mut AppView) {
+    let Some(state) = app.list.inline_new.take() else {
+        return;
+    };
+    let summary = state.summary.trim().to_string();
+    if summary.is_empty() {
+        app.list.remove_inline_row(state.row_index);
+        app.input_focus = InputFocus::List;
+        app.status_bar.set_warning("Summary cannot be empty");
+        return;
+    }
+
+    app.input_focus = InputFocus::List;
+    actions::create_inline_issue::spawn(
+        app.message_tx.clone(),
+        app.client.clone(),
+        app.config.jira.jira_jql.clone(),
+        state.project_key,
+        summary,
+        state.parent_key,
+    );
+}
+
+fn derive_project_key(app: &AppView) -> String {
+    if let Some(cap) = app
+        .config
+        .jira
+        .jira_jql
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(3)
+        .find(|window| window[0].eq_ignore_ascii_case("project") && window[1] == "=")
+    {
+        return cap[2].trim_matches('"').to_string();
+    }
+
+    if let Some(project_key) = app
+        .list
+        .selected_issue(&app.issues, &app.story_children)
+        .and_then(|issue| issue.project())
+        .map(|project| project.key)
+    {
+        return project_key;
+    }
+
+    app.issues
+        .first()
+        .and_then(|issue| issue.project())
+        .map(|project| project.key)
+        .unwrap_or_else(|| "WORK".to_string())
+}
+
+fn open_label_picker(app: &mut AppView) {
+    app.reload_repo_entries();
+    if app.repo_entries.is_empty() {
+        if app.repo_error.is_none() {
+            app.status_bar
+                .set_warning("No repositories found in REPOS_DIR");
+        }
+        return;
+    }
+    app.label_picker = Some(LabelPickerView::open());
+    app.input_focus = InputFocus::LabelPicker;
+}
+
+fn open_ci_log_popup(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        app.status_bar.set_warning("No issue selected");
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let Some(pr) = app.github_prs.get(&issue_key) else {
+        app.status_bar.set_warning("No linked PR");
+        return;
+    };
+    if pr.check_runs.is_empty() {
+        app.status_bar.set_warning("No CI checks");
+        return;
+    }
+    app.ci_log_popup.open();
+    app.input_focus = InputFocus::CiLogPopup;
+    spawn_ci_log_fetch(app, &issue_key);
+}
+
+/// Spawn CI log fetch if logs aren't already cached or in-flight.
+fn spawn_ci_log_fetch(app: &mut AppView, issue_key: &str) {
+    let Some(pr) = app.github_prs.get(issue_key) else {
+        return;
+    };
+    if !app.ci_log_popup.start_loading(issue_key) {
+        return;
+    }
+    actions::fetch_ci_logs::spawn(
+        app.message_tx.clone(),
+        issue_key.to_string(),
+        pr.repo_slug.clone(),
+        pr.check_runs.clone(),
+    );
+}
+
+/// Scan openspec changes for pending import tasks.
+fn open_import_tasks_popup(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let issue_type_name = issue
+        .issue_type()
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+    let project_key = derive_project_key(app);
+
+    let tasks_path = match actions::import_tasks::find_tasks_json(&app.config.repos_dir, &issue_key)
+    {
+        Ok(path) => path,
+        Err(err) => {
+            app.status_bar.set_error(format!("{err}"));
+            return;
+        }
+    };
+
+    let tasks = match actions::import_tasks::load_tasks(&tasks_path) {
+        Ok(tasks) => tasks,
+        Err(err) => {
+            app.status_bar.set_error(format!("{err}"));
+            return;
+        }
+    };
+
+    let pending_count = tasks.iter().filter(|t| t.key.is_none()).count();
+    if pending_count == 0 {
+        app.status_bar.set_warning("All tasks already imported");
+        return;
+    }
+
+    app.import_tasks_popup = Some(ImportTasksView {
+        tasks,
+        tasks_path,
+        issue_key,
+        issue_type_name,
+        project_key,
+        scroll: 0,
+    });
+    app.input_focus = InputFocus::ImportTasksPopup;
+}
+
+/// Open an opencode session to propose an openspec change for the selected issue.
+fn spawn_openspec_propose(app: &mut AppView) {
+    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let issue_summary = issue.summary().unwrap_or_default();
+    let issue_description = issue.description().unwrap_or_default();
+
+    let repo_slugs: Vec<String> = app
+        .repo_matches(issue)
+        .iter()
+        .filter_map(|entry| entry.github_slug.clone())
+        .collect();
+
+    let mut parent_stories = Vec::new();
+    let mut current_issue = app
+        .list
+        .selected_issue(&app.issues, &app.story_children)
+        .cloned();
+    while let Some(parent) = current_issue.as_ref().and_then(|i| i.parent()) {
+        parent_stories.push(actions::openspec_propose::StoryContext {
+            summary: parent.summary().unwrap_or_default(),
+            description: parent.description().unwrap_or_default(),
+        });
+        current_issue = Some(parent);
+    }
+
+    actions::openspec_propose::spawn(
+        app.message_tx.clone(),
+        app.config.repos_dir.clone(),
+        issue_key,
+        issue_summary,
+        issue_description,
+        parent_stories,
+        repo_slugs,
+    );
+}
+
+async fn open_selected_issue_in_browser(app: &mut AppView) -> Result<()> {
+    let issue_key = match app.list.selected_issue(&app.issues, &app.story_children) {
+        Some(issue) => issue.key.clone(),
+        None => return Err(eyre!("No issue selected")),
+    };
+
+    let url = format!("{}/browse/{}", app.config.jira.jira_url, issue_key);
+    open_url_in_browser(&url).await?;
+    Ok(())
+}
+
+async fn open_selected_pr_in_browser(app: &mut AppView) -> Result<()> {
+    let issue_key = match app.list.selected_issue(&app.issues, &app.story_children) {
+        Some(issue) => issue.key.clone(),
+        None => return Err(eyre!("No issue selected")),
+    };
+
+    let pr = app
+        .github_prs
+        .get(&issue_key)
+        .ok_or_else(|| eyre!("No PR found for {issue_key}"))?;
+
+    let url = pr.url.clone();
+    open_url_in_browser(&url).await?;
+    Ok(())
+}
+
+async fn open_url_in_browser(url: &str) -> Result<()> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg("start").arg("").arg(url);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    let output = command.output().await?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        return Err(eyre!("Failed to open browser"));
+    }
+
+    Err(eyre!(stderr))
+}
+
 pub const SCROLL_OFF: usize = 3;
-
-pub fn adjust_scroll_offset(app: &mut AppView) {
-    let height = app.list.area_height as usize;
-    if height == 0 || app.display_rows.is_empty() {
-        app.prefetch_selected_pr_detail();
-        return;
-    }
-
-    let margin = SCROLL_OFF.min(height / 2);
-    let selected = app.selected_index;
-    let offset = app.list.scroll_offset;
-
-    if selected < offset + margin {
-        app.list.scroll_offset = selected.saturating_sub(margin);
-    }
-
-    if selected + margin >= offset + height {
-        app.list.scroll_offset = (selected + margin + 1).saturating_sub(height);
-    }
-
-    let max_offset = app.display_rows.len().saturating_sub(height);
-    app.list.scroll_offset = app.list.scroll_offset.min(max_offset);
-    app.prefetch_selected_pr_detail();
-}
-
-pub fn move_selection_down(app: &mut AppView) {
-    if app.display_rows.is_empty() {
-        app.selected_index = 0;
-        return;
-    }
-    let last = app.display_rows.len() - 1;
-    if app.selected_index < last {
-        app.selected_index += 1;
-    }
-    adjust_scroll_offset(app);
-}
-
-pub fn move_selection_up(app: &mut AppView) {
-    if app.selected_index == 0 {
-        return;
-    }
-    app.selected_index -= 1;
-    adjust_scroll_offset(app);
-}
-
-pub fn move_selection_to_end(app: &mut AppView) {
-    if app.display_rows.is_empty() {
-        return;
-    }
-    app.selected_index = app.display_rows.len() - 1;
-    adjust_scroll_offset(app);
-}
-
-pub fn move_selection_by(app: &mut AppView, delta: isize) {
-    if app.display_rows.is_empty() {
-        return;
-    }
-    let last = app.display_rows.len() - 1;
-    let new_index = (app.selected_index as isize + delta).clamp(0, last as isize) as usize;
-    app.selected_index = new_index;
-    adjust_scroll_offset(app);
-}
-
-pub fn scroll_viewport(app: &mut AppView, delta: isize) {
-    if app.display_rows.is_empty() {
-        app.prefetch_selected_pr_detail();
-        return;
-    }
-    let height = app.list.area_height as usize;
-    let max_offset = app.display_rows.len().saturating_sub(height);
-    let new_offset =
-        (app.list.scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
-    app.list.scroll_offset = new_offset;
-
-    let last = app.display_rows.len() - 1;
-    if app.selected_index < new_offset {
-        app.selected_index = new_offset;
-    } else if app.selected_index >= new_offset + height {
-        app.selected_index = (new_offset + height - 1).min(last);
-    }
-    app.prefetch_selected_pr_detail();
-}
 
 fn story_header_row(
     key: &str,
@@ -476,18 +1509,19 @@ fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
     (cells, row_style)
 }
 
-fn issue_row(app: &AppView, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
+fn issue_row(
+    ctx: &ListRenderContext,
+    pending_import_keys: &HashSet<String>,
+    issue: &Issue,
+    _idx: usize,
+    depth: u8,
+) -> (CellMap<'static>, Style) {
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
     let status_style = status_color(&status_name);
     let assignee = issue.assignee().map(|u| u.display_name).unwrap_or_default();
-    let is_active = app.active_branches.contains_key(&issue.key);
-    let repos = app
-        .repo_matches(issue)
-        .into_iter()
-        .map(|entry| entry.label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let is_active = ctx.active_branches.contains_key(&issue.key);
+    let repos = repo_labels_for_issue(ctx.repo_entries, issue);
     let summary = issue
         .summary()
         .unwrap_or_default()
@@ -503,7 +1537,7 @@ fn issue_row(app: &AppView, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'
         String::new()
     };
 
-    let has_pending_import = app.pending_import_keys.contains(&issue.key);
+    let has_pending_import = pending_import_keys.contains(&issue.key);
     let key_line = if has_pending_import {
         Line::from(vec![
             Span::styled(
@@ -557,7 +1591,7 @@ fn issue_row(app: &AppView, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'
         ),
     ]);
 
-    if let Some(pr) = app.github_prs.get(&issue.key) {
+    if let Some(pr) = ctx.github_prs.get(&issue.key) {
         let pr_color = if pr.is_draft {
             Theme::Muted
         } else {
@@ -582,12 +1616,12 @@ fn issue_row(app: &AppView, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'
             ci_spans.push(Span::styled(icon, Style::default().fg(color)));
         }
         if pr.checks == CheckStatus::Pending {
-            let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
+            let spinner = SPINNER_FRAMES[ctx.animation.spinner_tick % SPINNER_FRAMES.len()];
             ci_spans.push(Span::styled(
                 format!(" {spinner}"),
                 Style::default().fg(Theme::Warning),
             ));
-            if let Some(eta) = app.pr_eta(pr) {
+            if let Some(eta) = pr_eta(ctx.check_durations, pr) {
                 ci_spans.push(Span::styled(
                     format!(" {eta}"),
                     Style::default().fg(Theme::Muted),
@@ -598,4 +1632,90 @@ fn issue_row(app: &AppView, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'
     }
 
     (cells, row_style)
+}
+
+fn repo_labels_for_issue(repo_entries: &[RepoEntry], issue: &Issue) -> String {
+    if repo_entries.is_empty() {
+        return String::new();
+    }
+    let labels = issue.labels();
+    if labels.is_empty() {
+        return String::new();
+    }
+    let normalized: HashSet<String> = labels
+        .iter()
+        .map(|label| crate::repos::normalize_label(label))
+        .collect();
+    repo_entries
+        .iter()
+        .filter(|entry| normalized.contains(&entry.normalized))
+        .map(|entry| entry.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Compute the ETA string for a PR's pending checks.
+fn pr_eta(check_durations: &HashMap<String, u64>, pr: &PrInfo) -> Option<String> {
+    let pending_runs: Vec<_> = pr
+        .check_runs
+        .iter()
+        .filter(|r| r.status == CheckStatus::Pending)
+        .collect();
+    if pending_runs.is_empty() {
+        return None;
+    }
+    let mut max_remaining: Option<u64> = None;
+    for run in &pending_runs {
+        let cache_key = format!("{}/{}", pr.repo_slug, run.name);
+        let Some(&historical) = check_durations.get(&cache_key) else {
+            continue;
+        };
+        let elapsed = run
+            .started_at
+            .as_deref()
+            .and_then(crate::utils::time::elapsed_since_iso)
+            .unwrap_or(0);
+        let remaining = historical.saturating_sub(elapsed);
+        max_remaining = Some(max_remaining.map_or(remaining, |cur: u64| cur.max(remaining)));
+    }
+    max_remaining.map(|r| format!("~{}", crate::utils::time::format_duration(r)))
+}
+
+/// Returns true if the issue type suggests this issue can contain child issues.
+pub(crate) fn is_expandable_type(issue: &Issue) -> bool {
+    let type_name = issue
+        .issue_type()
+        .map(|ty| ty.name)
+        .unwrap_or_default()
+        .to_lowercase();
+    type_name.contains("story") || type_name.contains("epic")
+}
+
+/// Numeric rank for sorting issues by status.
+fn status_rank(issue: &Issue) -> u8 {
+    const ORDER: &[&str] = &["review", "progress", "rejected", "plan", "proposed"];
+    let name = issue
+        .status()
+        .map(|s| s.name)
+        .unwrap_or_default()
+        .to_lowercase();
+    ORDER
+        .iter()
+        .position(|&keyword| name.contains(keyword))
+        .map(|i| i as u8)
+        .unwrap_or(ORDER.len() as u8)
+}
+
+/// Look up an issue by key across all issue sources.
+pub fn find_issue_by_key<'a>(
+    issues: &'a [Issue],
+    story_children: &'a HashMap<String, Vec<Issue>>,
+    key: &str,
+) -> Option<&'a Issue> {
+    issues.iter().find(|issue| issue.key == key).or_else(|| {
+        story_children
+            .values()
+            .flat_map(|children| children.iter())
+            .find(|issue| issue.key == key)
+    })
 }

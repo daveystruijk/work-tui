@@ -63,28 +63,75 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
         .constraints([Constraint::Min(1), Constraint::Length(44)])
         .split(area);
 
-    // Vertical split on the list column only: list area | footer
-    let footer_height = status_bar::footer_height(app);
+    // Compute footer height from copied/cloned values to avoid borrow overlap
+    let input_focus = app.input_focus;
+    let search_filter = app.list.search_filter.clone();
+    let display_row_count = app.list.display_rows.len();
+    let spinner_tick = app.animation.spinner_tick;
+
+    let status_bar_ctx = status_bar::StatusBarRenderContext {
+        input_focus,
+        search_filter: &search_filter,
+        display_row_count,
+        running_tasks: &app.running_tasks,
+        spinner_tick,
+    };
+
+    let footer_height = app.status_bar.footer_height(&status_bar_ctx);
     let list_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
         .split(columns[0]);
 
-    list::render(app, frame, list_chunks[0]);
+    // Render list — take out to avoid borrow conflict, then put back
+    let inline_new_clone = app.list.inline_new.clone();
+    let list_ctx = list::ListRenderContext {
+        issues: &app.issues,
+        story_children: &app.story_children,
+        github_prs: &app.github_prs,
+        active_branches: &app.active_branches,
+        repo_entries: &app.repo_entries,
+        check_durations: &app.check_durations,
+        animation: &app.animation,
+        inline_new: inline_new_clone.as_ref(),
+    };
+    app.list.render(frame, list_chunks[0], &list_ctx);
 
+    // Render status bar
     if footer_height > 0 {
-        status_bar::render(app, frame, list_chunks[1]);
+        let status_bar_ctx = status_bar::StatusBarRenderContext {
+            input_focus,
+            search_filter: &search_filter,
+            display_row_count,
+            running_tasks: &app.running_tasks,
+            spinner_tick,
+        };
+        app.status_bar
+            .render(frame, list_chunks[1], &status_bar_ctx);
     }
 
-    // Sidebar gets the full height (no footer)
-    sidebar::render(app, frame, columns[1]);
+    // Sidebar
+    let sidebar_ctx = sidebar::SidebarRenderContext { app };
+    app.sidebar.render(frame, columns[1], &sidebar_ctx);
 
     // Popup overlays
     use crate::app::InputFocus;
     match app.input_focus {
-        InputFocus::ImportTasksPopup => import_tasks::render(app, frame),
-        InputFocus::CiLogPopup => ci_logs::render(app, frame),
-        InputFocus::LabelPicker => label_picker::render(app, frame),
+        InputFocus::ImportTasksPopup => {
+            if let Some(popup) = &app.import_tasks_popup {
+                popup.render(frame);
+            }
+        }
+        InputFocus::CiLogPopup => {
+            let mut ci_log = std::mem::take(&mut app.ci_log_popup);
+            ci_log.render(frame, app);
+            app.ci_log_popup = ci_log;
+        }
+        InputFocus::LabelPicker => {
+            if let Some(picker) = &app.label_picker {
+                picker.render(frame, &app.repo_entries);
+            }
+        }
         _ => {}
     }
 }

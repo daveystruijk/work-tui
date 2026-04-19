@@ -27,7 +27,6 @@ pub fn test_app() -> AppView {
         should_quit: false,
         input_focus: crate::app::InputFocus::default(),
         issues: Vec::new(),
-        selected_index: 0,
         config: app_config,
         repo_entries: Vec::new(),
         repo_error: None,
@@ -38,16 +37,10 @@ pub fn test_app() -> AppView {
         client,
         my_account_id: String::new(),
         current_branch: String::new(),
-        previous_key: None,
         active_branches: Default::default(),
         github_statuses: Default::default(),
         github_loading: false,
         animation: UiAnimationView::default(),
-        latest_activity: Default::default(),
-        display_rows: Vec::new(),
-        inline_new: None,
-        search_filter: String::new(),
-        collapsed_stories: Default::default(),
         story_children: Default::default(),
         sidebar: SidebarView::default(),
         github_prs: Default::default(),
@@ -57,15 +50,15 @@ pub fn test_app() -> AppView {
         message_rx,
         last_ci_refresh: std::time::Instant::now(),
         ci_log_popup: CiLogsView::default(),
+        previous_key: None,
         import_tasks_popup: None,
-        pending_import_keys: Default::default(),
     }
 }
 
 pub fn selected_issue_app() -> AppView {
     let mut app = test_app();
     app.issues.push(test_issue());
-    app.display_rows.push(DisplayRow::Issue {
+    app.list.display_rows.push(DisplayRow::Issue {
         index: 0,
         depth: 0,
         child_of: None,
