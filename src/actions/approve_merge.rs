@@ -1,16 +1,16 @@
 //! **Approve & Auto-Merge** — approves a PR and enables auto-merge (squash).
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::ApproveAutoMerged`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::ApproveAutoMerged`]
 
 use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 
-pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_number: u64) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, repo_slug: String, pr_number: u64) {
     super::spawn_action(tx, "Approving & merging", move |tx| async move {
         let result: color_eyre::Result<u64> = async {
             let pr_number_string = pr_number.to_string();
@@ -69,6 +69,6 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repo_slug: String, pr_num
             Ok(pr_number)
         }
         .await;
-        let _ = tx.send(ActionMessage::ApproveAutoMerged(result));
+        let _ = tx.send(Message::ApproveAutoMerged(result));
     });
 }

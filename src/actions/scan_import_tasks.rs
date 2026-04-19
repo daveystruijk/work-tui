@@ -5,7 +5,7 @@
 //! directory names that have at least one task entry without a `"key"` field.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::PendingImportKeys`]
+//! - [`Message::PendingImportKeys`]
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -13,7 +13,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 
 use super::import_tasks::TaskEntry;
-use super::ActionMessage;
+use super::Message;
 
 /// Scan all tasks.json files and return issue keys with pending imports.
 pub fn scan(repos_dir: &Path) -> HashSet<String> {
@@ -76,11 +76,11 @@ fn extract_issue_key(dir_name: &str) -> String {
 }
 
 /// Spawn the scan as a background task.
-pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, repos_dir: std::path::PathBuf) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, repos_dir: std::path::PathBuf) {
     super::spawn_action(tx, "Scanning import tasks", |tx| async move {
         let keys = tokio::task::spawn_blocking(move || scan(&repos_dir))
             .await
             .unwrap_or_default();
-        let _ = tx.send(ActionMessage::PendingImportKeys(keys));
+        let _ = tx.send(Message::PendingImportKeys(keys));
     });
 }

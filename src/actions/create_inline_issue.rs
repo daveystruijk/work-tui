@@ -5,8 +5,8 @@
 //! linked as a child.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::Progress`]
-//! - [`ActionMessage::InlineCreated`]
+//! - [`Message::Progress`]
+//! - [`Message::InlineCreated`]
 
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use color_eyre::eyre::eyre;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use super::ActionMessage;
+use super::Message;
 use crate::actions::Progress;
 use crate::apis::jira::Issue;
 use crate::apis::jira::JiraClient;
@@ -26,7 +26,7 @@ struct RunResult {
 
 /// Spawn inline issue creation.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
     jql: String,
     project_key: String,
@@ -34,7 +34,7 @@ pub fn spawn(
     parent_key: Option<String>,
 ) {
     super::spawn_action(tx, "Creating issue", |tx| async move {
-        let _ = tx.send(ActionMessage::Progress(Progress {
+        let _ = tx.send(Message::Progress(Progress {
             action: "create_inline_issue",
             message: "Creating issue...".into(),
             current: 1,
@@ -78,7 +78,7 @@ pub fn spawn(
                 }
 
                 if attempt < 5 {
-                    let _ = tx.send(ActionMessage::Progress(Progress {
+                    let _ = tx.send(Message::Progress(Progress {
                         action: "create_inline_issue",
                         message: format!("Waiting for Jira to index {created_key}..."),
                         current: attempt + 2,
@@ -97,12 +97,12 @@ pub fn spawn(
         match result {
             Ok(run_result) => {
                 if let Some(issues) = run_result.refreshed_issues {
-                    let _ = tx.send(ActionMessage::Issues(Ok(issues)));
+                    let _ = tx.send(Message::Issues(Ok(issues)));
                 }
-                let _ = tx.send(ActionMessage::InlineCreated(Ok(run_result.created_key)));
+                let _ = tx.send(Message::InlineCreated(Ok(run_result.created_key)));
             }
             Err(error) => {
-                let _ = tx.send(ActionMessage::InlineCreated(Err(error)));
+                let _ = tx.send(Message::InlineCreated(Err(error)));
             }
         }
     });

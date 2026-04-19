@@ -1,17 +1,17 @@
 //! **Add Label** — adds a repo label to a Jira issue in the background.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::LabelAdded`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::LabelAdded`]
 
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::apis::jira::JiraClient;
 
 /// Spawn label addition for a single issue.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
     issue_key: String,
     label: String,
@@ -24,6 +24,6 @@ pub fn spawn(
             .update_labels(&issue_key, &labels)
             .await
             .map(|_| (issue_key, label));
-        let _ = tx.send(ActionMessage::LabelAdded(result));
+        let _ = tx.send(Message::LabelAdded(result));
     });
 }

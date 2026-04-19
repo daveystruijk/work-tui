@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::actions::ActionMessage;
+use crate::actions::Message;
 use crate::app::{AppView, InputFocus};
 use crate::theme::Theme;
 
@@ -26,18 +26,18 @@ pub struct StatusBarView {
 }
 
 impl StatusBarView {
-    pub fn handle_action_message(&mut self, msg: &ActionMessage, running_tasks: &HashSet<String>) {
+    pub fn handle_message(&mut self, msg: &Message, running_tasks: &HashSet<String>) {
         match msg {
-            ActionMessage::Myself(Err(err)) => {
+            Message::Myself(Err(err)) => {
                 self.message = format!("Failed to fetch user: {err}");
             }
-            ActionMessage::Issues(Ok(_)) => {
+            Message::Issues(Ok(_)) => {
                 self.last_updated = Some(Instant::now());
             }
-            ActionMessage::Issues(Err(err)) => {
+            Message::Issues(Err(err)) => {
                 self.message = format!("Failed to load issues: {err}");
             }
-            ActionMessage::GithubPrs(_, errors) => {
+            Message::GithubPrs(_, errors) => {
                 self.last_updated = Some(Instant::now());
                 if !errors.is_empty() {
                     self.message = format!("Failed: {}", errors.join("; "));
@@ -47,25 +47,25 @@ impl StatusBarView {
                     self.message = "Ready".to_string();
                 }
             }
-            ActionMessage::GithubPrDetail(issue_key, Err(err)) => {
+            Message::GithubPrDetail(issue_key, Err(err)) => {
                 self.message = format!("Failed to load PR detail for {issue_key}: {err}");
             }
-            ActionMessage::ConvertedToStory(issue_key, Ok(())) => {
+            Message::ConvertedToStory(issue_key, Ok(())) => {
                 self.message = format!("Converted {issue_key}");
             }
-            ActionMessage::ConvertedToStory(issue_key, Err(err)) => {
+            Message::ConvertedToStory(issue_key, Err(err)) => {
                 self.message = format!("Failed to convert {issue_key}: {err}");
             }
-            ActionMessage::CiLogsFetched(issue_key, Err(err)) => {
+            Message::CiLogsFetched(issue_key, Err(err)) => {
                 self.message = format!("Failed to fetch CI logs for {issue_key}: {err}");
             }
-            ActionMessage::FixCiOpened(Ok(_)) => {
+            Message::FixCiOpened(Ok(_)) => {
                 self.message = "Opened opencode to fix CI".to_string();
             }
-            ActionMessage::FixCiOpened(Err(err)) => {
+            Message::FixCiOpened(Err(err)) => {
                 self.message = format!("Failed to fix CI: {err}");
             }
-            ActionMessage::PickedUp(Ok(pickup)) => {
+            Message::PickedUp(Ok(pickup)) => {
                 let skipped_note = if pickup.skipped_opencode {
                     " (skipped opencode: uncommitted changes)"
                 } else {
@@ -73,37 +73,37 @@ impl StatusBarView {
                 };
                 self.message = format!("Picked up {}{}", pickup.branch, skipped_note);
             }
-            ActionMessage::PickedUp(Err(err)) => {
+            Message::PickedUp(Err(err)) => {
                 self.message = format!("Failed to pick up issue: {err}");
             }
-            ActionMessage::BranchDiffOpened(Ok(branch)) => {
+            Message::BranchDiffOpened(Ok(branch)) => {
                 self.message = format!("Opened diff for {branch}");
             }
-            ActionMessage::BranchDiffOpened(Err(err)) => {
+            Message::BranchDiffOpened(Err(err)) => {
                 self.message = format!("Branch diff failed: {err}");
             }
-            ActionMessage::ApproveAutoMerged(Ok(pr_number)) => {
+            Message::ApproveAutoMerged(Ok(pr_number)) => {
                 self.message = format!("Approved & auto-merge enabled for PR #{pr_number}");
             }
-            ActionMessage::ApproveAutoMerged(Err(err)) => {
+            Message::ApproveAutoMerged(Err(err)) => {
                 self.message = format!("Approve/merge failed: {err}");
             }
-            ActionMessage::Finished(Ok(pr_url)) => {
+            Message::Finished(Ok(pr_url)) => {
                 self.message = format!("PR created: {pr_url}");
             }
-            ActionMessage::Finished(Err(err)) => {
+            Message::Finished(Err(err)) => {
                 self.message = format!("Finish failed: {err}");
             }
-            ActionMessage::ChildrenLoaded(parent_key, Err(err)) => {
+            Message::ChildrenLoaded(parent_key, Err(err)) => {
                 self.message = format!("Failed to load children for {parent_key}: {err}");
             }
-            ActionMessage::LabelAdded(Ok((issue_key, label))) => {
+            Message::LabelAdded(Ok((issue_key, label))) => {
                 self.message = format!("Added label {label} to {issue_key}");
             }
-            ActionMessage::LabelAdded(Err(err)) => {
+            Message::LabelAdded(Err(err)) => {
                 self.message = format!("Failed to add label: {err}");
             }
-            ActionMessage::Progress(progress) => {
+            Message::Progress(progress) => {
                 self.message = progress.to_string();
             }
             _ => {}

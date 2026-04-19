@@ -1,14 +1,14 @@
-use super::ActionMessage;
+use super::Message;
 use crate::apis::github;
 
 pub fn spawn(
-    tx: tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
     issue_key: String,
     repo_slug: String,
     pr_number: u64,
 ) {
     super::spawn_action(tx, format!("Fetching #{issue_key}"), move |tx| async move {
         let result = github::fetch_pr_detail(&repo_slug, pr_number).await;
-        let _ = tx.send(ActionMessage::GithubPrDetail(issue_key, result));
+        let _ = tx.send(Message::GithubPrDetail(issue_key, result));
     });
 }

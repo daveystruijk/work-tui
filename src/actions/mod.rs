@@ -1,10 +1,10 @@
-//! Background actions that run asynchronously and report results via [`ActionMessage`].
+//! Background actions that run asynchronously and report results via [`Message`].
 //!
 //! Each action lives in its own module and exposes a `spawn()` function that
 //! accepts the minimal context it needs (cloned handles, data snapshots) plus
-//! an `mpsc::UnboundedSender<ActionMessage>` to deliver results back to the main loop.
+//! an `mpsc::UnboundedSender<Message>` to deliver results back to the main loop.
 //!
-//! Actions may send [`ActionMessage::Progress`] messages at any time to update the
+//! Actions may send [`Message::Progress`] messages at any time to update the
 //! status bar with step-by-step feedback.
 
 pub mod add_label;
@@ -76,7 +76,7 @@ pub struct PickUpResult {
 /// Messages sent from background actions back to the main event loop.
 ///
 /// Each variant corresponds to a result produced by an action in [`crate::actions`].
-pub enum ActionMessage {
+pub enum Message {
     /// Current git branch resolved (from [`initialize`]).
     CurrentBranch(String),
     /// Jira user identity resolved (from [`initialize`]).
@@ -122,33 +122,33 @@ pub enum ActionMessage {
     TasksImported(String, Result<()>),
     /// Issue keys that have pending import tasks (from [`scan_import_tasks`]).
     PendingImportKeys(HashSet<String>),
-    /// A background task has started. The payload is the human-readable task name.
-    TaskStarted(String),
-    /// A background task has finished. The payload is the human-readable task name.
-    TaskFinished(String),
+    /// An action has started. The payload is the human-readable action name.
+    ActionStarted(String),
+    /// An action has finished. The payload is the human-readable action name.
+    ActionFinished(String),
     /// Generic progress update from any long-running action.
     ///
     /// Rendered in the status bar with step-by-step feedback.
     Progress(Progress),
 }
 
-/// Spawn a background action with automatic [`ActionMessage::TaskStarted`] /
-/// [`ActionMessage::TaskFinished`] bookkeeping.
+/// Spawn a background action with automatic [`Message::ActionStarted`] /
+/// [`Message::ActionFinished`] bookkeeping.
 ///
 /// The closure receives a clone of `tx` for sending result and progress
 /// messages. `spawn_action` wraps it with the start/finish lifecycle messages.
 pub fn spawn_action<F, Fut>(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     task_name: impl Into<String>,
     action: F,
 ) where
-    F: FnOnce(mpsc::UnboundedSender<ActionMessage>) -> Fut + Send + 'static,
+    F: FnOnce(mpsc::UnboundedSender<Message>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
     let task_name = task_name.into();
     tokio::spawn(async move {
-        let _ = tx.send(ActionMessage::TaskStarted(task_name.clone()));
+        let _ = tx.send(Message::ActionStarted(task_name.clone()));
         action(tx.clone()).await;
-        let _ = tx.send(ActionMessage::TaskFinished(task_name));
+        let _ = tx.send(Message::ActionFinished(task_name));
     });
 }

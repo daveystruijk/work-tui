@@ -7,7 +7,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::{
-    actions::{self, ActionMessage},
+    actions::{self, Message},
     apis::{
         github::{CheckRun, CheckStatus, CheckStep, GithubStatus, PrInfo},
         jira::{Issue, JiraClient},
@@ -149,9 +149,9 @@ pub struct AppView {
     /// Currently running background task names
     pub running_tasks: HashSet<String>,
     /// Sender for background tasks to deliver results
-    pub bg_tx: mpsc::UnboundedSender<ActionMessage>,
+    pub message_tx: mpsc::UnboundedSender<Message>,
     /// Receiver polled in the event loop
-    pub bg_rx: mpsc::UnboundedReceiver<ActionMessage>,
+    pub message_rx: mpsc::UnboundedReceiver<Message>,
     /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
     pub last_ci_refresh: std::time::Instant,
     pub ci_log_popup: CiLogsView,
@@ -163,7 +163,7 @@ pub struct AppView {
 impl AppView {
     pub fn new(config: AppConfig) -> Result<Self> {
         let client = JiraClient::new(&config.jira)?;
-        let (bg_tx, bg_rx) = mpsc::unbounded_channel();
+        let (message_tx, message_rx) = mpsc::unbounded_channel();
         let mut app = Self {
             should_quit: false,
             input_focus: InputFocus::default(),
@@ -194,8 +194,8 @@ impl AppView {
             github_prs: HashMap::new(),
             check_durations: HashMap::new(),
             running_tasks: HashSet::new(),
-            bg_tx,
-            bg_rx,
+            message_tx,
+            message_rx,
             last_ci_refresh: std::time::Instant::now(),
             ci_log_popup: CiLogsView::default(),
             import_tasks_popup: None,
@@ -214,7 +214,7 @@ impl AppView {
     /// Kick off all initialization work as background tasks.
     pub fn spawn_initialize(&self) {
         actions::initialize::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             self.config.jira.jira_jql.clone(),
         );
@@ -223,7 +223,7 @@ impl AppView {
     /// Spawn a full refresh (issues + PRs + statuses).
     pub fn spawn_refresh(&mut self) {
         actions::refresh::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             self.config.jira.jira_jql.clone(),
         );
@@ -245,7 +245,7 @@ impl AppView {
 
     /// Spawn GitHub PR fetch for repos matching current issue labels.
     pub fn spawn_github_prs(&mut self) {
-        actions::fetch_github_prs::spawn(self.bg_tx.clone(), self.matched_repo_slugs());
+        actions::fetch_github_prs::spawn(self.message_tx.clone(), self.matched_repo_slugs());
         self.last_ci_refresh = std::time::Instant::now();
     }
 
@@ -258,7 +258,7 @@ impl AppView {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        actions::fetch_github_prs::spawn(self.bg_tx.clone(), active_repos);
+        actions::fetch_github_prs::spawn(self.message_tx.clone(), active_repos);
         self.last_ci_refresh = std::time::Instant::now();
     }
 
@@ -278,7 +278,7 @@ impl AppView {
 
         self.sidebar.start_loading_detail(&issue_key);
         actions::fetch_github_pr_detail::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             issue_key,
             pr.repo_slug.clone(),
             pr.number,
@@ -300,7 +300,7 @@ impl AppView {
             })
             .collect();
 
-        actions::detect_active_branches::spawn(self.bg_tx.clone(), issue_data);
+        actions::detect_active_branches::spawn(self.message_tx.clone(), issue_data);
     }
 
     /// Spawn repo linking for issues that have no repo label match.
@@ -335,7 +335,7 @@ impl AppView {
             .unwrap_or_default();
 
         actions::link_jira_repos::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             unlinked,
             repo_normalized_names,
@@ -365,73 +365,73 @@ impl AppView {
             })
             .collect();
 
-        actions::auto_label::spawn(self.bg_tx.clone(), self.client.clone(), to_label);
+        actions::auto_label::spawn(self.message_tx.clone(), self.client.clone(), to_label);
     }
 
     /// Process a background message. Called from the event loop.
-    pub fn handle_bg_msg(&mut self, msg: ActionMessage) {
-        self.list.handle_action_message(&msg);
+    pub fn handle_message(&mut self, msg: Message) {
+        self.list.handle_message(&msg);
         self.status_bar
-            .handle_action_message(&msg, &self.running_tasks);
+            .handle_message(&msg, &self.running_tasks);
         self.sidebar
-            .handle_action_message(&msg, &mut self.github_prs);
+            .handle_message(&msg, &mut self.github_prs);
         self.ci_log_popup
-            .handle_action_message(&msg, &mut self.github_prs);
+            .handle_message(&msg, &mut self.github_prs);
 
         match msg {
-            ActionMessage::CurrentBranch(branch) => {
+            Message::CurrentBranch(branch) => {
                 self.current_branch = branch;
             }
-            ActionMessage::Myself(result) => {
+            Message::Myself(result) => {
                 if let Ok(account_id) = result {
                     self.my_account_id = account_id;
                 }
             }
-            ActionMessage::Issues(result) => self.handle_issues_message(result),
-            ActionMessage::GithubPrs(all_prs, _) => {
+            Message::Issues(result) => self.handle_issues_message(result),
+            Message::GithubPrs(all_prs, _) => {
                 self.handle_github_prs_message(all_prs);
             }
-            ActionMessage::GithubPrDetail(_, _) => {}
-            ActionMessage::ActiveBranches(active) => {
+            Message::GithubPrDetail(_, _) => {}
+            Message::ActiveBranches(active) => {
                 self.active_branches = active;
             }
-            ActionMessage::PickedUp(result) => {
+            Message::PickedUp(result) => {
                 if let Ok(pickup) = result {
                     self.current_branch = pickup.branch;
                     self.spawn_active_branches();
                 }
             }
-            ActionMessage::BranchDiffOpened(_) => {}
-            ActionMessage::ApproveAutoMerged(_) => {}
-            ActionMessage::Finished(result) => {
+            Message::BranchDiffOpened(_) => {}
+            Message::ApproveAutoMerged(_) => {}
+            Message::Finished(result) => {
                 if result.is_ok() {
                     self.spawn_refresh();
                 }
             }
-            ActionMessage::InlineCreated(result) => self.handle_inline_created_message(result),
-            ActionMessage::AutoLabeled(_key, _result) => {}
-            ActionMessage::LabelAdded(result) => {
+            Message::InlineCreated(result) => self.handle_inline_created_message(result),
+            Message::AutoLabeled(_key, _result) => {}
+            Message::LabelAdded(result) => {
                 if result.is_ok() {
                     self.spawn_refresh();
                 }
             }
-            ActionMessage::ChildrenLoaded(parent_key, result) => {
+            Message::ChildrenLoaded(parent_key, result) => {
                 self.handle_children_loaded_message(parent_key, result);
             }
-            ActionMessage::ConvertedToStory(_, result) => {
+            Message::ConvertedToStory(_, result) => {
                 if result.is_ok() {
                     self.spawn_refresh();
                 }
             }
-            ActionMessage::CiLogsFetched(_, _) => {}
-            ActionMessage::FixCiOpened(result) => {
+            Message::CiLogsFetched(_, _) => {}
+            Message::FixCiOpened(result) => {
                 if let Ok(branch) = result {
                     self.current_branch = branch;
                     self.spawn_active_branches();
                 }
             }
-            ActionMessage::OpenspecProposeOpened(_) => {}
-            ActionMessage::TasksImported(issue_key, result) => match result {
+            Message::OpenspecProposeOpened(_) => {}
+            Message::TasksImported(issue_key, result) => match result {
                 Ok(()) => {
                     self.status_bar.message = format!("Tasks imported for {issue_key}");
                     self.spawn_refresh();
@@ -441,19 +441,19 @@ impl AppView {
                     self.status_bar.message = format!("Import failed: {err}");
                 }
             },
-            ActionMessage::PendingImportKeys(keys) => {
+            Message::PendingImportKeys(keys) => {
                 self.pending_import_keys = keys;
             }
-            ActionMessage::TaskStarted(name) => {
+            Message::ActionStarted(name) => {
                 self.running_tasks.insert(name);
                 self.status_bar.handle_task_started(&self.running_tasks);
             }
-            ActionMessage::TaskFinished(name) => {
+            Message::ActionFinished(name) => {
                 self.running_tasks.remove(&name);
                 self.status_bar
                     .handle_task_finished(name, &self.running_tasks);
             }
-            ActionMessage::Progress(_) => {}
+            Message::Progress(_) => {}
         }
     }
 
@@ -572,7 +572,7 @@ impl AppView {
 
         self.status_bar.message = "Picking up...".to_string();
         actions::pick_up::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             issue_key,
             issue_summary,
@@ -598,7 +598,7 @@ impl AppView {
         };
 
         self.status_bar.message = "Opening diff...".to_string();
-        actions::branch_diff::spawn(self.bg_tx.clone(), issue_key, repo_path);
+        actions::branch_diff::spawn(self.message_tx.clone(), issue_key, repo_path);
     }
 
     /// Spawn approve + auto-merge for the selected issue's PR.
@@ -613,7 +613,7 @@ impl AppView {
         };
 
         self.status_bar.message = "Approving & enabling auto-merge...".to_string();
-        actions::approve_merge::spawn(self.bg_tx.clone(), pr.repo_slug.clone(), pr.number);
+        actions::approve_merge::spawn(self.message_tx.clone(), pr.repo_slug.clone(), pr.number);
     }
 
     /// Spawn finish workflow in background.
@@ -633,7 +633,7 @@ impl AppView {
 
         self.status_bar.message = "Finishing...".to_string();
         actions::finish::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             issue_key,
             issue_summary,
@@ -664,7 +664,7 @@ impl AppView {
             }
             self.status_bar.message = "Reverting to task...".to_string();
             actions::convert_to_story::spawn(
-                self.bg_tx.clone(),
+                self.message_tx.clone(),
                 self.client.clone(),
                 issue_key,
                 "Task",
@@ -674,7 +674,7 @@ impl AppView {
 
         self.status_bar.message = "Converting to story...".to_string();
         actions::convert_to_story::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             issue_key,
             "Story",
@@ -696,7 +696,7 @@ impl AppView {
 
         self.input_focus = InputFocus::List;
         actions::create_inline_issue::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             self.config.jira.jira_jql.clone(),
             state.project_key,
@@ -846,7 +846,7 @@ impl AppView {
         }
         self.list.start_loading_children(parent_key);
         actions::fetch_children::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             parent_key.to_string(),
         );
@@ -1448,7 +1448,7 @@ impl AppView {
             return;
         }
         actions::fetch_ci_logs::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             issue_key.to_string(),
             pr.repo_slug.clone(),
             pr.check_runs.clone(),
@@ -1492,12 +1492,12 @@ impl AppView {
         self.ci_log_popup.close();
         self.input_focus = InputFocus::List;
         self.status_bar.message = "Checking out branch and opening opencode...".to_string();
-        actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
+        actions::fix_ci::spawn(self.message_tx.clone(), repo_path, head_branch, ci_error);
     }
 
     /// Scan opencode changes for pending import tasks.
     pub fn spawn_scan_import_tasks(&self) {
-        actions::scan_import_tasks::spawn(self.bg_tx.clone(), self.config.repos_dir.clone());
+        actions::scan_import_tasks::spawn(self.message_tx.clone(), self.config.repos_dir.clone());
     }
 
     /// Open the import tasks confirmation popup for the selected issue.
@@ -1556,7 +1556,7 @@ impl AppView {
 
         self.status_bar.message = format!("Importing tasks for {}...", popup.issue_key);
         actions::import_tasks::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             popup.tasks_path,
             popup.tasks,
@@ -1594,7 +1594,7 @@ impl AppView {
 
         self.status_bar.message = "Opening openspec propose...".to_string();
         actions::openspec_propose::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.config.repos_dir.clone(),
             issue_key,
             issue_summary,
@@ -1819,7 +1819,7 @@ impl AppView {
             return false;
         }
         actions::add_label::spawn(
-            self.bg_tx.clone(),
+            self.message_tx.clone(),
             self.client.clone(),
             issue_key,
             entry.label.clone(),

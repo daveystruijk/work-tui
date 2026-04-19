@@ -1,14 +1,14 @@
 //! **Convert issue type** — changes an issue's type to Story or Task.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::ConvertedToStory`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::ConvertedToStory`]
 
-use super::ActionMessage;
+use super::Message;
 use crate::apis::jira::JiraClient;
 
 pub fn spawn(
-    tx: tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
     client: JiraClient,
     issue_key: String,
     target_type: &'static str,
@@ -18,7 +18,7 @@ pub fn spawn(
         format!("Converting to {target_type}"),
         move |tx| async move {
             let result = client.update_issue_type(&issue_key, target_type).await;
-            let _ = tx.send(ActionMessage::ConvertedToStory(issue_key, result));
+            let _ = tx.send(Message::ConvertedToStory(issue_key, result));
         },
     );
 }

@@ -21,7 +21,7 @@ pub fn test_app() -> AppView {
         repos_dir: std::path::PathBuf::from("/tmp/test-repos"),
     };
     let client = JiraClient::new(&config).expect("jira client");
-    let (bg_tx, bg_rx) = mpsc::unbounded_channel();
+    let (message_tx, message_rx) = mpsc::unbounded_channel();
 
     AppView {
         should_quit: false,
@@ -53,8 +53,8 @@ pub fn test_app() -> AppView {
         github_prs: Default::default(),
         check_durations: Default::default(),
         running_tasks: Default::default(),
-        bg_tx,
-        bg_rx,
+        message_tx,
+        message_rx,
         last_ci_refresh: std::time::Instant::now(),
         ci_log_popup: CiLogsView::default(),
         import_tasks_popup: None,

@@ -5,8 +5,8 @@
 //! 3. Open a tmux window + split pane running opencode with the CI error as prompt
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::FixCiOpened`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::FixCiOpened`]
 
 use std::path::PathBuf;
 
@@ -14,11 +14,11 @@ use color_eyre::Result;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::git;
 
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     repo_path: PathBuf,
     branch: String,
     ci_error: String,
@@ -47,6 +47,6 @@ pub fn spawn(
             Ok(branch.to_string())
         }
         .await;
-        let _ = tx.send(ActionMessage::FixCiOpened(result));
+        let _ = tx.send(Message::FixCiOpened(result));
     });
 }

@@ -1,19 +1,19 @@
 //! **Fetch CI Logs** — fetches check run logs on demand (when 'c' is pressed).
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::CiLogsFetched`]
+//! - [`Message::CiLogsFetched`]
 
-use super::ActionMessage;
+use super::Message;
 use crate::apis::github::{fetch_check_run_logs, CheckRun};
 
 pub fn spawn(
-    tx: tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
     issue_key: String,
     repo_slug: String,
     check_runs: Vec<CheckRun>,
 ) {
     super::spawn_action(tx, "Fetching CI logs", |tx| async move {
         let result = fetch_check_run_logs(&repo_slug, &check_runs).await;
-        let _ = tx.send(ActionMessage::CiLogsFetched(issue_key, result));
+        let _ = tx.send(Message::CiLogsFetched(issue_key, result));
     });
 }

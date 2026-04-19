@@ -1,17 +1,17 @@
 //! **Fetch Children** — re-fetches child issues for a Jira parent issue.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`]
-//! - [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::ChildrenLoaded`]
+//! - [`Message::ActionStarted`]
+//! - [`Message::ActionFinished`]
+//! - [`Message::ChildrenLoaded`]
 
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira child issue fetch.
-pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, parent_key: String) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, parent_key: String) {
     super::spawn_action(
         tx,
         format!("Fetching children for {parent_key}"),
@@ -19,7 +19,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, paren
             let result = client
                 .search(&format!("parent = {parent_key} ORDER BY created DESC"))
                 .await;
-            let _ = tx.send(ActionMessage::ChildrenLoaded(parent_key, result));
+            let _ = tx.send(Message::ChildrenLoaded(parent_key, result));
         },
     );
 }

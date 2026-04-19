@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::actions::ActionMessage;
+use crate::actions::Message;
 use crate::apis::github::{CheckRun, CheckStatus, MergeableState, PrInfo};
 use crate::app::AppView;
 use crate::theme::Theme;
@@ -45,13 +45,13 @@ impl SidebarView {
         previous_prs
     }
 
-    pub fn handle_action_message(
+    pub fn handle_message(
         &mut self,
-        msg: &ActionMessage,
+        msg: &Message,
         github_prs: &mut HashMap<String, PrInfo>,
     ) {
         match msg {
-            ActionMessage::GithubPrDetail(issue_key, result) => {
+            Message::GithubPrDetail(issue_key, result) => {
                 self.detail_loading.remove(issue_key);
                 match result {
                     Ok(detail) => {

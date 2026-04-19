@@ -1,8 +1,8 @@
 //! **Branch Diff** — checks out an issue branch and opens a difftool against main.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::BranchDiffOpened`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::BranchDiffOpened`]
 
 use std::path::PathBuf;
 
@@ -10,10 +10,10 @@ use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::git;
 
-pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_key: String, repo_path: PathBuf) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, issue_key: String, repo_path: PathBuf) {
     super::spawn_action(tx, "Opening diff", |tx| async move {
         let result: color_eyre::Result<String> = async {
             // Fetch first so remote-only branches are visible
@@ -83,6 +83,6 @@ pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, issue_key: String, repo_p
             Ok(branch)
         }
         .await;
-        let _ = tx.send(ActionMessage::BranchDiffOpened(result));
+        let _ = tx.send(Message::BranchDiffOpened(result));
     });
 }

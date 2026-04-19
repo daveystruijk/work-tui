@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::actions::ActionMessage;
+use crate::actions::Message;
 use crate::apis::github::CheckStatus;
 use crate::apis::github::PrInfo;
 use crate::app::AppView;
@@ -91,17 +91,17 @@ impl CiLogsView {
         self.scroll = Some(0);
     }
 
-    pub fn handle_action_message(
+    pub fn handle_message(
         &mut self,
-        msg: &ActionMessage,
+        msg: &Message,
         github_prs: &mut HashMap<String, PrInfo>,
     ) {
         match msg {
-            ActionMessage::GithubPrs(_, _) => {
+            Message::GithubPrs(_, _) => {
                 self.loaded_issues.clear();
                 self.loading_issues.clear();
             }
-            ActionMessage::CiLogsFetched(issue_key, result) => {
+            Message::CiLogsFetched(issue_key, result) => {
                 self.loading_issues.remove(issue_key);
                 let Ok(logs) = result else {
                     return;

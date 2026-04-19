@@ -123,8 +123,8 @@ async fn run_app(
         app.tick_completed_tasks();
 
         // Drain all pending background messages (non-blocking)
-        while let Ok(msg) = app.bg_rx.try_recv() {
-            app.handle_bg_msg(msg);
+        while let Ok(msg) = app.message_rx.try_recv() {
+            app.handle_message(msg);
         }
 
         // Drain file watcher events (debounced: one scan per loop tick)

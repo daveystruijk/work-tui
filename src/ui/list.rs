@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::actions::ActionMessage;
+use crate::actions::Message;
 use crate::apis::{
     github::{CheckStatus, MergeableState},
     jira::Issue,
@@ -45,12 +45,12 @@ pub struct ListView {
 }
 
 impl ListView {
-    pub fn handle_action_message(&mut self, msg: &ActionMessage) {
+    pub fn handle_message(&mut self, msg: &Message) {
         match msg {
-            ActionMessage::Issues(Ok(_)) => {
+            Message::Issues(Ok(_)) => {
                 self.loading_children.clear();
             }
-            ActionMessage::ChildrenLoaded(parent_key, _) => {
+            Message::ChildrenLoaded(parent_key, _) => {
                 self.loading_children.remove(parent_key);
             }
             _ => {}

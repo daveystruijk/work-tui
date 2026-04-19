@@ -5,12 +5,12 @@
 //! failures are silently ignored.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::Progress`] (per-issue progress)
-//! - [`ActionMessage::AutoLabeled`]
+//! - [`Message::Progress`] (per-issue progress)
+//! - [`Message::AutoLabeled`]
 
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::actions::Progress;
 use crate::apis::jira::JiraClient;
 
@@ -21,7 +21,7 @@ pub type LabelUpdate = (String, Vec<String>);
 ///
 /// No-ops if `to_label` is empty.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
     to_label: Vec<LabelUpdate>,
 ) {
@@ -32,14 +32,14 @@ pub fn spawn(
     super::spawn_action(tx, "Auto-labeling", |tx| async move {
         let total = to_label.len();
         for (i, (issue_key, new_labels)) in to_label.into_iter().enumerate() {
-            let _ = tx.send(ActionMessage::Progress(Progress {
+            let _ = tx.send(Message::Progress(Progress {
                 action: "auto_label",
                 message: format!("Labeling {issue_key}..."),
                 current: i + 1,
                 total,
             }));
             let result = client.update_labels(&issue_key, &new_labels).await;
-            let _ = tx.send(ActionMessage::AutoLabeled(issue_key, result.map(|_| ())));
+            let _ = tx.send(Message::AutoLabeled(issue_key, result.map(|_| ())));
         }
     });
 }

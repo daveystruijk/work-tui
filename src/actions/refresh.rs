@@ -4,18 +4,18 @@
 //! main loop chains further actions (branches, PRs, statuses).
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::Progress`]
-//! - [`ActionMessage::Issues`]
+//! - [`Message::Progress`]
+//! - [`Message::Issues`]
 
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira issue refresh.
-pub fn spawn(tx: mpsc::UnboundedSender<ActionMessage>, client: JiraClient, jql: String) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String) {
     super::spawn_action(tx, "Refreshing issues", |tx| async move {
         let result = client.search(&jql).await;
-        let _ = tx.send(ActionMessage::Issues(result));
+        let _ = tx.send(Message::Issues(result));
     });
 }

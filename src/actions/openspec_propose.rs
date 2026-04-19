@@ -5,8 +5,8 @@
 //! 3. Open a tmux window in REPOS_DIR with opencode as prompt
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::OpenspecProposeOpened`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::OpenspecProposeOpened`]
 
 use std::path::PathBuf;
 
@@ -14,7 +14,7 @@ use color_eyre::Result;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::git;
 
 pub struct StoryContext {
@@ -23,7 +23,7 @@ pub struct StoryContext {
 }
 
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     repos_dir: PathBuf,
     issue_key: String,
     issue_summary: String,
@@ -71,6 +71,6 @@ pub fn spawn(
             Ok(slug)
         }
         .await;
-        let _ = tx.send(ActionMessage::OpenspecProposeOpened(result));
+        let _ = tx.send(Message::OpenspecProposeOpened(result));
     });
 }

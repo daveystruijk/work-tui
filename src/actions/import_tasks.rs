@@ -13,8 +13,8 @@
 //! skipped.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::Progress`]
-//! - [`ActionMessage::TasksImported`]
+//! - [`Message::Progress`]
+//! - [`Message::TasksImported`]
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,7 @@ use color_eyre::{eyre::eyre, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::actions::Progress;
 use crate::apis::jira::JiraClient;
 
@@ -83,7 +83,7 @@ pub fn load_tasks(path: &Path) -> Result<Vec<TaskEntry>> {
 
 /// Spawn the import tasks action.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
     tasks_path: PathBuf,
     tasks: Vec<TaskEntry>,
@@ -102,12 +102,12 @@ pub fn spawn(
             &project_key,
         )
         .await;
-        let _ = tx.send(ActionMessage::TasksImported(issue_key, result));
+        let _ = tx.send(Message::TasksImported(issue_key, result));
     });
 }
 
 async fn run(
-    tx: &mpsc::UnboundedSender<ActionMessage>,
+    tx: &mpsc::UnboundedSender<Message>,
     client: &JiraClient,
     tasks_path: &Path,
     mut tasks: Vec<TaskEntry>,
@@ -132,7 +132,7 @@ async fn run(
         let task_index = pending_tasks[0];
         let task = &tasks[task_index];
 
-        let _ = tx.send(ActionMessage::Progress(Progress {
+        let _ = tx.send(Message::Progress(Progress {
             action: "import_tasks",
             message: format!("Updating {issue_key}..."),
             current: 1,
@@ -154,7 +154,7 @@ async fn run(
         || issue_type_name.to_lowercase().contains("epic");
 
     if !is_story {
-        let _ = tx.send(ActionMessage::Progress(Progress {
+        let _ = tx.send(Message::Progress(Progress {
             action: "import_tasks",
             message: format!("Converting {issue_key} to Story..."),
             current: 1,
@@ -174,7 +174,7 @@ async fn run(
     for (step, &task_index) in pending_tasks.iter().enumerate() {
         let task = &tasks[task_index];
 
-        let _ = tx.send(ActionMessage::Progress(Progress {
+        let _ = tx.send(Message::Progress(Progress {
             action: "import_tasks",
             message: format!("Creating subtask: {}...", task.title),
             current: step + 2,

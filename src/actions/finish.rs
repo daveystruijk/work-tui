@@ -8,15 +8,15 @@
 //! 5. Transition the Jira issue to "Review" (if available)
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::Progress`] (per-step progress)
-//! - [`ActionMessage::Finished`]
+//! - [`Message::Progress`] (per-step progress)
+//! - [`Message::Finished`]
 
 use std::path::PathBuf;
 
 use color_eyre::eyre::eyre;
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::actions::Progress;
 use crate::apis::github;
 use crate::apis::jira::JiraClient;
@@ -24,7 +24,7 @@ use crate::git;
 
 /// Spawn the finish workflow for a single issue.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
     issue_key: String,
     issue_summary: String,
@@ -40,7 +40,7 @@ pub fn spawn(
                 return Err(eyre!("Cannot finish: on {branch}, not a feature branch"));
             }
 
-            let _ = tx.send(ActionMessage::Progress(Progress {
+            let _ = tx.send(Message::Progress(Progress {
                 action: "finish",
                 message: "Checking working tree...".into(),
                 current: 1,
@@ -51,7 +51,7 @@ pub fn spawn(
                 git::commit_all(&repo_path, &commit_message).await?;
             }
 
-            let _ = tx.send(ActionMessage::Progress(Progress {
+            let _ = tx.send(Message::Progress(Progress {
                 action: "finish",
                 message: "Fetching origin...".into(),
                 current: 2,
@@ -59,7 +59,7 @@ pub fn spawn(
             }));
             git::fetch_origin(&repo_path).await?;
 
-            let _ = tx.send(ActionMessage::Progress(Progress {
+            let _ = tx.send(Message::Progress(Progress {
                 action: "finish",
                 message: "Pushing branch...".into(),
                 current: 3,
@@ -68,7 +68,7 @@ pub fn spawn(
             let pr_title = format!("{issue_key} {issue_summary}");
             git::push_branch(&repo_path, &branch).await?;
 
-            let _ = tx.send(ActionMessage::Progress(Progress {
+            let _ = tx.send(Message::Progress(Progress {
                 action: "finish",
                 message: "Creating pull request...".into(),
                 current: 4,
@@ -76,7 +76,7 @@ pub fn spawn(
             }));
             let pr_url = github::create_pr(&repo_path, &pr_title, "").await?;
 
-            let _ = tx.send(ActionMessage::Progress(Progress {
+            let _ = tx.send(Message::Progress(Progress {
                 action: "finish",
                 message: "Transitioning to Review...".into(),
                 current: 5,
@@ -93,6 +93,6 @@ pub fn spawn(
             Ok(pr_url)
         }
         .await;
-        let _ = tx.send(ActionMessage::Finished(result));
+        let _ = tx.send(Message::Finished(result));
     });
 }

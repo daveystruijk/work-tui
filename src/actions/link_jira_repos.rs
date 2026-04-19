@@ -6,12 +6,12 @@
 //! Jira issue so the normal PR-fetching flow picks it up.
 //!
 //! # Channel messages produced
-//! - [`ActionMessage::TaskStarted`] / [`ActionMessage::TaskFinished`]
-//! - [`ActionMessage::AutoLabeled`]
+//! - [`Message::ActionStarted`] / [`Message::ActionFinished`]
+//! - [`Message::AutoLabeled`]
 
 use tokio::sync::mpsc;
 
-use super::ActionMessage;
+use super::Message;
 use crate::apis::jira::JiraClient;
 use crate::repos;
 
@@ -30,7 +30,7 @@ struct DiscoveredPr {
 /// Searches GitHub for open PRs across the org, matches branches to issue keys,
 /// and labels issues whose PR repo matches a local directory.
 pub fn spawn(
-    tx: mpsc::UnboundedSender<ActionMessage>,
+    tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
     unlinked: Vec<UnlinkedIssue>,
     repo_normalized_names: Vec<(String, String)>,
@@ -73,7 +73,7 @@ pub fn spawn(
             let mut new_labels = current_labels.clone();
             new_labels.push(original_label.clone());
             let result = client.update_labels(issue_key, &new_labels).await;
-            let _ = tx.send(ActionMessage::AutoLabeled(
+            let _ = tx.send(Message::AutoLabeled(
                 issue_key.clone(),
                 result.map(|_| ()),
             ));
