@@ -29,7 +29,8 @@ pub struct JiraClient {
 impl JiraClient {
     pub fn new(config: &JiraConfig) -> Result<Self> {
         let host = config.jira_url.trim_end_matches('/').to_string();
-        let credentials = Credentials::Basic(config.jira_email.clone(), config.jira_api_token.clone());
+        let credentials =
+            Credentials::Basic(config.jira_email.clone(), config.jira_api_token.clone());
         let jira = GouqiJira::new(&host, credentials)?;
 
         Ok(Self {

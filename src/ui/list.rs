@@ -226,7 +226,7 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
     frame.render_stateful_widget(table, area, &mut state);
     app.list_view.scroll_offset = state.offset();
 
-    if app.list_view.label_picker.is_some() {
+    if app.input_focus == crate::app::InputFocus::LabelPicker {
         render_label_picker_modal(app, frame);
     }
 }

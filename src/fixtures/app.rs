@@ -25,8 +25,7 @@ pub fn test_app() -> App {
 
     App {
         should_quit: false,
-        screen: crate::app::Screen::List,
-        input_mode: crate::app::InputMode::Normal,
+        input_focus: crate::app::InputFocus::default(),
         issues: Vec::new(),
         selected_index: 0,
         config: app_config,

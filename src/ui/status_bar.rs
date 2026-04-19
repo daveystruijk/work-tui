@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::actions::ActionMessage;
-use crate::app::{App, InputMode};
+use crate::app::{App, InputFocus};
 use crate::theme::Theme;
 
 use super::SPINNER_FRAMES;
@@ -151,7 +151,7 @@ mod tests {
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
 
-    use crate::app::InputMode;
+    use crate::app::InputFocus;
 
     use super::*;
 
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn snapshots_search_mode_status_bar() {
         let mut app = test_app();
-        app.input_mode = InputMode::Searching;
+        app.input_focus = InputFocus::Search;
         app.search_filter = "backend".to_string();
         let rendered = render_to_string(48, 1, |frame| {
             render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
@@ -204,7 +204,7 @@ pub fn footer_height(app: &App) -> u16 {
 }
 
 fn has_content(app: &App) -> bool {
-    app.input_mode == InputMode::Searching
+    app.input_focus == InputFocus::Search
         || !app.search_filter.is_empty()
         || !app.status_bar.message.is_empty()
         || app.status_bar.last_updated.is_some()
@@ -215,7 +215,7 @@ pub fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let left_text = if app.input_mode == InputMode::Searching {
+    let left_text = if app.input_focus == InputFocus::Search {
         let filter_display = if app.search_filter.is_empty() {
             "Type to filter...".to_string()
         } else {

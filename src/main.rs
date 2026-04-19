@@ -13,7 +13,7 @@ mod ui;
 
 use std::{io, time::Duration};
 
-use app::{App, Screen};
+use app::{App, InputFocus};
 use color_eyre::Result;
 use crossterm::{
     event::{
@@ -163,21 +163,16 @@ async fn run_app(
                 }
                 handle_key_event(&mut app, key_event).await;
             }
-            Event::Mouse(mouse_event) if app.screen == Screen::List => {
-                if app.ci_log_popup.scroll.is_some() {
+            Event::Mouse(mouse_event) => match app.input_focus {
+                InputFocus::CiLogPopup => match mouse_event.kind {
+                    MouseEventKind::ScrollDown => app.scroll_ci_log_popup(3),
+                    MouseEventKind::ScrollUp => app.scroll_ci_log_popup(-3),
+                    _ => {}
+                },
+                InputFocus::List | InputFocus::Search | InputFocus::InlineNew => {
                     match mouse_event.kind {
-                        MouseEventKind::ScrollDown => app.scroll_ci_log_popup(3),
-                        MouseEventKind::ScrollUp => app.scroll_ci_log_popup(-3),
-                        _ => {}
-                    }
-                } else {
-                    match mouse_event.kind {
-                        MouseEventKind::ScrollDown => {
-                            scroll_viewport(&mut app, 3);
-                        }
-                        MouseEventKind::ScrollUp => {
-                            scroll_viewport(&mut app, -3);
-                        }
+                        MouseEventKind::ScrollDown => scroll_viewport(&mut app, 3),
+                        MouseEventKind::ScrollUp => scroll_viewport(&mut app, -3),
                         MouseEventKind::Down(MouseButton::Left) => {
                             let clicked_row = mouse_event.row as usize;
                             let data_row = clicked_row.saturating_sub(1);
@@ -190,7 +185,8 @@ async fn run_app(
                         _ => {}
                     }
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -199,36 +195,26 @@ async fn run_app(
 }
 
 async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
-    if app.input_mode == app::InputMode::Searching {
-        handle_search(app, key_event);
+    if key_event.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
+    {
+        app.should_quit = true;
         return;
     }
-    if app.screen == Screen::List && app.inline_new_active() {
-        handle_inline_new(app, key_event).await;
-        return;
+
+    match app.input_focus {
+        InputFocus::Search => handle_search(app, key_event),
+        InputFocus::InlineNew => handle_inline_new(app, key_event).await,
+        InputFocus::ImportTasksPopup => handle_import_tasks_popup(app, key_event),
+        InputFocus::CiLogPopup => handle_ci_log_popup(app, key_event).await,
+        InputFocus::LabelPicker => handle_label_picker(app, key_event).await,
+        InputFocus::List => handle_list(app, key_event).await,
     }
-    handle_list_normal(app, key_event).await;
 }
 
-async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
-    if app.import_tasks_popup.is_some() {
-        handle_import_tasks_popup(app, key_event);
-        return;
-    }
-    if app.ci_log_popup.scroll.is_some() {
-        handle_ci_log_popup(app, key_event).await;
-        return;
-    }
-    if app.list_view.label_picker.is_some() {
-        handle_label_picker(app, key_event).await;
-        return;
-    }
+async fn handle_list(app: &mut App, key_event: KeyEvent) {
     if key_event.modifiers.contains(KeyModifiers::CONTROL) {
         match key_event.code {
-            KeyCode::Char('c') | KeyCode::Char('C') => {
-                app.should_quit = true;
-                return;
-            }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 app.pending_g = false;
                 move_selection_by(app, app.list_view.area_height as isize / 2);
@@ -320,10 +306,6 @@ async fn handle_list_normal(app: &mut App, key_event: KeyEvent) {
 async fn handle_inline_new(app: &mut App, key_event: KeyEvent) {
     if key_event.modifiers.contains(KeyModifiers::CONTROL) {
         match key_event.code {
-            KeyCode::Char('c') | KeyCode::Char('C') => {
-                app.cancel_inline_new();
-                return;
-            }
             KeyCode::Char('s') | KeyCode::Char('S') => {
                 app.status_bar.message = "Creating issue...".to_string();
                 app.spawn_submit_inline_new();
@@ -359,13 +341,6 @@ async fn handle_inline_new(app: &mut App, key_event: KeyEvent) {
 }
 
 fn handle_search(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
-    {
-        app.cancel_search();
-        return;
-    }
-
     match key_event.code {
         KeyCode::Esc => app.cancel_search(),
         KeyCode::Enter => app.confirm_search(),
@@ -383,13 +358,6 @@ fn handle_search(app: &mut App, key_event: KeyEvent) {
 }
 
 async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
-    {
-        app.should_quit = true;
-        return;
-    }
-
     match key_event.code {
         KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => app.close_ci_log_popup(),
         KeyCode::Enter => app.spawn_fix_ci(),
@@ -419,13 +387,6 @@ async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
 }
 
 fn handle_import_tasks_popup(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
-    {
-        app.should_quit = true;
-        return;
-    }
-
     match key_event.code {
         KeyCode::Esc => app.close_import_tasks_popup(),
         KeyCode::Enter => app.confirm_import_tasks(),
@@ -436,13 +397,6 @@ fn handle_import_tasks_popup(app: &mut App, key_event: KeyEvent) {
 }
 
 async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
-    {
-        app.should_quit = true;
-        return;
-    }
-
     match key_event.code {
         KeyCode::Esc => app.close_label_picker(),
         KeyCode::Enter => {

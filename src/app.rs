@@ -93,23 +93,20 @@ pub struct InlineNewState {
     pub row_index: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputFocus {
+    #[default]
     List,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
-    Normal,
-    Editing,
-    Searching,
+    Search,
+    InlineNew,
+    ImportTasksPopup,
+    CiLogPopup,
+    LabelPicker,
 }
 
 pub struct App {
     pub should_quit: bool,
-
-    pub screen: Screen,
-    pub input_mode: InputMode,
+    pub input_focus: InputFocus,
     pub issues: Vec<Issue>,
     pub selected_index: usize,
     pub config: AppConfig,
@@ -167,8 +164,7 @@ impl App {
         let (bg_tx, bg_rx) = mpsc::unbounded_channel();
         let mut app = Self {
             should_quit: false,
-            screen: Screen::List,
-            input_mode: InputMode::Normal,
+            input_focus: InputFocus::default(),
             issues: Vec::new(),
             selected_index: 0,
             config,
@@ -521,7 +517,7 @@ impl App {
     fn handle_inline_created_message(&mut self, result: Result<String>) {
         match result {
             Ok(key) => {
-                self.input_mode = InputMode::Normal;
+                self.input_focus = InputFocus::List;
                 let found_index = self.display_rows.iter().position(|row| {
                     self.issue_for_display_row(row)
                         .map(|issue| issue.key == key)
@@ -535,7 +531,7 @@ impl App {
             }
             Err(err) => {
                 self.status_bar.message = format!("Failed: {err}");
-                self.input_mode = InputMode::Normal;
+                self.input_focus = InputFocus::List;
                 self.cancel_inline_new();
             }
         }
@@ -690,11 +686,12 @@ impl App {
         let summary = state.summary.trim().to_string();
         if summary.is_empty() {
             self.remove_inline_row(state.row_index);
-            self.input_mode = InputMode::Normal;
+            self.input_focus = InputFocus::List;
             self.status_bar.message = "Summary cannot be empty".into();
             return;
         }
 
+        self.input_focus = InputFocus::List;
         actions::create_inline_issue::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
@@ -1290,7 +1287,7 @@ impl App {
         };
         self.inline_new = Some(state);
         self.selected_index = insert_at;
-        self.input_mode = InputMode::Editing;
+        self.input_focus = InputFocus::InlineNew;
         true
     }
 
@@ -1300,12 +1297,7 @@ impl App {
             return;
         };
         self.remove_inline_row(state.row_index);
-        self.input_mode = InputMode::Normal;
-    }
-
-    /// Returns true if an inline new-issue editor is active.
-    pub fn inline_new_active(&self) -> bool {
-        self.inline_new.is_some()
+        self.input_focus = InputFocus::List;
     }
 
     /// Find the last row index belonging to the story group that contains `from`.
@@ -1422,10 +1414,12 @@ impl App {
             return;
         }
         self.list_view.open_label_picker();
+        self.input_focus = InputFocus::LabelPicker;
     }
 
     pub fn close_label_picker(&mut self) {
         self.list_view.close_label_picker();
+        self.input_focus = InputFocus::List;
     }
 
     pub fn move_label_picker_selection(&mut self, down: bool) {
@@ -1460,6 +1454,7 @@ impl App {
             return;
         }
         self.ci_log_popup.open();
+        self.input_focus = InputFocus::CiLogPopup;
         self.spawn_ci_log_fetch(&issue_key);
     }
 
@@ -1566,11 +1561,13 @@ impl App {
             project_key,
             scroll: 0,
         });
+        self.input_focus = InputFocus::ImportTasksPopup;
     }
 
     /// Close the import tasks popup without importing.
     pub fn close_import_tasks_popup(&mut self) {
         self.import_tasks_popup = None;
+        self.input_focus = InputFocus::List;
     }
 
     /// Confirm and execute the import from the popup.
@@ -1578,6 +1575,7 @@ impl App {
         let Some(popup) = self.import_tasks_popup.take() else {
             return;
         };
+        self.input_focus = InputFocus::List;
 
         self.status_bar.message = format!("Importing tasks for {}...", popup.issue_key);
         actions::import_tasks::spawn(
@@ -1637,6 +1635,7 @@ impl App {
 
     pub fn close_ci_log_popup(&mut self) {
         self.ci_log_popup.close();
+        self.input_focus = InputFocus::List;
     }
 
     pub fn scroll_ci_log_popup(&mut self, delta: isize) {
@@ -1659,16 +1658,16 @@ impl App {
     }
 
     pub fn start_search(&mut self) {
-        self.input_mode = InputMode::Searching;
+        self.input_focus = InputFocus::Search;
     }
 
     pub fn confirm_search(&mut self) {
-        self.input_mode = InputMode::Normal;
+        self.input_focus = InputFocus::List;
     }
 
     pub fn cancel_search(&mut self) {
         self.search_filter.clear();
-        self.input_mode = InputMode::Normal;
+        self.input_focus = InputFocus::List;
         self.rebuild_display_rows();
     }
 
