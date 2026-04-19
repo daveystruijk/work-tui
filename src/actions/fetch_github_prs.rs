@@ -21,7 +21,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, repos: Vec<String>) {
         return;
     }
 
-    super::spawn_action(tx, "Fetching PRs", |tx| async move {
+    super::spawn_action(tx, "fetch_github_prs", "Fetching PRs", |tx| async move {
         let (all_prs, errors) = github::list_all_repo_prs(&repos).await;
         let _ = tx.send(Message::GithubPrs(all_prs, errors));
     });

@@ -20,10 +20,10 @@ use crate::git;
 
 /// Spawn all initialization tasks concurrently.
 pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String) {
-    super::spawn_action(tx, "Initializing", |tx| async move {
+    super::spawn_action(tx, "initialize", "Initializing", |tx| async move {
         let current_branch = async {
             let _ = tx.send(Message::Progress(Progress {
-                action: "initialize",
+                task_id: "initialize".into(),
                 message: "Resolving git branch...".into(),
                 current: 1,
                 total: 3,
@@ -36,7 +36,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String
 
         let myself = async {
             let _ = tx.send(Message::Progress(Progress {
-                action: "initialize",
+                task_id: "initialize".into(),
                 message: "Fetching Jira identity...".into(),
                 current: 2,
                 total: 3,
@@ -50,7 +50,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String
 
         let issues = async {
             let _ = tx.send(Message::Progress(Progress {
-                action: "initialize",
+                task_id: "initialize".into(),
                 message: "Fetching issues...".into(),
                 current: 3,
                 total: 3,

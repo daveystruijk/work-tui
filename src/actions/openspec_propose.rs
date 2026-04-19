@@ -31,46 +31,51 @@ pub fn spawn(
     parent_stories: Vec<StoryContext>,
     repo_slugs: Vec<String>,
 ) {
-    super::spawn_action(tx, "Opening openspec propose", |tx| async move {
-        let result: Result<String> = async {
-            let slug = git::format_branch_name(&issue_key, &git::slugify(&issue_summary));
+    super::spawn_action(
+        tx,
+        "openspec_propose",
+        "Opening openspec propose",
+        |tx| async move {
+            let result: Result<String> = async {
+                let slug = git::format_branch_name(&issue_key, &git::slugify(&issue_summary));
 
-            let mut context = format!(
-                "This change solves the following ticket: {issue_summary}\n{issue_description}"
-            );
-            for story in &parent_stories {
-                context.push_str(&format!(
-                    "\n\nThis ticket is part of the following story: {}",
-                    story.summary
-                ));
-                if !story.description.is_empty() {
-                    context.push_str(&format!("\n{}", story.description));
+                let mut context = format!(
+                    "This change solves the following ticket: {issue_summary}\n{issue_description}"
+                );
+                for story in &parent_stories {
+                    context.push_str(&format!(
+                        "\n\nThis ticket is part of the following story: {}",
+                        story.summary
+                    ));
+                    if !story.description.is_empty() {
+                        context.push_str(&format!("\n{}", story.description));
+                    }
                 }
+                if !repo_slugs.is_empty() {
+                    context.push_str(&format!(
+                        "\n\nLinked repositories: {}",
+                        repo_slugs.join(", ")
+                    ));
+                }
+
+                let prompt = format!("/opsx-propose {slug}\n\n{context}");
+                let escaped_prompt = prompt.replace('\'', "'\\''");
+                let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
+                let dir = repos_dir.display().to_string();
+
+                let _ = Command::new("tmux")
+                    .args(["new-window", "-c", &dir])
+                    .output()
+                    .await;
+                let _ = Command::new("tmux")
+                    .args(["split-window", "-h", "-c", &dir, &shell_cmd])
+                    .output()
+                    .await;
+
+                Ok(slug)
             }
-            if !repo_slugs.is_empty() {
-                context.push_str(&format!(
-                    "\n\nLinked repositories: {}",
-                    repo_slugs.join(", ")
-                ));
-            }
-
-            let prompt = format!("/opsx-propose {slug}\n\n{context}");
-            let escaped_prompt = prompt.replace('\'', "'\\''");
-            let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
-            let dir = repos_dir.display().to_string();
-
-            let _ = Command::new("tmux")
-                .args(["new-window", "-c", &dir])
-                .output()
-                .await;
-            let _ = Command::new("tmux")
-                .args(["split-window", "-h", "-c", &dir, &shell_cmd])
-                .output()
-                .await;
-
-            Ok(slug)
-        }
-        .await;
-        let _ = tx.send(Message::OpenspecProposeOpened(result));
-    });
+            .await;
+            let _ = tx.send(Message::OpenspecProposeOpened(result));
+        },
+    );
 }

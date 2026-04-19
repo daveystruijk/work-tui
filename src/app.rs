@@ -22,6 +22,13 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone)]
+pub struct RunningAction {
+    pub id: String,
+    pub label: String,
+    pub progress: Option<actions::Progress>,
+}
+
 /// Compute duration in seconds between two ISO 8601 timestamps.
 fn parse_duration_secs(start: &str, end: &str) -> Option<u64> {
     let s = start.parse::<chrono::DateTime<chrono::Utc>>().ok()?;
@@ -146,8 +153,8 @@ pub struct AppView {
     pub github_prs: HashMap<String, PrInfo>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
     pub check_durations: HashMap<String, u64>,
-    /// Currently running background task names
-    pub running_tasks: HashSet<String>,
+    /// Currently running background tasks
+    pub running_tasks: Vec<RunningAction>,
     /// Sender for background tasks to deliver results
     pub message_tx: mpsc::UnboundedSender<Message>,
     /// Receiver polled in the event loop
@@ -193,7 +200,7 @@ impl AppView {
             sidebar: SidebarView::default(),
             github_prs: HashMap::new(),
             check_durations: HashMap::new(),
-            running_tasks: HashSet::new(),
+            running_tasks: Vec::new(),
             message_tx,
             message_rx,
             last_ci_refresh: std::time::Instant::now(),
@@ -201,8 +208,6 @@ impl AppView {
             import_tasks_popup: None,
             pending_import_keys: HashSet::new(),
         };
-
-        app.status_bar.message = "Loading...".to_string();
 
         app.check_durations = cache::load().check_durations;
 
@@ -428,28 +433,44 @@ impl AppView {
                 }
             }
             Message::OpenspecProposeOpened(_) => {}
-            Message::TasksImported(issue_key, result) => match result {
+            Message::TasksImported(_issue_key, result) => match result {
                 Ok(()) => {
-                    self.status_bar.message = format!("Tasks imported for {issue_key}");
                     self.spawn_refresh();
                     self.spawn_scan_import_tasks();
                 }
-                Err(err) => {
-                    self.status_bar.message = format!("Import failed: {err}");
-                }
+                Err(err) => self.status_bar.set_error(format!("Import failed: {err}")),
             },
             Message::PendingImportKeys(keys) => {
                 self.pending_import_keys = keys;
             }
-            Message::ActionStarted(name) => {
-                self.running_tasks.insert(name);
-                self.status_bar.handle_task_started(&self.running_tasks);
-            }
-            Message::ActionFinished(name) => {
-                self.running_tasks.remove(&name);
-                self.status_bar.handle_task_finished(&self.running_tasks);
-            }
-            Message::Progress(_) => {}
+            Message::ActionStarted { id, label } => self.start_running_action(id, label),
+            Message::ActionFinished(id) => self.finish_running_action(&id),
+            Message::Progress(progress) => self.update_running_action(progress),
+        }
+    }
+
+    fn start_running_action(&mut self, id: String, label: String) {
+        if self.running_tasks.iter().any(|task| task.id == id) {
+            return;
+        }
+        self.running_tasks.push(RunningAction {
+            id,
+            label,
+            progress: None,
+        });
+    }
+
+    fn finish_running_action(&mut self, id: &str) {
+        self.running_tasks.retain(|task| task.id != id);
+    }
+
+    fn update_running_action(&mut self, progress: actions::Progress) {
+        if let Some(task) = self
+            .running_tasks
+            .iter_mut()
+            .find(|task| task.id == progress.task_id)
+        {
+            task.progress = Some(progress);
         }
     }
 
@@ -525,11 +546,9 @@ impl AppView {
                 if let Some(index) = found_index {
                     self.selected_index = index;
                 }
-                self.status_bar
-                    .handle_inline_created(&key, found_index.is_some());
             }
             Err(err) => {
-                self.status_bar.message = format!("Failed: {err}");
+                self.status_bar.set_error(format!("Failed: {err}"));
                 self.input_focus = InputFocus::List;
                 self.cancel_inline_new();
             }
@@ -561,12 +580,12 @@ impl AppView {
         let repo_path = match self.repo_matches(issue).first() {
             Some(entry) => entry.path.clone(),
             None => {
-                self.status_bar.message = format!("Cannot pick up {issue_key}: no linked repo");
+                self.status_bar
+                    .set_warning(format!("Cannot pick up {issue_key}: no linked repo"));
                 return;
             }
         };
 
-        self.status_bar.message = "Picking up...".to_string();
         actions::pick_up::spawn(
             self.message_tx.clone(),
             self.client.clone(),
@@ -587,13 +606,12 @@ impl AppView {
         let repo_path = match self.repo_matches(issue).first() {
             Some(entry) => entry.path.clone(),
             None => {
-                self.status_bar.message =
-                    format!("Cannot open diff for {issue_key}: no linked repo");
+                self.status_bar
+                    .set_warning(format!("Cannot open diff for {issue_key}: no linked repo"));
                 return;
             }
         };
 
-        self.status_bar.message = "Opening diff...".to_string();
         actions::branch_diff::spawn(self.message_tx.clone(), issue_key, repo_path);
     }
 
@@ -604,11 +622,11 @@ impl AppView {
         };
         let issue_key = issue.key.clone();
         let Some(pr) = self.github_prs.get(&issue_key) else {
-            self.status_bar.message = format!("No PR found for {issue_key}");
+            self.status_bar
+                .set_warning(format!("No PR found for {issue_key}"));
             return;
         };
 
-        self.status_bar.message = "Approving & enabling auto-merge...".to_string();
         actions::approve_merge::spawn(self.message_tx.clone(), pr.repo_slug.clone(), pr.number);
     }
 
@@ -622,12 +640,12 @@ impl AppView {
         let repo_path = match self.repo_matches(issue).first() {
             Some(entry) => entry.path.clone(),
             None => {
-                self.status_bar.message = format!("Cannot finish {issue_key}: no linked repo");
+                self.status_bar
+                    .set_warning(format!("Cannot finish {issue_key}: no linked repo"));
                 return;
             }
         };
 
-        self.status_bar.message = "Finishing...".to_string();
         actions::finish::spawn(
             self.message_tx.clone(),
             self.client.clone(),
@@ -655,10 +673,10 @@ impl AppView {
                 .map(|children| !children.is_empty())
                 .unwrap_or(false);
             if has_children {
-                self.status_bar.message = format!("{issue_key} has children — remove them first");
+                self.status_bar
+                    .set_warning(format!("{issue_key} has children — remove them first"));
                 return;
             }
-            self.status_bar.message = "Reverting to task...".to_string();
             actions::convert_to_story::spawn(
                 self.message_tx.clone(),
                 self.client.clone(),
@@ -668,7 +686,6 @@ impl AppView {
             return;
         }
 
-        self.status_bar.message = "Converting to story...".to_string();
         actions::convert_to_story::spawn(
             self.message_tx.clone(),
             self.client.clone(),
@@ -686,7 +703,7 @@ impl AppView {
         if summary.is_empty() {
             self.remove_inline_row(state.row_index);
             self.input_focus = InputFocus::List;
-            self.status_bar.message = "Summary cannot be empty".into();
+            self.status_bar.set_warning("Summary cannot be empty");
             return;
         }
 
@@ -1399,7 +1416,7 @@ impl AppView {
                 let message = format!("Failed to scan repos: {err}");
                 self.repo_entries.clear();
                 self.repo_error = Some(message.clone());
-                self.status_bar.message = message;
+                self.status_bar.set_error(message);
             }
         }
     }
@@ -1408,7 +1425,8 @@ impl AppView {
         self.reload_repo_entries();
         if self.repo_entries.is_empty() {
             if self.repo_error.is_none() {
-                self.status_bar.message = "No repositories found in REPOS_DIR".to_string();
+                self.status_bar
+                    .set_warning("No repositories found in REPOS_DIR");
             }
             return;
         }
@@ -1418,16 +1436,16 @@ impl AppView {
 
     pub fn open_ci_log_popup(&mut self) {
         let Some(issue) = self.selected_issue() else {
-            self.status_bar.message = "No issue selected".to_string();
+            self.status_bar.set_warning("No issue selected");
             return;
         };
         let issue_key = issue.key.clone();
         let Some(pr) = self.github_prs.get(&issue_key) else {
-            self.status_bar.message = "No linked PR".to_string();
+            self.status_bar.set_warning("No linked PR");
             return;
         };
         if pr.check_runs.is_empty() {
-            self.status_bar.message = "No CI checks".to_string();
+            self.status_bar.set_warning("No CI checks");
             return;
         }
         self.ci_log_popup.open();
@@ -1454,19 +1472,20 @@ impl AppView {
     /// Checkout the PR branch and open opencode with the CI error as prompt.
     pub fn spawn_fix_ci(&mut self) {
         let Some(issue) = self.selected_issue() else {
-            self.status_bar.message = "No issue selected".to_string();
+            self.status_bar.set_warning("No issue selected");
             return;
         };
         let issue_key = issue.key.clone();
         let repo_path = match self.repo_matches(issue).first() {
             Some(entry) => entry.path.clone(),
             None => {
-                self.status_bar.message = format!("Cannot fix CI for {issue_key}: no linked repo");
+                self.status_bar
+                    .set_warning(format!("Cannot fix CI for {issue_key}: no linked repo"));
                 return;
             }
         };
         let Some(pr) = self.github_prs.get(&issue_key) else {
-            self.status_bar.message = "No linked PR".to_string();
+            self.status_bar.set_warning("No linked PR");
             return;
         };
 
@@ -1487,7 +1506,6 @@ impl AppView {
 
         self.ci_log_popup.close();
         self.input_focus = InputFocus::List;
-        self.status_bar.message = "Checking out branch and opening opencode...".to_string();
         actions::fix_ci::spawn(self.message_tx.clone(), repo_path, head_branch, ci_error);
     }
 
@@ -1512,7 +1530,7 @@ impl AppView {
             match actions::import_tasks::find_tasks_json(&self.config.repos_dir, &issue_key) {
                 Ok(path) => path,
                 Err(err) => {
-                    self.status_bar.message = format!("{err}");
+                    self.status_bar.set_error(format!("{err}"));
                     return;
                 }
             };
@@ -1520,14 +1538,14 @@ impl AppView {
         let tasks = match actions::import_tasks::load_tasks(&tasks_path) {
             Ok(tasks) => tasks,
             Err(err) => {
-                self.status_bar.message = format!("{err}");
+                self.status_bar.set_error(format!("{err}"));
                 return;
             }
         };
 
         let pending_count = tasks.iter().filter(|t| t.key.is_none()).count();
         if pending_count == 0 {
-            self.status_bar.message = "All tasks already imported".to_string();
+            self.status_bar.set_warning("All tasks already imported");
             return;
         }
 
@@ -1549,7 +1567,6 @@ impl AppView {
         };
         self.input_focus = InputFocus::List;
 
-        self.status_bar.message = format!("Importing tasks for {}...", popup.issue_key);
         actions::import_tasks::spawn(
             self.message_tx.clone(),
             self.client.clone(),
@@ -1586,7 +1603,6 @@ impl AppView {
             current_issue = Some(parent);
         }
 
-        self.status_bar.message = "Opening openspec propose...".to_string();
         actions::openspec_propose::spawn(
             self.message_tx.clone(),
             self.config.repos_dir.clone(),
@@ -1652,10 +1668,7 @@ impl AppView {
 
     /// Returns `true` when any background work is in progress.
     pub fn is_busy(&self) -> bool {
-        self.loading
-            || self.github_loading
-            || !self.running_tasks.is_empty()
-            || self.status_bar.message.starts_with('[')
+        self.loading || self.github_loading || !self.running_tasks.is_empty()
     }
 
     /// Returns `true` when any tracked PR has pending CI checks.
@@ -1790,11 +1803,11 @@ impl AppView {
             .and_then(|picker| picker.selected_entry(&self.repo_entries))
             .cloned()
         else {
-            self.status_bar.message = "No repository selected".to_string();
+            self.status_bar.set_warning("No repository selected");
             return false;
         };
         let Some(issue) = self.selected_issue() else {
-            self.status_bar.message = "No issue selected".to_string();
+            self.status_bar.set_warning("No issue selected");
             return false;
         };
         let issue_key = issue.key.clone();
@@ -1804,7 +1817,8 @@ impl AppView {
             .iter()
             .any(|l| repos::normalize_label(l) == target_normalized);
         if already_has {
-            self.status_bar.message = format!("{issue_key} already labeled with {}", entry.label);
+            self.status_bar
+                .set_warning(format!("{issue_key} already labeled with {}", entry.label));
             return false;
         }
         actions::add_label::spawn(
@@ -1825,7 +1839,6 @@ impl AppView {
 
         let url = format!("{}/browse/{}", self.config.jira.jira_url, issue_key);
         open_url_in_browser(&url).await?;
-        self.status_bar.message = format!("Opened {} in browser", url);
         Ok(())
     }
 
@@ -1841,9 +1854,7 @@ impl AppView {
             .ok_or_else(|| eyre!("No PR found for {issue_key}"))?;
 
         let url = pr.url.clone();
-        let number = pr.number;
         open_url_in_browser(&url).await?;
-        self.status_bar.message = format!("Opened PR #{number} in browser");
         Ok(())
     }
 }

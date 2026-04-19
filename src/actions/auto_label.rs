@@ -25,11 +25,11 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, to_label: V
         return;
     }
 
-    super::spawn_action(tx, "Auto-labeling", |tx| async move {
+    super::spawn_action(tx, "auto_label", "Auto-labeling", |tx| async move {
         let total = to_label.len();
         for (i, (issue_key, new_labels)) in to_label.into_iter().enumerate() {
             let _ = tx.send(Message::Progress(Progress {
-                action: "auto_label",
+                task_id: "auto_label".into(),
                 message: format!("Labeling {issue_key}..."),
                 current: i + 1,
                 total,

@@ -78,12 +78,17 @@ fn extract_issue_key(dir_name: &str) -> Option<String> {
 
 /// Spawn the scan as a background task.
 pub fn spawn(tx: mpsc::UnboundedSender<Message>, repos_dir: std::path::PathBuf) {
-    super::spawn_action(tx, "Scanning import tasks", |tx| async move {
-        let keys = tokio::task::spawn_blocking(move || scan(&repos_dir))
-            .await
-            .unwrap_or_default();
-        let _ = tx.send(Message::PendingImportKeys(keys));
-    });
+    super::spawn_action(
+        tx,
+        "scan_import_tasks",
+        "Scanning import tasks",
+        |tx| async move {
+            let keys = tokio::task::spawn_blocking(move || scan(&repos_dir))
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(Message::PendingImportKeys(keys));
+        },
+    );
 }
 
 #[cfg(test)]

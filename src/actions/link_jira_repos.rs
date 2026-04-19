@@ -40,7 +40,7 @@ pub fn spawn(
         return;
     }
 
-    super::spawn_action(tx, "Linking repos", |tx| async move {
+    super::spawn_action(tx, "link_jira_repos", "Linking repos", |tx| async move {
         let discovered = match search_org_prs(&github_org).await {
             Ok(prs) => prs,
             Err(_) => return,

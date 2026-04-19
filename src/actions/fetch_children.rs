@@ -14,6 +14,7 @@ use crate::apis::jira::JiraClient;
 pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, parent_key: String) {
     super::spawn_action(
         tx,
+        format!("fetch_children:{parent_key}"),
         format!("Fetching children for {parent_key}"),
         |tx| async move {
             let result = client

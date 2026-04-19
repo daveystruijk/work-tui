@@ -40,11 +40,11 @@ use crate::apis::{
 
 /// Generic progress report sent by long-running actions.
 ///
-/// Rendered in the status bar as `"[action] message (current/max)"`.
+/// Rendered in the status bar as `"[task_id] message (current/max)"`.
 #[derive(Debug, Clone)]
 pub struct Progress {
-    /// Machine-readable action name (e.g. `"fetch_github_statuses"`).
-    pub action: &'static str,
+    /// Stable task id.
+    pub task_id: String,
     /// Human-readable description of the current step.
     pub message: String,
     /// Current step (1-indexed).
@@ -59,10 +59,10 @@ impl fmt::Display for Progress {
             write!(
                 f,
                 "[{}] {} ({}/{})",
-                self.action, self.message, self.current, self.total
+                self.task_id, self.message, self.current, self.total
             )
         } else {
-            write!(f, "[{}] {}", self.action, self.message)
+            write!(f, "[{}] {}", self.task_id, self.message)
         }
     }
 }
@@ -70,7 +70,6 @@ impl fmt::Display for Progress {
 #[derive(Debug, Clone)]
 pub struct PickUpResult {
     pub branch: String,
-    pub skipped_opencode: bool,
 }
 
 /// Messages sent from background actions back to the main event loop.
@@ -122,9 +121,9 @@ pub enum Message {
     TasksImported(String, Result<()>),
     /// Issue keys that have pending import tasks (from [`scan_import_tasks`]).
     PendingImportKeys(HashSet<String>),
-    /// An action has started. The payload is the human-readable action name.
-    ActionStarted(String),
-    /// An action has finished. The payload is the human-readable action name.
+    /// An action has started.
+    ActionStarted { id: String, label: String },
+    /// An action has finished. The payload is the task id.
     ActionFinished(String),
     /// Generic progress update from any long-running action.
     ///
@@ -139,16 +138,21 @@ pub enum Message {
 /// messages. `spawn_action` wraps it with the start/finish lifecycle messages.
 pub fn spawn_action<F, Fut>(
     tx: mpsc::UnboundedSender<Message>,
-    task_name: impl Into<String>,
+    task_id: impl Into<String>,
+    label: impl Into<String>,
     action: F,
 ) where
     F: FnOnce(mpsc::UnboundedSender<Message>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
-    let task_name = task_name.into();
+    let task_id = task_id.into();
+    let label = label.into();
     tokio::spawn(async move {
-        let _ = tx.send(Message::ActionStarted(task_name.clone()));
+        let _ = tx.send(Message::ActionStarted {
+            id: task_id.clone(),
+            label,
+        });
         action(tx.clone()).await;
-        let _ = tx.send(Message::ActionFinished(task_name));
+        let _ = tx.send(Message::ActionFinished(task_id));
     });
 }

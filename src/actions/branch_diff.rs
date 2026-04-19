@@ -14,7 +14,7 @@ use super::Message;
 use crate::git;
 
 pub fn spawn(tx: mpsc::UnboundedSender<Message>, issue_key: String, repo_path: PathBuf) {
-    super::spawn_action(tx, "Opening diff", |tx| async move {
+    super::spawn_action(tx, "branch_diff", "Opening diff", |tx| async move {
         let result: color_eyre::Result<String> = async {
             // Fetch first so remote-only branches are visible
             git::fetch_origin(&repo_path).await?;

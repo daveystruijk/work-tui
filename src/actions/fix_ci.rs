@@ -23,7 +23,7 @@ pub fn spawn(
     branch: String,
     ci_error: String,
 ) {
-    super::spawn_action(tx, "Fixing CI", |tx| async move {
+    super::spawn_action(tx, "fix_ci", "Fixing CI", |tx| async move {
         let result: Result<String> = async {
             git::fetch_origin(&repo_path).await?;
             git::checkout_branch(&repo_path, &branch).await?;

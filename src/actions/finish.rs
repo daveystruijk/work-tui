@@ -30,7 +30,7 @@ pub fn spawn(
     issue_summary: String,
     repo_path: PathBuf,
 ) {
-    super::spawn_action(tx, "Finishing", |tx| async move {
+    super::spawn_action(tx, "finish", "Finishing", |tx| async move {
         let result: color_eyre::Result<String> = async {
             let branch = git::current_branch_in(&repo_path).await?;
             if branch.is_empty() {
@@ -41,7 +41,7 @@ pub fn spawn(
             }
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "finish",
+                task_id: "finish".into(),
                 message: "Checking working tree...".into(),
                 current: 1,
                 total: 5,
@@ -52,7 +52,7 @@ pub fn spawn(
             }
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "finish",
+                task_id: "finish".into(),
                 message: "Fetching origin...".into(),
                 current: 2,
                 total: 5,
@@ -60,7 +60,7 @@ pub fn spawn(
             git::fetch_origin(&repo_path).await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "finish",
+                task_id: "finish".into(),
                 message: "Pushing branch...".into(),
                 current: 3,
                 total: 5,
@@ -69,7 +69,7 @@ pub fn spawn(
             git::push_branch(&repo_path, &branch).await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "finish",
+                task_id: "finish".into(),
                 message: "Creating pull request...".into(),
                 current: 4,
                 total: 5,
@@ -77,7 +77,7 @@ pub fn spawn(
             let pr_url = github::create_pr(&repo_path, &pr_title, "").await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "finish",
+                task_id: "finish".into(),
                 message: "Transitioning to Review...".into(),
                 current: 5,
                 total: 5,

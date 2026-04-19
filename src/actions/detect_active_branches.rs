@@ -21,26 +21,31 @@ pub type IssueBranchData = (String, Vec<(String, PathBuf)>);
 
 /// Spawn active branch detection across all issue/repo combinations.
 pub fn spawn(tx: mpsc::UnboundedSender<Message>, issue_data: Vec<IssueBranchData>) {
-    super::spawn_action(tx, "Scanning branches", |tx| async move {
-        let total = issue_data.len();
-        let mut active = HashMap::new();
-        for (i, (issue_key, repos)) in issue_data.into_iter().enumerate() {
-            let _ = tx.send(Message::Progress(Progress {
-                action: "detect_active_branches",
-                message: format!("Checking {issue_key}..."),
-                current: i + 1,
-                total,
-            }));
-            for (label, path) in repos {
-                let Ok(branch) = git::current_branch_in(&path).await else {
-                    continue;
-                };
-                if branch.to_lowercase().starts_with(&issue_key.to_lowercase()) {
-                    active.insert(issue_key.clone(), label);
-                    break;
+    super::spawn_action(
+        tx,
+        "detect_active_branches",
+        "Scanning branches",
+        |tx| async move {
+            let total = issue_data.len();
+            let mut active = HashMap::new();
+            for (i, (issue_key, repos)) in issue_data.into_iter().enumerate() {
+                let _ = tx.send(Message::Progress(Progress {
+                    task_id: "detect_active_branches".into(),
+                    message: format!("Checking {issue_key}..."),
+                    current: i + 1,
+                    total,
+                }));
+                for (label, path) in repos {
+                    let Ok(branch) = git::current_branch_in(&path).await else {
+                        continue;
+                    };
+                    if branch.to_lowercase().starts_with(&issue_key.to_lowercase()) {
+                        active.insert(issue_key.clone(), label);
+                        break;
+                    }
                 }
             }
-        }
-        let _ = tx.send(Message::ActiveBranches(active));
-    });
+            let _ = tx.send(Message::ActiveBranches(active));
+        },
+    );
 }

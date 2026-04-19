@@ -7,8 +7,13 @@ pub fn spawn(
     repo_slug: String,
     pr_number: u64,
 ) {
-    super::spawn_action(tx, format!("Fetching #{issue_key}"), move |tx| async move {
-        let result = github::fetch_pr_detail(&repo_slug, pr_number).await;
-        let _ = tx.send(Message::GithubPrDetail(issue_key, result));
-    });
+    super::spawn_action(
+        tx,
+        format!("fetch_github_pr_detail:{issue_key}"),
+        format!("Fetching #{issue_key}"),
+        move |tx| async move {
+            let result = github::fetch_pr_detail(&repo_slug, pr_number).await;
+            let _ = tx.send(Message::GithubPrDetail(issue_key, result));
+        },
+    );
 }

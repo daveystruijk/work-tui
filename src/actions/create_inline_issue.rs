@@ -33,77 +33,82 @@ pub fn spawn(
     summary: String,
     parent_key: Option<String>,
 ) {
-    super::spawn_action(tx, "Creating issue", |tx| async move {
-        let _ = tx.send(Message::Progress(Progress {
-            action: "create_inline_issue",
-            message: "Creating issue...".into(),
-            current: 1,
-            total: 1,
-        }));
-        let result: color_eyre::Result<RunResult> = async {
-            let issue_types = client.get_issue_types(&project_key).await?;
-            let issue_type = if parent_key.is_some() {
-                issue_types
-                    .iter()
-                    .find(|t| t.subtask)
-                    .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
-            } else {
-                issue_types
-                    .iter()
-                    .find(|t| !t.subtask && t.name.eq_ignore_ascii_case("task"))
-                    .or_else(|| issue_types.iter().find(|t| !t.subtask))
-                    .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?
-            };
+    super::spawn_action(
+        tx,
+        "create_inline_issue",
+        "Creating issue",
+        |tx| async move {
+            let _ = tx.send(Message::Progress(Progress {
+                task_id: "create_inline_issue".into(),
+                message: "Creating issue...".into(),
+                current: 1,
+                total: 1,
+            }));
+            let result: color_eyre::Result<RunResult> = async {
+                let issue_types = client.get_issue_types(&project_key).await?;
+                let issue_type = if parent_key.is_some() {
+                    issue_types
+                        .iter()
+                        .find(|t| t.subtask)
+                        .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
+                } else {
+                    issue_types
+                        .iter()
+                        .find(|t| !t.subtask && t.name.eq_ignore_ascii_case("task"))
+                        .or_else(|| issue_types.iter().find(|t| !t.subtask))
+                        .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?
+                };
 
-            let created_key = client
-                .create_issue(
-                    &project_key,
-                    &issue_type.id,
-                    &summary,
-                    None,
-                    parent_key.as_deref(),
-                )
-                .await?;
+                let created_key = client
+                    .create_issue(
+                        &project_key,
+                        &issue_type.id,
+                        &summary,
+                        None,
+                        parent_key.as_deref(),
+                    )
+                    .await?;
 
-            let mut last_issues = None;
-            for attempt in 0..6 {
-                if let Ok(issues) = client.search(&jql).await {
-                    if issues.iter().any(|issue| issue.key == created_key) {
-                        return Ok(RunResult {
-                            created_key,
-                            refreshed_issues: Some(issues),
-                        });
+                let mut last_issues = None;
+                for attempt in 0..6 {
+                    if let Ok(issues) = client.search(&jql).await {
+                        if issues.iter().any(|issue| issue.key == created_key) {
+                            return Ok(RunResult {
+                                created_key,
+                                refreshed_issues: Some(issues),
+                            });
+                        }
+                        last_issues = Some(issues);
                     }
-                    last_issues = Some(issues);
+
+                    if attempt < 5 {
+                        let _ = tx.send(Message::Progress(Progress {
+                            task_id: "create_inline_issue".into(),
+                            message: format!("Waiting for Jira to index {created_key}..."),
+                            current: attempt + 2,
+                            total: 7,
+                        }));
+                        sleep(Duration::from_millis(250)).await;
+                    }
                 }
 
-                if attempt < 5 {
-                    let _ = tx.send(Message::Progress(Progress {
-                        action: "create_inline_issue",
-                        message: format!("Waiting for Jira to index {created_key}..."),
-                        current: attempt + 2,
-                        total: 7,
-                    }));
-                    sleep(Duration::from_millis(250)).await;
+                Ok(RunResult {
+                    created_key,
+                    refreshed_issues: last_issues,
+                })
+            }
+            .await;
+            match result {
+                Ok(run_result) => {
+                    if let Some(issues) = run_result.refreshed_issues {
+                        let _ = tx.send(Message::Issues(Ok(issues)));
+                    }
+                    let _ = tx.send(Message::InlineCreated(Ok(run_result.created_key)));
+                }
+                Err(error) => {
+                    let _ = tx.send(Message::InlineCreated(Err(error)));
                 }
             }
-
-            Ok(RunResult {
-                created_key,
-                refreshed_issues: last_issues,
-            })
-        }
-        .await;
-        match result {
-            Ok(run_result) => {
-                if let Some(issues) = run_result.refreshed_issues {
-                    let _ = tx.send(Message::Issues(Ok(issues)));
-                }
-                let _ = tx.send(Message::InlineCreated(Ok(run_result.created_key)));
-            }
-            Err(error) => {
-                let _ = tx.send(Message::InlineCreated(Err(error)));
-            }
-        }
-    });
+        },
+    );
 }

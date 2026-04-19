@@ -1,8 +1,8 @@
-use std::{collections::HashSet, time::Instant};
+use std::time::Instant;
 
 use crossterm::event::KeyEvent;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -10,142 +10,95 @@ use ratatui::{
 };
 
 use crate::actions::Message;
-use crate::app::{AppView, InputFocus};
+use crate::app::{AppView, InputFocus, RunningAction};
 use crate::theme::Theme;
 
 use super::SPINNER_FRAMES;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertLevel {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusAlert {
+    pub level: AlertLevel,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StatusBarView {
-    pub message: String,
+    pub alerts: Vec<StatusAlert>,
     pub last_updated: Option<Instant>,
 }
 
 impl StatusBarView {
-    pub fn handle_message(&mut self, msg: &Message, running_tasks: &HashSet<String>) {
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.alerts = vec![StatusAlert {
+            level: AlertLevel::Error,
+            message: message.into(),
+        }];
+    }
+
+    pub fn set_warning(&mut self, message: impl Into<String>) {
+        self.alerts = vec![StatusAlert {
+            level: AlertLevel::Warning,
+            message: message.into(),
+        }];
+    }
+
+    pub fn handle_message(&mut self, msg: &Message, _running_tasks: &[RunningAction]) {
         match msg {
-            Message::Myself(Err(err)) => {
-                self.message = format!("Failed to fetch user: {err}");
-            }
-            Message::Issues(Ok(_)) => {
-                self.last_updated = Some(Instant::now());
-            }
-            Message::Issues(Err(err)) => {
-                self.message = format!("Failed to load issues: {err}");
-            }
+            Message::Myself(Err(err)) => self.set_error(format!("Failed to fetch user: {err}")),
+            Message::Issues(Ok(_)) => self.last_updated = Some(Instant::now()),
+            Message::Issues(Err(err)) => self.set_error(format!("Failed to load issues: {err}")),
             Message::GithubPrs(_, errors) => {
                 self.last_updated = Some(Instant::now());
                 if !errors.is_empty() {
-                    self.message = format!("Failed: {}", errors.join("; "));
-                    return;
-                }
-                if running_tasks.is_empty() {
-                    self.message = "Ready".to_string();
+                    self.set_error(format!("Failed: {}", errors.join("; ")));
                 }
             }
             Message::GithubPrDetail(issue_key, Err(err)) => {
-                self.message = format!("Failed to load PR detail for {issue_key}: {err}");
-            }
-            Message::ConvertedToStory(issue_key, Ok(())) => {
-                self.message = format!("Converted {issue_key}");
+                self.set_error(format!("Failed to load PR detail for {issue_key}: {err}"));
             }
             Message::ConvertedToStory(issue_key, Err(err)) => {
-                self.message = format!("Failed to convert {issue_key}: {err}");
+                self.set_error(format!("Failed to convert {issue_key}: {err}"));
             }
             Message::CiLogsFetched(issue_key, Err(err)) => {
-                self.message = format!("Failed to fetch CI logs for {issue_key}: {err}");
+                self.set_error(format!("Failed to fetch CI logs for {issue_key}: {err}"));
             }
-            Message::FixCiOpened(Ok(_)) => {
-                self.message = "Opened opencode to fix CI".to_string();
-            }
-            Message::FixCiOpened(Err(err)) => {
-                self.message = format!("Failed to fix CI: {err}");
-            }
-            Message::PickedUp(Ok(pickup)) => {
-                let skipped_note = if pickup.skipped_opencode {
-                    " (skipped opencode: uncommitted changes)"
-                } else {
-                    ""
-                };
-                self.message = format!("Picked up {}{}", pickup.branch, skipped_note);
+            Message::FixCiOpened(Err(err)) => self.set_error(format!("Failed to fix CI: {err}")),
+            Message::OpenspecProposeOpened(Err(err)) => {
+                self.set_error(format!("Failed to open openspec propose: {err}"));
             }
             Message::PickedUp(Err(err)) => {
-                self.message = format!("Failed to pick up issue: {err}");
-            }
-            Message::BranchDiffOpened(Ok(branch)) => {
-                self.message = format!("Opened diff for {branch}");
+                self.set_error(format!("Failed to pick up issue: {err}"))
             }
             Message::BranchDiffOpened(Err(err)) => {
-                self.message = format!("Branch diff failed: {err}");
-            }
-            Message::ApproveAutoMerged(Ok(pr_number)) => {
-                self.message = format!("Approved & auto-merge enabled for PR #{pr_number}");
+                self.set_error(format!("Branch diff failed: {err}"));
             }
             Message::ApproveAutoMerged(Err(err)) => {
-                self.message = format!("Approve/merge failed: {err}");
+                self.set_error(format!("Approve/merge failed: {err}"));
             }
-            Message::Finished(Ok(pr_url)) => {
-                self.message = format!("PR created: {pr_url}");
-            }
-            Message::Finished(Err(err)) => {
-                self.message = format!("Finish failed: {err}");
-            }
+            Message::Finished(Err(err)) => self.set_error(format!("Finish failed: {err}")),
             Message::ChildrenLoaded(parent_key, Err(err)) => {
-                self.message = format!("Failed to load children for {parent_key}: {err}");
+                self.set_error(format!("Failed to load children for {parent_key}: {err}"));
             }
-            Message::LabelAdded(Ok((issue_key, label))) => {
-                self.message = format!("Added label {label} to {issue_key}");
-            }
-            Message::LabelAdded(Err(err)) => {
-                self.message = format!("Failed to add label: {err}");
-            }
-            Message::Progress(progress) => {
-                self.message = progress.to_string();
-            }
+            Message::LabelAdded(Err(err)) => self.set_error(format!("Failed to add label: {err}")),
             _ => {}
-        }
-    }
-
-    pub fn handle_inline_created(&mut self, key: &str, appeared: bool) {
-        self.message = if appeared {
-            format!("Created {key}")
-        } else {
-            format!("Created {key} (may take a moment to appear)")
-        };
-    }
-
-    pub fn handle_task_started(&mut self, running_tasks: &HashSet<String>) {
-        self.refresh_task_message(running_tasks);
-    }
-
-    pub fn handle_task_finished(&mut self, running_tasks: &HashSet<String>) {
-        self.refresh_task_message(running_tasks);
-    }
-
-    fn refresh_task_message(&mut self, running_tasks: &HashSet<String>) {
-        if !running_tasks.is_empty() {
-            let names: Vec<_> = running_tasks.iter().map(|name| name.as_str()).collect();
-            self.message = format!("[{}]", names.join(", "));
-            return;
-        }
-
-        if self.message.starts_with('[') {
-            self.message.clear();
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
 
     use crate::app::InputFocus;
 
     use super::*;
-
     use crate::fixtures::{render_to_string, test_app};
 
     #[test]
@@ -163,8 +116,11 @@ mod tests {
     #[test]
     fn snapshots_loading_status_bar() {
         let mut app = test_app();
-        app.status_bar.message = "Loading...".to_string();
-        app.loading = true;
+        app.running_tasks.push(RunningAction {
+            id: "refresh".to_string(),
+            label: "Refreshing issues".to_string(),
+            progress: None,
+        });
         app.animation.spinner_tick = 4;
         let rendered = render_to_string(48, 1, |frame| {
             render(&app, frame, Rect::new(0, 0, 48, 1));
@@ -200,7 +156,8 @@ pub fn footer_height(app: &AppView) -> u16 {
 fn has_content(app: &AppView) -> bool {
     app.input_focus == InputFocus::Search
         || !app.search_filter.is_empty()
-        || !app.status_bar.message.is_empty()
+        || !app.status_bar.alerts.is_empty()
+        || !app.running_tasks.is_empty()
         || app.status_bar.last_updated.is_some()
 }
 
@@ -241,26 +198,8 @@ pub fn render(app: &AppView, frame: &mut Frame, area: Rect) {
                 Style::default().fg(Theme::Muted),
             ),
         ])
-    } else if !app.status_bar.message.is_empty() {
-        let is_loading = app.loading || app.github_loading || !app.running_tasks.is_empty();
-        let status_message = app.status_bar.message.as_str();
-        let is_progress = status_message.starts_with('[');
-        let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
-        let (icon, color) =
-            if status_message.starts_with("Failed") || status_message.starts_with("Error") {
-                ("✖", Theme::Error)
-            } else if is_loading || is_progress {
-                (spinner, Theme::Warning)
-            } else {
-                ("✔", Theme::Success)
-            };
-
-        Line::from(vec![
-            Span::styled(format!("{icon} "), Style::default().fg(color)),
-            Span::styled(status_message, Style::default().fg(Theme::Text)),
-        ])
     } else {
-        Line::default()
+        render_status_items(app)
     };
 
     let updated_text = app.status_bar.last_updated.map(|last_updated| {
@@ -270,9 +209,12 @@ pub fn render(app: &AppView, frame: &mut Frame, area: Rect) {
         )
     });
     let right_width = updated_text.as_ref().map_or(0, |text| text.len() as u16);
-    let bar_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(right_width)])
+    let bar_layout = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Horizontal)
+        .constraints([
+            ratatui::layout::Constraint::Min(0),
+            ratatui::layout::Constraint::Length(right_width),
+        ])
         .split(area);
 
     frame.render_widget(
@@ -286,9 +228,60 @@ pub fn render(app: &AppView, frame: &mut Frame, area: Rect) {
                 text,
                 Style::default().fg(Theme::Muted),
             )))
-            .alignment(Alignment::Right)
-            .style(Style::default().bg(Theme::Panel)),
+            .style(Style::default().bg(Theme::Panel))
+            .alignment(ratatui::layout::Alignment::Right),
             bar_layout[1],
         );
     }
+}
+
+fn render_status_items(app: &AppView) -> Line<'static> {
+    let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
+    let mut spans = Vec::new();
+
+    for (index, action) in app.running_tasks.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" • ", Style::default().fg(Theme::Muted)));
+        }
+        spans.extend(render_running_action(action, spinner));
+    }
+
+    for alert in &app.status_bar.alerts {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" • ", Style::default().fg(Theme::Muted)));
+        }
+        spans.extend(render_alert(alert));
+    }
+
+    Line::from(spans)
+}
+
+fn render_running_action(action: &RunningAction, spinner: &str) -> Vec<Span<'static>> {
+    let message = match &action.progress {
+        Some(progress) if progress.total > 0 => {
+            format!(
+                "{}: {} ({}/{})",
+                action.label, progress.message, progress.current, progress.total
+            )
+        }
+        Some(progress) => format!("{}: {}", action.label, progress.message),
+        None => action.label.clone(),
+    };
+
+    vec![
+        Span::styled(format!("{spinner} "), Style::default().fg(Theme::Warning)),
+        Span::styled(message, Style::default().fg(Theme::Text)),
+    ]
+}
+
+fn render_alert(alert: &StatusAlert) -> Vec<Span<'static>> {
+    let (icon, color) = match alert.level {
+        AlertLevel::Warning => ("!", Theme::Warning),
+        AlertLevel::Error => ("✖", Theme::Error),
+    };
+
+    vec![
+        Span::styled(format!("{icon} "), Style::default().fg(color)),
+        Span::styled(alert.message.clone(), Style::default().fg(Theme::Text)),
+    ]
 }

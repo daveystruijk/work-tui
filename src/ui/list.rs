@@ -191,13 +191,13 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
                         'p' => app.spawn_pick_up(),
                         'o' => match app.open_selected_pr_in_browser().await {
                             Ok(_) => {}
-                            Err(err) => app.status_bar.message = format!("{err}"),
+                            Err(err) => app.status_bar.set_error(format!("{err}")),
                         },
                         't' => match app.open_selected_issue_in_browser().await {
                             Ok(_) => {}
-                            Err(err) => {
-                                app.status_bar.message = format!("Failed to open issue: {err}")
-                            }
+                            Err(err) => app
+                                .status_bar
+                                .set_error(format!("Failed to open issue: {err}")),
                         },
                         'n' => {
                             app.start_inline_new();
@@ -254,7 +254,6 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
             if key_event.modifiers.contains(KeyModifiers::CONTROL) {
                 match key_event.code {
                     KeyCode::Char('s') | KeyCode::Char('S') => {
-                        app.status_bar.message = "Creating issue...".to_string();
                         app.spawn_submit_inline_new();
                         return;
                     }
@@ -265,7 +264,6 @@ pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
             match key_event.code {
                 KeyCode::Esc => app.cancel_inline_new(),
                 KeyCode::Enter => {
-                    app.status_bar.message = "Creating issue...".to_string();
                     app.spawn_submit_inline_new();
                 }
                 KeyCode::Backspace => {

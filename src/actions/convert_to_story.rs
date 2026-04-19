@@ -15,6 +15,7 @@ pub fn spawn(
 ) {
     super::spawn_action(
         tx,
+        format!("convert_to_story:{issue_key}"),
         format!("Converting to {target_type}"),
         move |tx| async move {
             let result = client.update_issue_type(&issue_key, target_type).await;

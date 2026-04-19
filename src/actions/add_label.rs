@@ -17,7 +17,7 @@ pub fn spawn(
     label: String,
     labels: Vec<String>,
 ) {
-    super::spawn_action(tx, "Adding label", |tx| async move {
+    super::spawn_action(tx, "add_label", "Adding label", |tx| async move {
         let mut labels = labels;
         labels.push(label.clone());
         let result = client

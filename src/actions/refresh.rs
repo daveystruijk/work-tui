@@ -14,7 +14,7 @@ use crate::apis::jira::JiraClient;
 
 /// Spawn a Jira issue refresh.
 pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String) {
-    super::spawn_action(tx, "Refreshing issues", |tx| async move {
+    super::spawn_action(tx, "refresh", "Refreshing issues", |tx| async move {
         let result = client.search(&jql).await;
         let _ = tx.send(Message::Issues(result));
     });

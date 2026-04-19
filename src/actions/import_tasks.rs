@@ -96,7 +96,7 @@ pub fn spawn(
     issue_type_name: String,
     project_key: String,
 ) {
-    super::spawn_action(tx, "Importing tasks", |tx| async move {
+    super::spawn_action(tx, "import_tasks", "Importing tasks", |tx| async move {
         let result = run(
             &tx,
             &client,
@@ -139,7 +139,7 @@ async fn run(
         let task = &tasks[task_index];
 
         let _ = tx.send(Message::Progress(Progress {
-            action: "import_tasks",
+            task_id: "import_tasks".into(),
             message: format!("Updating {issue_key}..."),
             current: 1,
             total: base_progress_total,
@@ -163,7 +163,7 @@ async fn run(
 
     if !is_story {
         let _ = tx.send(Message::Progress(Progress {
-            action: "import_tasks",
+            task_id: "import_tasks".into(),
             message: format!("Converting {issue_key} to Story..."),
             current: 1,
             total: multi_task_progress_total,
@@ -183,7 +183,7 @@ async fn run(
         let task = &tasks[task_index];
 
         let _ = tx.send(Message::Progress(Progress {
-            action: "import_tasks",
+            task_id: "import_tasks".into(),
             message: format!("Creating subtask: {}...", task.title),
             current: step + first_create_step,
             total: multi_task_progress_total,

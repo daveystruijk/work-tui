@@ -32,10 +32,10 @@ pub fn spawn(
     repo_path: PathBuf,
     my_account_id: String,
 ) {
-    super::spawn_action(tx, "Picking up", |tx| async move {
+    super::spawn_action(tx, "pick_up", "Picking up", |tx| async move {
         let result: color_eyre::Result<PickUpResult> = async {
             let _ = tx.send(Message::Progress(Progress {
-                action: "pick_up",
+                task_id: "pick_up".into(),
                 message: "Inspecting working tree...".into(),
                 current: 1,
                 total: 6,
@@ -43,7 +43,7 @@ pub fn spawn(
             let has_uncommitted_changes = !git::is_clean(&repo_path).await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "pick_up",
+                task_id: "pick_up".into(),
                 message: "Fetching origin...".into(),
                 current: 2,
                 total: 6,
@@ -51,7 +51,7 @@ pub fn spawn(
             git::fetch_origin(&repo_path).await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "pick_up",
+                task_id: "pick_up".into(),
                 message: "Creating or reusing branch...".into(),
                 current: 3,
                 total: 6,
@@ -60,7 +60,7 @@ pub fn spawn(
                 git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "pick_up",
+                task_id: "pick_up".into(),
                 message: "Assigning issue...".into(),
                 current: 4,
                 total: 6,
@@ -68,7 +68,7 @@ pub fn spawn(
             client.assign_issue(&issue_key, &my_account_id).await?;
 
             let _ = tx.send(Message::Progress(Progress {
-                action: "pick_up",
+                task_id: "pick_up".into(),
                 message: "Transitioning to In Progress and moving issue to board...".into(),
                 current: 5,
                 total: 6,
@@ -85,7 +85,7 @@ pub fn spawn(
             let should_open_opencode = branch_setup.reused_existing || !has_uncommitted_changes;
             if should_open_opencode {
                 let _ = tx.send(Message::Progress(Progress {
-                    action: "pick_up",
+                    task_id: "pick_up".into(),
                     message: "Opening opencode session...".into(),
                     current: 6,
                     total: 6,
@@ -105,7 +105,7 @@ pub fn spawn(
                     .await;
             } else {
                 let _ = tx.send(Message::Progress(Progress {
-                    action: "pick_up",
+                    task_id: "pick_up".into(),
                     message: "Skipping opencode (uncommitted changes)...".into(),
                     current: 6,
                     total: 6,
@@ -114,7 +114,6 @@ pub fn spawn(
 
             Ok(PickUpResult {
                 branch: branch_setup.branch_name,
-                skipped_opencode: has_uncommitted_changes && !branch_setup.reused_existing,
             })
         }
         .await;
