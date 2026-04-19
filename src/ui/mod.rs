@@ -5,12 +5,12 @@ pub mod list;
 mod sidebar;
 mod status_bar;
 
-pub use ci_logs::CiLogPopupState;
-pub use import_tasks::ImportTasksPopupState;
-pub use label_picker::LabelPickerState;
-pub use list::ListViewState;
-pub use sidebar::SidebarState;
-pub use status_bar::StatusBarState;
+pub use ci_logs::CiLogsView;
+pub use import_tasks::ImportTasksView;
+pub use label_picker::LabelPickerView;
+pub use list::ListView;
+pub use sidebar::SidebarView;
+pub use status_bar::StatusBarView;
 
 use std::collections::HashMap;
 
@@ -24,7 +24,7 @@ use ratatui::{
 use crate::theme::Theme;
 use crate::{
     apis::jira::{Issue, User},
-    app::App,
+    app::AppView,
 };
 
 pub const COLUMNS: &[&str] = &["Key", "Summary", "PR", "CI", "Status", "Assignee", "Repo"];
@@ -35,11 +35,11 @@ pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug, Clone, Default)]
-pub struct UiAnimationState {
+pub struct UiAnimationView {
     pub spinner_tick: usize,
 }
 
-impl UiAnimationState {
+impl UiAnimationView {
     pub fn tick_spinner(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
@@ -54,7 +54,7 @@ pub fn max_col_width(row_data: &[(CellMap, Style)], name: &str) -> u16 {
         .unwrap_or(0)
 }
 
-pub fn render(app: &mut App, frame: &mut Frame) {
+pub fn render(app: &mut AppView, frame: &mut Frame) {
     let area = frame.area();
 
     // Horizontal split: list column (flexible) | sidebar column (fixed 44 wide)
@@ -70,21 +70,21 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
         .split(columns[0]);
 
-    list::render_list(app, frame, list_chunks[0]);
+    list::render(app, frame, list_chunks[0]);
 
     if footer_height > 0 {
-        status_bar::render_status_bar(app, frame, list_chunks[1]);
+        status_bar::render(app, frame, list_chunks[1]);
     }
 
     // Sidebar gets the full height (no footer)
-    sidebar::render_sidebar(app, frame, columns[1]);
+    sidebar::render(app, frame, columns[1]);
 
     // Popup overlays
     use crate::app::InputFocus;
     match app.input_focus {
-        InputFocus::ImportTasksPopup => import_tasks::render_import_tasks_popup(app, frame),
-        InputFocus::CiLogPopup => ci_logs::render_ci_log_popup(app, frame),
-        InputFocus::LabelPicker => label_picker::render_label_picker(app, frame),
+        InputFocus::ImportTasksPopup => import_tasks::render(app, frame),
+        InputFocus::CiLogPopup => ci_logs::render(app, frame),
+        InputFocus::LabelPicker => label_picker::render(app, frame),
         _ => {}
     }
 }

@@ -10,23 +10,34 @@ use ratatui::{
 };
 
 use crate::actions::import_tasks::TaskEntry;
-use crate::app::App;
+use crate::app::AppView;
 use crate::theme::Theme;
 
 use super::wrap_text;
 
-pub fn handle_import_tasks_popup(app: &mut App, key_event: KeyEvent) {
+pub fn handle_input(app: &mut AppView, key_event: KeyEvent) {
     match key_event.code {
-        KeyCode::Esc => app.close_import_tasks_popup(),
+        KeyCode::Esc => {
+            app.import_tasks_popup = None;
+            app.input_focus = crate::app::InputFocus::List;
+        }
         KeyCode::Enter => app.confirm_import_tasks(),
-        KeyCode::Char('j') | KeyCode::Down => app.scroll_import_tasks_popup(1),
-        KeyCode::Char('k') | KeyCode::Up => app.scroll_import_tasks_popup(-1),
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(popup) = app.import_tasks_popup.as_mut() {
+                popup.scroll_by(1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(popup) = app.import_tasks_popup.as_mut() {
+                popup.scroll_by(-1);
+            }
+        }
         _ => {}
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ImportTasksPopupState {
+pub struct ImportTasksView {
     pub tasks: Vec<TaskEntry>,
     pub tasks_path: PathBuf,
     pub issue_key: String,
@@ -35,7 +46,13 @@ pub struct ImportTasksPopupState {
     pub scroll: usize,
 }
 
-pub fn render_import_tasks_popup(app: &App, frame: &mut Frame) {
+impl ImportTasksView {
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.scroll = (self.scroll as isize + delta).max(0) as usize;
+    }
+}
+
+pub fn render(app: &AppView, frame: &mut Frame) {
     let Some(popup) = &app.import_tasks_popup else {
         return;
     };

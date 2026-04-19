@@ -12,26 +12,29 @@ use ratatui::{
 use crate::actions::ActionMessage;
 use crate::apis::github::CheckStatus;
 use crate::apis::github::PrInfo;
-use crate::app::App;
+use crate::app::AppView;
 use crate::theme::Theme;
 
 use super::{wrap_text, SPINNER_FRAMES};
 
-pub async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
+pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
     match key_event.code {
-        KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => app.close_ci_log_popup(),
+        KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('q') => {
+            app.ci_log_popup.close();
+            app.input_focus = crate::app::InputFocus::List;
+        }
         KeyCode::Enter => app.spawn_fix_ci(),
-        KeyCode::Char('j') | KeyCode::Down => app.scroll_ci_log_popup(1),
-        KeyCode::Char('k') | KeyCode::Up => app.scroll_ci_log_popup(-1),
-        KeyCode::Char('h') | KeyCode::Left => app.cycle_ci_log_tab(-1),
-        KeyCode::Char('l') | KeyCode::Right => app.cycle_ci_log_tab(1),
+        KeyCode::Char('j') | KeyCode::Down => app.ci_log_popup.scroll_by(1),
+        KeyCode::Char('k') | KeyCode::Up => app.ci_log_popup.scroll_by(-1),
+        KeyCode::Char('h') | KeyCode::Left => cycle_tab(app, -1),
+        KeyCode::Char('l') | KeyCode::Right => cycle_tab(app, 1),
         KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_ci_log_popup(20);
+            app.ci_log_popup.scroll_by(20);
         }
         KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_ci_log_popup(-20);
+            app.ci_log_popup.scroll_by(-20);
         }
-        KeyCode::Char('G') => app.scroll_ci_log_popup(isize::MAX / 2),
+        KeyCode::Char('G') => app.ci_log_popup.scroll_by(isize::MAX / 2),
         KeyCode::Char('g')
             if app
                 .previous_key
@@ -44,14 +47,14 @@ pub async fn handle_ci_log_popup(app: &mut App, key_event: KeyEvent) {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct CiLogPopupState {
+pub struct CiLogsView {
     pub scroll: Option<usize>,
     pub active_tab: usize,
     pub loaded_issues: HashSet<String>,
     pub loading_issues: HashSet<String>,
 }
 
-impl CiLogPopupState {
+impl CiLogsView {
     pub fn open(&mut self) {
         self.active_tab = 0;
         self.scroll = Some(usize::MAX);
@@ -125,7 +128,7 @@ impl CiLogPopupState {
     }
 }
 
-pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
+pub fn render(app: &mut AppView, frame: &mut Frame) {
     let Some(scroll) = app.ci_log_popup.scroll else {
         return;
     };
@@ -330,6 +333,21 @@ pub fn render_ci_log_popup(app: &mut App, frame: &mut Frame) {
         .style(Style::default().bg(Color::Black)),
         footer_area,
     );
+}
+
+fn cycle_tab(app: &mut AppView, delta: isize) {
+    let Some(issue) = app.selected_issue() else {
+        return;
+    };
+    let issue_key = issue.key.clone();
+    let Some(pr) = app.github_prs.get(&issue_key) else {
+        return;
+    };
+    let check_run_count = pr.check_runs.len();
+    if check_run_count == 0 {
+        return;
+    }
+    app.ci_log_popup.cycle_tab(delta, check_run_count);
 }
 
 fn truncate_tab_label(label: &str, max_width: usize) -> String {

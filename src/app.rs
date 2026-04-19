@@ -17,8 +17,8 @@ use crate::{
     events::{Event, EventLevel, EventSource},
     repos::{self, RepoEntry},
     ui::{
-        CiLogPopupState, ImportTasksPopupState, LabelPickerState, ListViewState, SidebarState,
-        StatusBarState, UiAnimationState,
+        CiLogsView, ImportTasksView, LabelPickerView, ListView, SidebarView, StatusBarView,
+        UiAnimationView,
     },
 };
 
@@ -83,7 +83,7 @@ pub enum DisplayRow {
 
 /// State for the inline new-issue editor shown in the list view.
 #[derive(Debug, Clone)]
-pub struct InlineNewState {
+pub struct InlineNewView {
     /// The text being typed as the summary.
     pub summary: String,
     /// Parent story key (if creating a subtask under a story).
@@ -105,7 +105,7 @@ pub enum InputFocus {
     LabelPicker,
 }
 
-pub struct App {
+pub struct AppView {
     pub should_quit: bool,
     pub input_focus: InputFocus,
     pub issues: Vec<Issue>,
@@ -113,9 +113,9 @@ pub struct App {
     pub config: AppConfig,
     pub repo_entries: Vec<RepoEntry>,
     pub repo_error: Option<String>,
-    pub list_view: ListViewState,
-    pub label_picker: Option<LabelPickerState>,
-    pub status_bar: StatusBarState,
+    pub list: ListView,
+    pub label_picker: Option<LabelPickerView>,
+    pub status_bar: StatusBarView,
     pub loading: bool,
     pub client: JiraClient,
     pub my_account_id: String,
@@ -127,13 +127,13 @@ pub struct App {
     pub github_statuses: HashMap<String, GithubStatus>,
     /// Whether GitHub statuses are currently being loaded
     pub github_loading: bool,
-    pub animation: UiAnimationState,
+    pub animation: UiAnimationView,
     /// Maps issue key -> latest synthesized activity for overview
     pub latest_activity: HashMap<String, Event>,
     /// Flattened display rows (story headers + issue rows) for the list view
     pub display_rows: Vec<DisplayRow>,
     /// Active inline new-issue editor, if any.
-    pub inline_new: Option<InlineNewState>,
+    pub inline_new: Option<InlineNewView>,
     /// Current search/filter text for the issue list.
     pub search_filter: String,
 
@@ -141,7 +141,7 @@ pub struct App {
     pub collapsed_stories: HashSet<String>,
     /// Dynamically loaded child issues for expanded stories, keyed by parent key.
     pub story_children: HashMap<String, Vec<Issue>>,
-    pub sidebar: SidebarState,
+    pub sidebar: SidebarView,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
@@ -154,13 +154,13 @@ pub struct App {
     pub bg_rx: mpsc::UnboundedReceiver<ActionMessage>,
     /// Last time a CI/PR refresh was triggered (for auto-refresh throttling)
     pub last_ci_refresh: std::time::Instant,
-    pub ci_log_popup: CiLogPopupState,
-    pub import_tasks_popup: Option<ImportTasksPopupState>,
+    pub ci_log_popup: CiLogsView,
+    pub import_tasks_popup: Option<ImportTasksView>,
     /// Issue keys that have pending tasks to import from opencode changes.
     pub pending_import_keys: HashSet<String>,
 }
 
-impl App {
+impl AppView {
     pub fn new(config: AppConfig) -> Result<Self> {
         let client = JiraClient::new(&config.jira)?;
         let (bg_tx, bg_rx) = mpsc::unbounded_channel();
@@ -172,9 +172,9 @@ impl App {
             config,
             repo_entries: Vec::new(),
             repo_error: None,
-            list_view: ListViewState::default(),
+            list: ListView::default(),
             label_picker: None,
-            status_bar: StatusBarState::default(),
+            status_bar: StatusBarView::default(),
             loading: true,
             client,
             my_account_id: String::new(),
@@ -183,21 +183,21 @@ impl App {
             active_branches: HashMap::new(),
             github_statuses: HashMap::new(),
             github_loading: false,
-            animation: UiAnimationState::default(),
+            animation: UiAnimationView::default(),
             latest_activity: HashMap::new(),
             display_rows: Vec::new(),
             inline_new: None,
             search_filter: String::new(),
             collapsed_stories: HashSet::new(),
             story_children: HashMap::new(),
-            sidebar: SidebarState::default(),
+            sidebar: SidebarView::default(),
             github_prs: HashMap::new(),
             check_durations: HashMap::new(),
             running_tasks: HashSet::new(),
             bg_tx,
             bg_rx,
             last_ci_refresh: std::time::Instant::now(),
-            ci_log_popup: CiLogPopupState::default(),
+            ci_log_popup: CiLogsView::default(),
             import_tasks_popup: None,
             pending_import_keys: HashSet::new(),
         };
@@ -370,7 +370,7 @@ impl App {
 
     /// Process a background message. Called from the event loop.
     pub fn handle_bg_msg(&mut self, msg: ActionMessage) {
-        self.list_view.handle_action_message(&msg);
+        self.list.handle_action_message(&msg);
         self.status_bar
             .handle_action_message(&msg, &self.running_tasks);
         self.sidebar
@@ -839,12 +839,12 @@ impl App {
         // Find child issues under this story that have an issue type suggesting
         // they could be stories (Story, Epic, Task with children, etc.)
         // We fetch children for ALL child issues of this story to discover sub-stories.
-        if self.list_view.loading_children.contains(parent_key)
+        if self.list.loading_children.contains(parent_key)
             || self.story_children.contains_key(parent_key)
         {
             return;
         }
-        self.list_view.start_loading_children(parent_key);
+        self.list.start_loading_children(parent_key);
         actions::fetch_children::spawn(
             self.bg_tx.clone(),
             self.client.clone(),
@@ -1039,7 +1039,7 @@ impl App {
                     if expandable {
                         // Default to collapsed until explicitly expanded
                         if !self.story_children.contains_key(&issue_key)
-                            && !self.list_view.loading_children.contains(&issue_key)
+                            && !self.list.loading_children.contains(&issue_key)
                         {
                             self.collapsed_stories.insert(issue_key.clone());
                         }
@@ -1091,7 +1091,7 @@ impl App {
                             if expandable {
                                 // Default nested stories to collapsed
                                 if !self.story_children.contains_key(&child_key)
-                                    && !self.list_view.loading_children.contains(&child_key)
+                                    && !self.list.loading_children.contains(&child_key)
                                 {
                                     self.collapsed_stories.insert(child_key.clone());
                                 }
@@ -1125,7 +1125,7 @@ impl App {
 
     /// Append children for a nested story header, handling loading/empty states.
     fn append_nested_children(&self, parent_key: &str, depth: u8, rows: &mut Vec<DisplayRow>) {
-        if self.list_view.loading_children.contains(parent_key) {
+        if self.list.loading_children.contains(parent_key) {
             rows.push(DisplayRow::Loading { depth });
             return;
         }
@@ -1282,7 +1282,7 @@ impl App {
                 .insert(insert_at, DisplayRow::InlineNew { depth });
         }
 
-        let state = InlineNewState {
+        let state = InlineNewView {
             summary: String::new(),
             parent_key,
             project_key,
@@ -1416,40 +1416,8 @@ impl App {
             }
             return;
         }
-        self.label_picker = Some(LabelPickerState::default());
+        self.label_picker = Some(LabelPickerView::open());
         self.input_focus = InputFocus::LabelPicker;
-    }
-
-    pub fn close_label_picker(&mut self) {
-        self.label_picker = None;
-        self.input_focus = InputFocus::List;
-    }
-
-    pub fn move_label_picker_selection(&mut self, down: bool) {
-        let Some(picker) = self.label_picker.as_mut() else {
-            return;
-        };
-        picker.move_selection(&self.repo_entries, down);
-    }
-
-    pub fn label_picker_entry(&self) -> Option<&RepoEntry> {
-        self.label_picker
-            .as_ref()
-            .and_then(|picker| picker.selected_entry(&self.repo_entries))
-    }
-
-    pub fn label_picker_type_char(&mut self, ch: char) {
-        let Some(picker) = self.label_picker.as_mut() else {
-            return;
-        };
-        picker.type_char(ch);
-    }
-
-    pub fn label_picker_backspace(&mut self) {
-        let Some(picker) = self.label_picker.as_mut() else {
-            return;
-        };
-        picker.backspace();
     }
 
     pub fn open_ci_log_popup(&mut self) {
@@ -1521,7 +1489,8 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        self.close_ci_log_popup();
+        self.ci_log_popup.close();
+        self.input_focus = InputFocus::List;
         self.status_bar.message = "Checking out branch and opening opencode...".to_string();
         actions::fix_ci::spawn(self.bg_tx.clone(), repo_path, head_branch, ci_error);
     }
@@ -1566,7 +1535,7 @@ impl App {
             return;
         }
 
-        self.import_tasks_popup = Some(ImportTasksPopupState {
+        self.import_tasks_popup = Some(ImportTasksView {
             tasks,
             tasks_path,
             issue_key,
@@ -1578,11 +1547,6 @@ impl App {
     }
 
     /// Close the import tasks popup without importing.
-    pub fn close_import_tasks_popup(&mut self) {
-        self.import_tasks_popup = None;
-        self.input_focus = InputFocus::List;
-    }
-
     /// Confirm and execute the import from the popup.
     pub fn confirm_import_tasks(&mut self) {
         let Some(popup) = self.import_tasks_popup.take() else {
@@ -1603,12 +1567,6 @@ impl App {
     }
 
     /// Scroll the import tasks popup.
-    pub fn scroll_import_tasks_popup(&mut self, delta: isize) {
-        if let Some(popup) = self.import_tasks_popup.as_mut() {
-            popup.scroll = (popup.scroll as isize + delta).max(0) as usize;
-        }
-    }
-
     /// Open an opencode session to propose an openspec change for the selected issue.
     pub fn spawn_openspec_propose(&mut self) {
         let Some(issue) = self.selected_issue() else {
@@ -1644,30 +1602,6 @@ impl App {
             parent_stories,
             repo_slugs,
         );
-    }
-
-    pub fn close_ci_log_popup(&mut self) {
-        self.ci_log_popup.close();
-        self.input_focus = InputFocus::List;
-    }
-
-    pub fn scroll_ci_log_popup(&mut self, delta: isize) {
-        self.ci_log_popup.scroll_by(delta);
-    }
-
-    pub fn cycle_ci_log_tab(&mut self, delta: isize) {
-        let Some(issue) = self.selected_issue() else {
-            return;
-        };
-        let issue_key = issue.key.clone();
-        let Some(pr) = self.github_prs.get(&issue_key) else {
-            return;
-        };
-        let check_run_count = pr.check_runs.len();
-        if check_run_count == 0 {
-            return;
-        }
-        self.ci_log_popup.cycle_tab(delta, check_run_count);
     }
 
     pub fn start_search(&mut self) {
@@ -1861,7 +1795,12 @@ impl App {
     }
 
     pub fn add_label_from_picker(&mut self) -> bool {
-        let Some(entry) = self.label_picker_entry().cloned() else {
+        let Some(entry) = self
+            .label_picker
+            .as_ref()
+            .and_then(|picker| picker.selected_entry(&self.repo_entries))
+            .cloned()
+        else {
             self.status_bar.message = "No repository selected".to_string();
             return false;
         };

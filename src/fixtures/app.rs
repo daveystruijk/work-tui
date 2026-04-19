@@ -2,14 +2,14 @@ use tokio::sync::mpsc;
 
 use crate::{
     apis::jira::{JiraClient, JiraConfig},
-    app::{App, DisplayRow},
+    app::{AppView, DisplayRow},
     config::AppConfig,
-    ui::{CiLogPopupState, ListViewState, SidebarState, StatusBarState, UiAnimationState},
+    ui::{CiLogsView, ListView, SidebarView, StatusBarView, UiAnimationView},
 };
 
 use super::{issue::test_issue, pr::test_pr};
 
-pub fn test_app() -> App {
+pub fn test_app() -> AppView {
     let config = JiraConfig {
         jira_url: "http://localhost".to_string(),
         jira_email: "tester@example.com".to_string(),
@@ -23,7 +23,7 @@ pub fn test_app() -> App {
     let client = JiraClient::new(&config).expect("jira client");
     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
 
-    App {
+    AppView {
         should_quit: false,
         input_focus: crate::app::InputFocus::default(),
         issues: Vec::new(),
@@ -31,9 +31,9 @@ pub fn test_app() -> App {
         config: app_config,
         repo_entries: Vec::new(),
         repo_error: None,
-        list_view: ListViewState::default(),
+        list: ListView::default(),
         label_picker: None,
-        status_bar: StatusBarState::default(),
+        status_bar: StatusBarView::default(),
         loading: false,
         client,
         my_account_id: String::new(),
@@ -42,27 +42,27 @@ pub fn test_app() -> App {
         active_branches: Default::default(),
         github_statuses: Default::default(),
         github_loading: false,
-        animation: UiAnimationState::default(),
+        animation: UiAnimationView::default(),
         latest_activity: Default::default(),
         display_rows: Vec::new(),
         inline_new: None,
         search_filter: String::new(),
         collapsed_stories: Default::default(),
         story_children: Default::default(),
-        sidebar: SidebarState::default(),
+        sidebar: SidebarView::default(),
         github_prs: Default::default(),
         check_durations: Default::default(),
         running_tasks: Default::default(),
         bg_tx,
         bg_rx,
         last_ci_refresh: std::time::Instant::now(),
-        ci_log_popup: CiLogPopupState::default(),
+        ci_log_popup: CiLogsView::default(),
         import_tasks_popup: None,
         pending_import_keys: Default::default(),
     }
 }
 
-pub fn selected_issue_app() -> App {
+pub fn selected_issue_app() -> AppView {
     let mut app = test_app();
     app.issues.push(test_issue());
     app.display_rows.push(DisplayRow::Issue {
@@ -73,7 +73,7 @@ pub fn selected_issue_app() -> App {
     app
 }
 
-pub fn sidebar_app() -> App {
+pub fn sidebar_app() -> AppView {
     let mut app = selected_issue_app();
     let issue_key = app.issues[0].key.clone();
     app.animation.spinner_tick = 2;

@@ -7,17 +7,19 @@ use ratatui::{
     Frame,
 };
 
-use crate::{app::App, repos::RepoEntry, theme::Theme};
+use crate::{app::AppView, repos::RepoEntry, theme::Theme};
 
 use super::centered_rect;
 
 #[derive(Debug, Clone, Default)]
-pub struct LabelPickerState {
+pub struct LabelPickerView {
     pub selected: usize,
     pub filter: String,
 }
 
-impl LabelPickerState {
+impl LabelPickerView {
+    pub fn open() -> Self { Self::default() }
+
     pub fn filtered_repo_entries<'a>(&self, repo_entries: &'a [RepoEntry]) -> Vec<&'a RepoEntry> {
         if self.filter.is_empty() {
             return repo_entries.iter().collect();
@@ -60,23 +62,43 @@ impl LabelPickerState {
     }
 }
 
-pub async fn handle_label_picker(app: &mut App, key_event: KeyEvent) {
+pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
     match key_event.code {
-        KeyCode::Esc => app.close_label_picker(),
+        KeyCode::Esc => {
+            app.label_picker = None;
+            app.input_focus = crate::app::InputFocus::List;
+        }
         KeyCode::Enter => {
             if app.add_label_from_picker() {
-                app.close_label_picker();
+                app.label_picker = None;
+                app.input_focus = crate::app::InputFocus::List;
             }
         }
-        KeyCode::Backspace => app.label_picker_backspace(),
-        KeyCode::Down => app.move_label_picker_selection(true),
-        KeyCode::Up => app.move_label_picker_selection(false),
-        KeyCode::Char(c) => app.label_picker_type_char(c),
+        KeyCode::Backspace => {
+            if let Some(picker) = app.label_picker.as_mut() {
+                picker.backspace();
+            }
+        }
+        KeyCode::Down => {
+            if let Some(picker) = app.label_picker.as_mut() {
+                picker.move_selection(&app.repo_entries, true);
+            }
+        }
+        KeyCode::Up => {
+            if let Some(picker) = app.label_picker.as_mut() {
+                picker.move_selection(&app.repo_entries, false);
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(picker) = app.label_picker.as_mut() {
+                picker.type_char(c);
+            }
+        }
         _ => {}
     }
 }
 
-pub fn render_label_picker(app: &App, frame: &mut Frame) {
+pub fn render(app: &AppView, frame: &mut Frame) {
     let Some(picker) = &app.label_picker else {
         return;
     };

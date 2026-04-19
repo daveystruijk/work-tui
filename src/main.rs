@@ -13,7 +13,7 @@ mod ui;
 
 use std::{io, time::Duration};
 
-use app::{App, InputFocus};
+use app::{AppView, InputFocus};
 use color_eyre::Result;
 use crossterm::{
     event::{
@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     // The watcher must stay alive for the duration of the app.
     let (_watcher, fs_rx) = setup_file_watcher(&config.repos_dir);
 
-    let mut app = App::new(config)?;
+    let mut app = AppView::new(config)?;
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -113,7 +113,7 @@ fn try_setup_watcher(
 
 async fn run_app(
     terminal: &mut Terminal<Backend>,
-    mut app: App,
+    mut app: AppView,
     mut fs_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
 ) -> Result<()> {
     while !app.should_quit {
@@ -165,8 +165,8 @@ async fn run_app(
             }
             Event::Mouse(mouse_event) => match app.input_focus {
                 InputFocus::CiLogPopup => match mouse_event.kind {
-                    MouseEventKind::ScrollDown => app.scroll_ci_log_popup(3),
-                    MouseEventKind::ScrollUp => app.scroll_ci_log_popup(-3),
+                    MouseEventKind::ScrollDown => app.ci_log_popup.scroll_by(3),
+                    MouseEventKind::ScrollUp => app.ci_log_popup.scroll_by(-3),
                     _ => {}
                 },
                 InputFocus::List | InputFocus::Search | InputFocus::InlineNew => {
@@ -176,7 +176,7 @@ async fn run_app(
                         MouseEventKind::Down(MouseButton::Left) => {
                             let clicked_row = mouse_event.row as usize;
                             let data_row = clicked_row.saturating_sub(1);
-                            let target = app.list_view.scroll_offset + data_row;
+                            let target = app.list.scroll_offset + data_row;
                             if target < app.display_rows.len() {
                                 app.selected_index = target;
                                 ui::list::adjust_scroll_offset(&mut app);
@@ -194,7 +194,7 @@ async fn run_app(
     Ok(())
 }
 
-async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
+async fn handle_key_event(app: &mut AppView, key_event: KeyEvent) {
     if key_event.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('C'))
     {
@@ -203,12 +203,12 @@ async fn handle_key_event(app: &mut App, key_event: KeyEvent) {
     }
 
     match app.input_focus {
-        InputFocus::Search => ui::list::handle_search(app, key_event),
-        InputFocus::InlineNew => ui::list::handle_inline_new(app, key_event).await,
-        InputFocus::ImportTasksPopup => ui::import_tasks::handle_import_tasks_popup(app, key_event),
-        InputFocus::CiLogPopup => ui::ci_logs::handle_ci_log_popup(app, key_event).await,
-        InputFocus::LabelPicker => ui::label_picker::handle_label_picker(app, key_event).await,
-        InputFocus::List => ui::list::handle_list(app, key_event).await,
+        InputFocus::Search | InputFocus::InlineNew | InputFocus::List => {
+            ui::list::handle_input(app, key_event).await
+        }
+        InputFocus::ImportTasksPopup => ui::import_tasks::handle_input(app, key_event),
+        InputFocus::CiLogPopup => ui::ci_logs::handle_input(app, key_event).await,
+        InputFocus::LabelPicker => ui::label_picker::handle_input(app, key_event).await,
     }
 
     app.previous_key = Some(key_event);

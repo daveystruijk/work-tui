@@ -3,6 +3,7 @@ use std::{
     time::Instant,
 };
 
+use crossterm::event::KeyEvent;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -12,19 +13,19 @@ use ratatui::{
 };
 
 use crate::actions::ActionMessage;
-use crate::app::{App, InputFocus};
+use crate::app::{AppView, InputFocus};
 use crate::theme::Theme;
 
 use super::SPINNER_FRAMES;
 
 #[derive(Debug, Clone, Default)]
-pub struct StatusBarState {
+pub struct StatusBarView {
     pub message: String,
     pub completed_tasks: VecDeque<(String, usize)>,
     pub last_updated: Option<Instant>,
 }
 
-impl StatusBarState {
+impl StatusBarView {
     pub fn handle_action_message(&mut self, msg: &ActionMessage, running_tasks: &HashSet<String>) {
         match msg {
             ActionMessage::Myself(Err(err)) => {
@@ -163,7 +164,7 @@ mod tests {
         app.input_focus = InputFocus::Search;
         app.search_filter = "backend".to_string();
         let rendered = render_to_string(48, 1, |frame| {
-            render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
+            render(&app, frame, Rect::new(0, 0, 48, 1));
         });
 
         assert_snapshot!("status_bar_searching", rendered);
@@ -176,7 +177,7 @@ mod tests {
         app.loading = true;
         app.animation.spinner_tick = 4;
         let rendered = render_to_string(48, 1, |frame| {
-            render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
+            render(&app, frame, Rect::new(0, 0, 48, 1));
         });
 
         assert_snapshot!("status_bar_loading", rendered);
@@ -188,14 +189,17 @@ mod tests {
         app.status_bar.last_updated =
             Some(std::time::Instant::now() - std::time::Duration::from_secs(90));
         let rendered = render_to_string(48, 1, |frame| {
-            render_status_bar(&app, frame, Rect::new(0, 0, 48, 1));
+            render(&app, frame, Rect::new(0, 0, 48, 1));
         });
 
         assert_snapshot!("status_bar_updated", rendered);
     }
 }
 
-pub fn footer_height(app: &App) -> u16 {
+#[allow(dead_code)]
+pub fn handle_input(_app: &mut AppView, _key_event: KeyEvent) {}
+
+pub fn footer_height(app: &AppView) -> u16 {
     if has_content(app) {
         1
     } else {
@@ -203,14 +207,14 @@ pub fn footer_height(app: &App) -> u16 {
     }
 }
 
-fn has_content(app: &App) -> bool {
+fn has_content(app: &AppView) -> bool {
     app.input_focus == InputFocus::Search
         || !app.search_filter.is_empty()
         || !app.status_bar.message.is_empty()
         || app.status_bar.last_updated.is_some()
 }
 
-pub fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
+pub fn render(app: &AppView, frame: &mut Frame, area: Rect) {
     if !has_content(app) {
         return;
     }

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crossterm::event::KeyEvent;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -11,7 +12,7 @@ use ratatui::{
 
 use crate::actions::ActionMessage;
 use crate::apis::github::{CheckRun, CheckStatus, MergeableState, PrInfo};
-use crate::app::App;
+use crate::app::AppView;
 use crate::theme::Theme;
 
 use super::{
@@ -20,13 +21,13 @@ use super::{
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct SidebarState {
+pub struct SidebarView {
     pub detail_loading: HashSet<String>,
     pub detail_loaded: HashSet<String>,
     pub detail_errors: HashMap<String, String>,
 }
 
-impl SidebarState {
+impl SidebarView {
     pub fn begin_pr_refresh(
         &mut self,
         github_prs: &HashMap<String, PrInfo>,
@@ -105,7 +106,7 @@ mod tests {
     fn snapshots_empty_sidebar() {
         let app = test_app();
         let rendered = render_to_string(44, 22, |frame| {
-            render_sidebar(&app, frame, Rect::new(0, 0, 44, 22));
+            render(&app, frame, Rect::new(0, 0, 44, 22));
         });
 
         assert_snapshot!("sidebar_empty", rendered);
@@ -115,14 +116,17 @@ mod tests {
     fn snapshots_sidebar_with_pr() {
         let app = sidebar_app();
         let rendered = render_to_string(44, 26, |frame| {
-            render_sidebar(&app, frame, Rect::new(0, 0, 44, 26));
+            render(&app, frame, Rect::new(0, 0, 44, 26));
         });
 
         assert_snapshot!("sidebar_with_pr", rendered);
     }
 }
 
-pub fn render_sidebar(app: &App, frame: &mut Frame, area: Rect) {
+#[allow(dead_code)]
+pub fn handle_input(_app: &mut AppView, _key_event: KeyEvent) {}
+
+pub fn render(app: &AppView, frame: &mut Frame, area: Rect) {
     let sidebar = Block::default()
         .padding(Padding::new(1, 1, 1, 0))
         .style(Style::default().bg(Theme::SidebarBg));

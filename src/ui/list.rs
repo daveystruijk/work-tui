@@ -14,7 +14,7 @@ use crate::apis::{
     github::{CheckStatus, MergeableState},
     jira::Issue,
 };
-use crate::app::{App, DisplayRow, InlineNewState};
+use crate::app::{AppView, DisplayRow, InlineNewView};
 use crate::theme::Theme;
 
 use super::{issue_type_icon, max_col_width, status_color, CellMap, COLUMNS, SPINNER_FRAMES};
@@ -38,13 +38,13 @@ mod tests {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ListViewState {
+pub struct ListView {
     pub area_height: u16,
     pub scroll_offset: usize,
     pub loading_children: HashSet<String>,
 }
 
-impl ListViewState {
+impl ListView {
     pub fn handle_action_message(&mut self, msg: &ActionMessage) {
         match msg {
             ActionMessage::Issues(Ok(_)) => {
@@ -63,9 +63,9 @@ impl ListViewState {
 
 }
 
-pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect) {
+pub fn render(app: &mut AppView, frame: &mut Frame, area: ratatui::layout::Rect) {
     // Store visible list height for half-page scrolling
-    app.list_view.area_height = area.height.saturating_sub(1);
+    app.list.area_height = area.height.saturating_sub(1);
 
     // Build row data as (CellMap, Style) so we can measure before converting to Row.
     let row_data: Vec<(CellMap, Style)> = app
@@ -115,7 +115,7 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
 
     // Convert CellMaps to ordered Rows.
     let mut state = TableState::default()
-        .with_offset(app.list_view.scroll_offset)
+        .with_offset(app.list.scroll_offset)
         .with_selected(Some(app.selected_index));
 
     let rows: Vec<Row> = row_data
@@ -148,132 +148,133 @@ pub fn render_list(app: &mut App, frame: &mut Frame, area: ratatui::layout::Rect
         )
         .block(Block::default().style(Style::default().bg(Theme::Panel)));
     frame.render_stateful_widget(table, area, &mut state);
-    app.list_view.scroll_offset = state.offset();
+    app.list.scroll_offset = state.offset();
 
 }
 
-pub async fn handle_list(app: &mut App, key_event: KeyEvent) {
-    let previous_was_g = matches!(
-        app.previous_key,
-        Some(KeyEvent { code: KeyCode::Char('g'), .. })
-    );
+pub async fn handle_input(app: &mut AppView, key_event: KeyEvent) {
+    match app.input_focus {
+        crate::app::InputFocus::List => {
+            let previous_was_g = matches!(
+                app.previous_key,
+                Some(KeyEvent { code: KeyCode::Char('g'), .. })
+            );
 
-    if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-        match key_event.code {
-            KeyCode::Char('d') | KeyCode::Char('D') => {
-                move_selection_by(app, app.list_view.area_height as isize / 2);
-            }
-            KeyCode::Char('u') | KeyCode::Char('U') => {
-                move_selection_by(app, -(app.list_view.area_height as isize / 2));
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    match key_event.code {
-        KeyCode::Char(c) => {
-            if previous_was_g && c == 'g' {
-                app.selected_index = 0;
-                adjust_scroll_offset(app);
+            if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                match key_event.code {
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
+                        move_selection_by(app, app.list.area_height as isize / 2);
+                    }
+                    KeyCode::Char('u') | KeyCode::Char('U') => {
+                        move_selection_by(app, -(app.list.area_height as isize / 2));
+                    }
+                    _ => {}
+                }
                 return;
             }
 
-            match c {
-                'b' => app.spawn_branch_diff(),
-                'j' => move_selection_down(app),
-                'k' => move_selection_up(app),
-                'G' => move_selection_to_end(app),
-                'g' => {}
-                'p' => app.spawn_pick_up(),
-                'o' => match app.open_selected_pr_in_browser().await {
-                    Ok(_) => {}
-                    Err(err) => app.status_bar.message = format!("{err}"),
-                },
-                't' => match app.open_selected_issue_in_browser().await {
-                    Ok(_) => {}
-                    Err(err) => app.status_bar.message = format!("Failed to open issue: {err}"),
-                },
-                'n' => {
-                    app.start_inline_new();
+            match key_event.code {
+                KeyCode::Char(c) => {
+                    if previous_was_g && c == 'g' {
+                        app.selected_index = 0;
+                        adjust_scroll_offset(app);
+                        return;
+                    }
+
+                    match c {
+                        'b' => app.spawn_branch_diff(),
+                        'j' => move_selection_down(app),
+                        'k' => move_selection_up(app),
+                        'G' => move_selection_to_end(app),
+                        'g' => {}
+                        'p' => app.spawn_pick_up(),
+                        'o' => match app.open_selected_pr_in_browser().await {
+                            Ok(_) => {}
+                            Err(err) => app.status_bar.message = format!("{err}"),
+                        },
+                        't' => match app.open_selected_issue_in_browser().await {
+                            Ok(_) => {}
+                            Err(err) => app.status_bar.message = format!("Failed to open issue: {err}"),
+                        },
+                        'n' => {
+                            app.start_inline_new();
+                        }
+                        'a' => app.open_label_picker(),
+                        'r' => {
+                            app.loading = true;
+                            app.spawn_refresh();
+                        }
+                        's' => app.spawn_toggle_story_type(),
+                        'f' => app.spawn_finish(),
+                        '/' => app.start_search(),
+                        'V' => app.spawn_approve_merge(),
+                        'c' => app.open_ci_log_popup(),
+                        'e' => app.spawn_openspec_propose(),
+                        'i' => app.open_import_tasks_popup(),
+                        'h' => {
+                            app.collapse_story();
+                        }
+                        'l' => {
+                            app.expand_story();
+                        }
+                        ' ' => {
+                            app.toggle_story_collapse();
+                        }
+                        _ => {}
+                    }
                 }
-                'a' => app.open_label_picker(),
-                'r' => {
-                    app.loading = true;
-                    app.spawn_refresh();
+                KeyCode::Esc => {
+                    if !app.search_filter.is_empty() {
+                        app.cancel_search();
+                    }
                 }
-                's' => app.spawn_toggle_story_type(),
-                'f' => app.spawn_finish(),
-                '/' => app.start_search(),
-                'V' => app.spawn_approve_merge(),
-                'c' => app.open_ci_log_popup(),
-                'e' => app.spawn_openspec_propose(),
-                'i' => app.open_import_tasks_popup(),
-                'h' => {
-                    app.collapse_story();
-                }
-                'l' => {
-                    app.expand_story();
-                }
-                ' ' => {
-                    app.toggle_story_collapse();
-                }
+                KeyCode::Down => move_selection_down(app),
+                KeyCode::Up => move_selection_up(app),
                 _ => {}
             }
         }
-        KeyCode::Esc => {
-            if !app.search_filter.is_empty() {
-                app.cancel_search();
-            }
-        }
-        KeyCode::Down => move_selection_down(app),
-        KeyCode::Up => move_selection_up(app),
-        _ => {}
-    }
-}
-
-pub async fn handle_inline_new(app: &mut App, key_event: KeyEvent) {
-    if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-        match key_event.code {
-            KeyCode::Char('s') | KeyCode::Char('S') => {
-                app.status_bar.message = "Creating issue...".to_string();
-                app.spawn_submit_inline_new();
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    match key_event.code {
-        KeyCode::Esc => app.cancel_inline_new(),
-        KeyCode::Enter => {
-            app.status_bar.message = "Creating issue...".to_string();
-            app.spawn_submit_inline_new();
-        }
-        KeyCode::Backspace => {
-            if let Some(state) = app.inline_new.as_mut() {
-                state.summary.pop();
-            }
-        }
-        KeyCode::Char(c) => {
-            if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
-                if let Some(state) = app.inline_new.as_mut() {
-                    state.summary.push(c);
+        crate::app::InputFocus::Search => match key_event.code {
+            KeyCode::Esc => app.cancel_search(),
+            KeyCode::Enter => app.confirm_search(),
+            KeyCode::Backspace => app.search_backspace(),
+            KeyCode::Char(c) => {
+                if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    app.search_type_char(c);
                 }
             }
-        }
-        _ => {}
-    }
-}
+            _ => {}
+        },
+        crate::app::InputFocus::InlineNew => {
+            if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                match key_event.code {
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        app.status_bar.message = "Creating issue...".to_string();
+                        app.spawn_submit_inline_new();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
 
-pub fn handle_search(app: &mut App, key_event: KeyEvent) {
-    match key_event.code {
-        KeyCode::Esc => app.cancel_search(),
-        KeyCode::Enter => app.confirm_search(),
-        KeyCode::Backspace => app.search_backspace(),
-        KeyCode::Char(c) => {
-            if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
-                app.search_type_char(c);
+            match key_event.code {
+                KeyCode::Esc => app.cancel_inline_new(),
+                KeyCode::Enter => {
+                    app.status_bar.message = "Creating issue...".to_string();
+                    app.spawn_submit_inline_new();
+                }
+                KeyCode::Backspace => {
+                    if let Some(state) = app.inline_new.as_mut() {
+                        state.summary.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if !key_event.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                        if let Some(state) = app.inline_new.as_mut() {
+                            state.summary.push(c);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         _ => {}
@@ -282,8 +283,8 @@ pub fn handle_search(app: &mut App, key_event: KeyEvent) {
 
 pub const SCROLL_OFF: usize = 3;
 
-pub fn adjust_scroll_offset(app: &mut App) {
-    let height = app.list_view.area_height as usize;
+pub fn adjust_scroll_offset(app: &mut AppView) {
+    let height = app.list.area_height as usize;
     if height == 0 || app.display_rows.is_empty() {
         app.prefetch_selected_pr_detail();
         return;
@@ -291,22 +292,22 @@ pub fn adjust_scroll_offset(app: &mut App) {
 
     let margin = SCROLL_OFF.min(height / 2);
     let selected = app.selected_index;
-    let offset = app.list_view.scroll_offset;
+    let offset = app.list.scroll_offset;
 
     if selected < offset + margin {
-        app.list_view.scroll_offset = selected.saturating_sub(margin);
+        app.list.scroll_offset = selected.saturating_sub(margin);
     }
 
     if selected + margin >= offset + height {
-        app.list_view.scroll_offset = (selected + margin + 1).saturating_sub(height);
+        app.list.scroll_offset = (selected + margin + 1).saturating_sub(height);
     }
 
     let max_offset = app.display_rows.len().saturating_sub(height);
-    app.list_view.scroll_offset = app.list_view.scroll_offset.min(max_offset);
+    app.list.scroll_offset = app.list.scroll_offset.min(max_offset);
     app.prefetch_selected_pr_detail();
 }
 
-pub fn move_selection_down(app: &mut App) {
+pub fn move_selection_down(app: &mut AppView) {
     if app.display_rows.is_empty() {
         app.selected_index = 0;
         return;
@@ -318,7 +319,7 @@ pub fn move_selection_down(app: &mut App) {
     adjust_scroll_offset(app);
 }
 
-pub fn move_selection_up(app: &mut App) {
+pub fn move_selection_up(app: &mut AppView) {
     if app.selected_index == 0 {
         return;
     }
@@ -326,7 +327,7 @@ pub fn move_selection_up(app: &mut App) {
     adjust_scroll_offset(app);
 }
 
-pub fn move_selection_to_end(app: &mut App) {
+pub fn move_selection_to_end(app: &mut AppView) {
     if app.display_rows.is_empty() {
         return;
     }
@@ -334,7 +335,7 @@ pub fn move_selection_to_end(app: &mut App) {
     adjust_scroll_offset(app);
 }
 
-pub fn move_selection_by(app: &mut App, delta: isize) {
+pub fn move_selection_by(app: &mut AppView, delta: isize) {
     if app.display_rows.is_empty() {
         return;
     }
@@ -344,16 +345,16 @@ pub fn move_selection_by(app: &mut App, delta: isize) {
     adjust_scroll_offset(app);
 }
 
-pub fn scroll_viewport(app: &mut App, delta: isize) {
+pub fn scroll_viewport(app: &mut AppView, delta: isize) {
     if app.display_rows.is_empty() {
         app.prefetch_selected_pr_detail();
         return;
     }
-    let height = app.list_view.area_height as usize;
+    let height = app.list.area_height as usize;
     let max_offset = app.display_rows.len().saturating_sub(height);
     let new_offset =
-        (app.list_view.scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
-    app.list_view.scroll_offset = new_offset;
+        (app.list.scroll_offset as isize + delta).clamp(0, max_offset as isize) as usize;
+    app.list.scroll_offset = new_offset;
 
     let last = app.display_rows.len() - 1;
     if app.selected_index < new_offset {
@@ -401,7 +402,7 @@ fn story_header_row(
 }
 
 fn inline_new_row(
-    state: Option<&InlineNewState>,
+    state: Option<&InlineNewView>,
     _idx: usize,
     depth: u8,
 ) -> (CellMap<'static>, Style) {
@@ -468,7 +469,7 @@ fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
     (cells, row_style)
 }
 
-fn issue_row(app: &App, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
+fn issue_row(app: &AppView, issue: &Issue, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
     let status_style = status_color(&status_name);
