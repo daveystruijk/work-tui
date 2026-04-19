@@ -205,18 +205,18 @@ impl StatusBarView {
         let spinner = SPINNER_FRAMES[ctx.spinner_tick % SPINNER_FRAMES.len()];
         let mut spans = Vec::new();
 
-        for (index, action) in ctx.running_tasks.iter().enumerate() {
-            if index > 0 {
-                spans.push(Span::styled(" • ", Style::default().fg(Theme::Muted)));
-            }
-            spans.extend(render_running_action(action, spinner));
-        }
-
         for alert in &self.alerts {
             if !spans.is_empty() {
                 spans.push(Span::styled(" • ", Style::default().fg(Theme::Muted)));
             }
             spans.extend(render_alert(alert));
+        }
+
+        for action in ctx.running_tasks {
+            if !spans.is_empty() {
+                spans.push(Span::styled(" • ", Style::default().fg(Theme::Muted)));
+            }
+            spans.extend(render_running_action(action, spinner));
         }
 
         Line::from(spans)
