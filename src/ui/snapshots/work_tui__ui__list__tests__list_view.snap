@@ -1,6 +1,5 @@
 ---
 source: src/ui/list.rs
-assertion_line: 34
 expression: rendered
 ---
 Key       Summary                                 Status         Assignee                                               
@@ -14,7 +13,7 @@ TEST-123  ◦ Snapshot the sidebar render           ● In Progress  Casey Dev  
                                                                                                                         
                                                                               Confirm sidebar, list, and command        
                                                                                                                         
-                                                                             ── GitHub ──────────────────────────────── 
+                                                                             ── Review ──────────────────────────────── 
                                                                               No linked PR                              
                                                                                                                         
                                                                              ── CI ──────────────────────────────────── 

@@ -11,7 +11,9 @@ use ratatui::{
 };
 
 use crate::actions::Message;
-use crate::apis::github::{CheckRun, CheckStatus, CheckStep, MergeableState, PrInfo};
+use crate::apis::github::{
+    CheckRun, CheckStatus, CheckStep, MergeableState, PrInfo, ReviewDecision,
+};
 use crate::app::AppView;
 use crate::theme::Theme;
 
@@ -257,6 +259,22 @@ impl SidebarView {
                     ]));
                 }
 
+                let (review_label, review_color) = match &pr.review_decision {
+                    Some(ReviewDecision::Approved) => ("Approved", Theme::Success),
+                    Some(ReviewDecision::ChangesRequested) => ("Changes Requested", Theme::Error),
+                    Some(ReviewDecision::ReviewRequired) | None
+                        if detail_loading && !detail_loaded =>
+                    {
+                        (spinner, Theme::Warning)
+                    }
+                    _ => ("Pending", Theme::Muted),
+                };
+                github_lines.push(labeled_text_line(
+                    "Review",
+                    review_label.to_string(),
+                    review_color,
+                ));
+
                 if let Some(mergeable) = &pr.mergeable {
                     let (label, color) = match mergeable {
                         MergeableState::Conflicting => ("Conflicts".to_string(), Theme::Error),
@@ -265,6 +283,17 @@ impl SidebarView {
                     };
                     github_lines.push(labeled_text_line("Merge", label, color));
                 }
+
+                let (auto_merge_label, auto_merge_color) = if pr.auto_merge_enabled {
+                    ("On", Theme::Success)
+                } else {
+                    ("Off", Theme::Error)
+                };
+                github_lines.push(labeled_text_line(
+                    "Automerge",
+                    auto_merge_label.to_string(),
+                    auto_merge_color,
+                ));
 
                 if !pr.check_runs.is_empty() {
                     for run in &pr.check_runs {
@@ -356,7 +385,7 @@ impl SidebarView {
             chunks[0],
         );
         render_sidebar_section(frame, chunks[2], "Jira", jira_lines, Theme::SurfaceAlt);
-        render_sidebar_section(frame, chunks[4], "GitHub", github_lines, Theme::SurfaceAlt);
+        render_sidebar_section(frame, chunks[4], "Review", github_lines, Theme::SurfaceAlt);
         render_sidebar_section(frame, chunks[6], "CI", ci_lines, Theme::SurfaceAlt);
     }
 

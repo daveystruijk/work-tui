@@ -1,6 +1,6 @@
 use crate::apis::github::{
     CheckRun, CheckStatus, CheckStep, MergeableState, PrComment, PrInfo, ReviewComment,
-    ReviewThread,
+    ReviewDecision, ReviewThread,
 };
 
 pub(crate) fn test_pr() -> PrInfo {
@@ -79,5 +79,7 @@ pub(crate) fn test_pr() -> PrInfo {
         additions: Some(72),
         deletions: Some(14),
         mergeable: Some(MergeableState::Unknown),
+        review_decision: Some(ReviewDecision::ChangesRequested),
+        auto_merge_enabled: true,
     }
 }

@@ -79,6 +79,13 @@ pub enum MergeableState {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReviewDecision {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
 #[derive(Debug, Clone)]
 pub struct PrInfo {
     pub number: u64,
@@ -97,6 +104,8 @@ pub struct PrInfo {
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
     pub mergeable: Option<MergeableState>,
+    pub review_decision: Option<ReviewDecision>,
+    pub auto_merge_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +118,8 @@ pub struct PrDetail {
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
     pub mergeable: Option<MergeableState>,
+    pub review_decision: Option<ReviewDecision>,
+    pub auto_merge_enabled: bool,
 }
 
 impl PrInfo {
@@ -121,6 +132,8 @@ impl PrInfo {
         self.additions = detail.additions;
         self.deletions = detail.deletions;
         self.mergeable = detail.mergeable;
+        self.review_decision = detail.review_decision;
+        self.auto_merge_enabled = detail.auto_merge_enabled;
     }
 
     /// Copy detail-enriched fields from a previously loaded PR.
@@ -134,6 +147,8 @@ impl PrInfo {
         self.additions = old.additions;
         self.deletions = old.deletions;
         self.mergeable = old.mergeable.clone();
+        self.review_decision = old.review_decision.clone();
+        self.auto_merge_enabled = old.auto_merge_enabled;
     }
 
     pub fn latest_failed_check(&self) -> Option<&CheckRun> {
@@ -246,6 +261,8 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                 additions: None,
                 deletions: None,
                 mergeable: None,
+                review_decision: None,
+                auto_merge_enabled: false,
             }
         })
         .collect())
@@ -287,6 +304,8 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         headRefName
                         isDraft
                         mergeable
+                        reviewDecision
+                        autoMergeRequest {{ enabledAt }}
                         changedFiles
                         additions
                         deletions
@@ -428,6 +447,8 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
             let additions = pr.get("additions").and_then(|v| v.as_u64());
             let deletions = pr.get("deletions").and_then(|v| v.as_u64());
             let mergeable = parse_mergeable_state(pr);
+            let review_decision = parse_review_decision(pr);
+            let auto_merge_enabled = pr.get("autoMergeRequest").is_some_and(|v| !v.is_null());
             let mut rollup_option = {
                 let rollups = extract_check_rollups(pr);
                 if rollups.is_empty() {
@@ -472,6 +493,8 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 additions,
                 deletions,
                 mergeable,
+                review_decision,
+                auto_merge_enabled,
             });
         }
     }
@@ -489,6 +512,8 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
             repository(owner: "{owner}", name: "{name}") {{
                 pullRequest(number: {pr_number}) {{
                     mergeable
+                    reviewDecision
+                    autoMergeRequest {{ enabledAt }}
                     changedFiles
                     additions
                     deletions
@@ -639,6 +664,10 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
     let additions = pr_node.get("additions").and_then(|v| v.as_u64());
     let deletions = pr_node.get("deletions").and_then(|v| v.as_u64());
     let mergeable = parse_mergeable_state(pr_node);
+    let review_decision = parse_review_decision(pr_node);
+    let auto_merge_enabled = pr_node
+        .get("autoMergeRequest")
+        .is_some_and(|v| !v.is_null());
 
     Ok(PrDetail {
         checks,
@@ -649,6 +678,8 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
         additions,
         deletions,
         mergeable,
+        review_decision,
+        auto_merge_enabled,
     })
 }
 
@@ -842,7 +873,9 @@ pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<Stri
         .output()
         .await?;
     if !auto_merge.status.success() {
-        let stderr = String::from_utf8_lossy(&auto_merge.stderr).trim().to_string();
+        let stderr = String::from_utf8_lossy(&auto_merge.stderr)
+            .trim()
+            .to_string();
         tracing::warn!("Failed to enable auto-merge: {stderr}");
     }
 
@@ -857,6 +890,17 @@ fn parse_mergeable_state(pr_node: &Value) -> Option<MergeableState> {
             "MERGEABLE" => MergeableState::Mergeable,
             "CONFLICTING" => MergeableState::Conflicting,
             _ => MergeableState::Unknown,
+        })
+}
+
+fn parse_review_decision(pr_node: &Value) -> Option<ReviewDecision> {
+    pr_node
+        .get("reviewDecision")
+        .and_then(|v| v.as_str())
+        .map(|s| match s {
+            "APPROVED" => ReviewDecision::Approved,
+            "CHANGES_REQUESTED" => ReviewDecision::ChangesRequested,
+            _ => ReviewDecision::ReviewRequired,
         })
 }
 

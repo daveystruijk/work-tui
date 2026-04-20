@@ -14,11 +14,13 @@ expression: rendered
   Confirm sidebar, list, and command        
   bar layouts.                              
                                             
- ── GitHub ──────────────────────────────── 
+ ── Review ──────────────────────────────── 
   PR        #42 OPEN                        
   Comments  ⠹                               
   Changes   3 files  +72 / -14              
+  Review    Changes Requested               
   Merge     ⠹                               
+  Automerge On                              
                                             
  ── CI ──────────────────────────────────── 
    ✓ lint  2m                               
