@@ -409,12 +409,14 @@ impl AppView {
     fn handle_issues_message(&mut self, result: Result<Vec<Issue>>) {
         match result {
             Ok(issues) => {
+                let expanded_story_keys = self.expanded_loaded_story_keys();
                 let selected_key = self
                     .list
                     .selected_issue(&self.issues, &self.story_children)
                     .map(|issue| issue.key.clone());
                 self.issues = issues;
                 self.story_children.clear();
+                self.restore_expanded_story_loading(&expanded_story_keys);
                 self.list
                     .rebuild_display_rows(&self.issues, &self.story_children);
                 let previous_scroll_offset = self.list.scroll_offset;
@@ -436,6 +438,7 @@ impl AppView {
                 self.list.scroll_offset = previous_scroll_offset;
                 self.list.adjust_scroll_offset();
                 self.loading = false;
+                self.refetch_story_children(&expanded_story_keys);
                 self.spawn_active_branches();
                 self.spawn_github_prs();
                 self.spawn_tag_jira_repos();
@@ -508,6 +511,34 @@ impl AppView {
         self.story_children.insert(parent_key, children);
         self.list
             .rebuild_display_rows(&self.issues, &self.story_children);
+    }
+
+    fn expanded_loaded_story_keys(&self) -> Vec<String> {
+        let mut keys = self
+            .story_children
+            .keys()
+            .filter(|key| !self.list.collapsed_stories.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    fn restore_expanded_story_loading(&mut self, story_keys: &[String]) {
+        for key in story_keys {
+            self.list.collapsed_stories.remove(key);
+            self.list.start_loading_children(key);
+        }
+    }
+
+    fn refetch_story_children(&self, story_keys: &[String]) {
+        for key in story_keys {
+            actions::fetch_children::spawn(
+                self.message_tx.clone(),
+                self.client.clone(),
+                key.clone(),
+            );
+        }
     }
 
     /// Spawn children fetch for a story key.
@@ -600,5 +631,86 @@ impl AppView {
                 self.check_durations.insert(cache_key, duration);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::{
+        apis::jira::Issue,
+        fixtures::{test_app, test_issue},
+    };
+
+    use super::DisplayRow;
+
+    #[test]
+    fn expanded_loaded_story_keys_only_keeps_open_story_rows() {
+        let mut app = test_app();
+        app.story_children
+            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2")]);
+        app.story_children
+            .insert("TEST-3".to_string(), vec![ticket_issue("TEST-4")]);
+        app.list.collapsed_stories.insert("TEST-3".to_string());
+
+        assert_eq!(app.expanded_loaded_story_keys(), vec!["TEST-1".to_string()]);
+    }
+
+    #[test]
+    fn restore_expanded_story_loading_keeps_story_open_during_reload() {
+        let mut app = test_app();
+        app.issues = vec![story_issue("TEST-1", "Story parent")];
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+        app.story_children
+            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2")]);
+        app.list.collapsed_stories.remove("TEST-1");
+
+        let expanded_story_keys = app.expanded_loaded_story_keys();
+
+        app.story_children.clear();
+        app.restore_expanded_story_loading(&expanded_story_keys);
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+
+        assert!(app.list.loading_children.contains("TEST-1"));
+        assert!(matches!(
+            app.list.display_rows.as_slice(),
+            [
+                DisplayRow::StoryHeader {
+                    key,
+                    summary,
+                    depth: 0,
+                },
+                DisplayRow::Loading { depth: 1 },
+            ] if key == "TEST-1" && summary == "Story parent"
+        ));
+    }
+
+    fn story_issue(key: &str, summary: &str) -> Issue {
+        let mut issue = test_issue();
+        issue.key = key.to_string();
+        issue
+            .fields
+            .insert("summary".to_string(), json!(summary.to_string()));
+        issue.fields.insert(
+            "issuetype".to_string(),
+            json!({
+                "description": "",
+                "iconUrl": "",
+                "id": "10000",
+                "name": "Story",
+                "self": "http://localhost/issuetype/10000",
+                "subtask": false
+            }),
+        );
+        issue
+    }
+
+    fn ticket_issue(key: &str) -> Issue {
+        let mut issue = test_issue();
+        issue.key = key.to_string();
+        issue
     }
 }

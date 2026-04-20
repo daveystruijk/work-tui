@@ -28,10 +28,19 @@ use super::{
 
 #[cfg(test)]
 mod tests {
-    use insta::assert_snapshot;
+    use std::collections::HashMap;
 
-    use crate::fixtures::{render_to_string, selected_issue_app};
+    use insta::assert_snapshot;
+    use serde_json::json;
+
     use crate::ui::render;
+    use crate::{
+        apis::jira::Issue,
+        app::DisplayRow,
+        fixtures::{render_to_string, selected_issue_app, test_issue},
+    };
+
+    use super::ListView;
 
     #[test]
     fn snapshots_list_view() {
@@ -41,6 +50,52 @@ mod tests {
         });
 
         assert_snapshot!("list_view", rendered);
+    }
+
+    #[test]
+    fn expand_story_keeps_story_open_while_children_load() {
+        let issues = vec![story_issue("TEST-1", "Story parent")];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        assert!(list.collapsed_stories.contains("TEST-1"));
+
+        let fetch_key = list.expand_story(&issues, &story_children);
+
+        assert_eq!(fetch_key.as_deref(), Some("TEST-1"));
+        assert!(!list.collapsed_stories.contains("TEST-1"));
+        assert!(matches!(
+            list.display_rows.as_slice(),
+            [
+                DisplayRow::StoryHeader {
+                    key,
+                    summary,
+                    depth: 0,
+                },
+                DisplayRow::Loading { depth: 1 },
+            ] if key == "TEST-1" && summary == "Story parent"
+        ));
+    }
+
+    fn story_issue(key: &str, summary: &str) -> Issue {
+        let mut issue = test_issue();
+        issue.key = key.to_string();
+        issue
+            .fields
+            .insert("summary".to_string(), json!(summary.to_string()));
+        issue.fields.insert(
+            "issuetype".to_string(),
+            json!({
+                "description": "",
+                "iconUrl": "",
+                "id": "10000",
+                "name": "Story",
+                "self": "http://localhost/issuetype/10000",
+                "subtask": false
+            }),
+        );
+        issue
     }
 }
 
@@ -70,6 +125,12 @@ pub struct ListView {
 }
 
 impl ListView {
+    fn has_story_header(&self, key: &str) -> bool {
+        self.display_rows.iter().any(
+            |row| matches!(row, DisplayRow::StoryHeader { key: row_key, .. } if row_key == key),
+        )
+    }
+
     pub fn handle_message(&mut self, msg: &Message) {
         match msg {
             Message::Issues(Ok(_)) => {
@@ -591,6 +652,7 @@ impl ListView {
                     if expandable {
                         if !story_children.contains_key(&issue_key)
                             && !self.loading_children.contains(&issue_key)
+                            && !self.has_story_header(&issue_key)
                         {
                             self.collapsed_stories.insert(issue_key.clone());
                         }
@@ -641,6 +703,7 @@ impl ListView {
                             if expandable {
                                 if !story_children.contains_key(&child_key)
                                     && !self.loading_children.contains(&child_key)
+                                    && !self.has_story_header(&child_key)
                                 {
                                     self.collapsed_stories.insert(child_key.clone());
                                 }
