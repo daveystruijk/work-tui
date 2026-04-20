@@ -33,7 +33,8 @@ pub fn spawn(
         "Opening openspec propose",
         |tx| async move {
             let result: Result<String> = async {
-                let slug = git::format_branch_name(&issue_key, &git::slugify(&issue_summary));
+                let slug = git::format_branch_name(&issue_key, &git::slugify(&issue_summary))
+                    .to_ascii_lowercase();
 
                 let mut context = format!(
                     "This change solves the following ticket: {issue_summary}\n{issue_description}"
