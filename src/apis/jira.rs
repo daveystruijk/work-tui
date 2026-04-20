@@ -360,6 +360,9 @@ impl JiraClient {
             == Some(Self::MANAGED_PANEL_MARKER)
     }
 
+    const MANAGED_TEXT_START: &'static str = "--- Spec (AI-generated) ---";
+    const MANAGED_TEXT_END: &'static str = "--- End Spec ---";
+
     pub async fn append_description(&self, issue_key: &str, extra_text: &str) -> Result<()> {
         let issue = self.get_issue(issue_key).await?;
         let panel = Self::managed_panel(extra_text);
@@ -377,12 +380,36 @@ impl JiraClient {
                 }
                 Value::Object(doc)
             }
+            Some(Value::String(existing)) => {
+                let managed_section = format!(
+                    "{}\n{extra_text}\n{}",
+                    Self::MANAGED_TEXT_START,
+                    Self::MANAGED_TEXT_END
+                );
+                let new_text = if let Some(start) = existing.find(Self::MANAGED_TEXT_START) {
+                    if let Some(end_marker) = existing[start..].find(Self::MANAGED_TEXT_END) {
+                        let end = start + end_marker + Self::MANAGED_TEXT_END.len();
+                        format!(
+                            "{}{managed_section}{}",
+                            &existing[..start],
+                            &existing[end..]
+                        )
+                    } else {
+                        format!("{existing}\n\n{managed_section}")
+                    }
+                } else if existing.is_empty() {
+                    managed_section
+                } else {
+                    format!("{existing}\n\n{managed_section}")
+                };
+                json!(new_text)
+            }
             _ => {
-                json!({
-                    "version": 1,
-                    "type": "doc",
-                    "content": [panel]
-                })
+                json!(format!(
+                    "{}\n{extra_text}\n{}",
+                    Self::MANAGED_TEXT_START,
+                    Self::MANAGED_TEXT_END
+                ))
             }
         };
 

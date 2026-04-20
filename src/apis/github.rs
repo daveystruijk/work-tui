@@ -814,7 +814,7 @@ pub async fn fetch_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> R
     Ok(logs)
 }
 
-/// Create a pull request using `gh pr create` and return the PR URL.
+/// Create a pull request using `gh pr create`, enable auto-merge, and return the PR URL.
 pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<String> {
     let output = Command::new("gh")
         .args(["pr", "create", "--title", title, "--body", body])
@@ -834,7 +834,19 @@ pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<Stri
         ));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let auto_merge = Command::new("gh")
+        .args(["pr", "merge", &pr_url, "--auto", "--merge"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+    if !auto_merge.status.success() {
+        let stderr = String::from_utf8_lossy(&auto_merge.stderr).trim().to_string();
+        tracing::warn!("Failed to enable auto-merge: {stderr}");
+    }
+
+    Ok(pr_url)
 }
 
 fn parse_mergeable_state(pr_node: &Value) -> Option<MergeableState> {

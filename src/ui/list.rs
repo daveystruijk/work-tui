@@ -1625,7 +1625,7 @@ fn issue_row(
             Style::default().fg(pr_color),
         )];
         if pr.mergeable == Some(MergeableState::Conflicting) {
-            pr_spans.push(Span::styled(" !", Style::default().fg(Theme::Error)));
+            pr_spans.push(Span::styled("!", Style::default().fg(Theme::Error)));
         }
         cells.insert("PR", Line::from(pr_spans));
 
