@@ -83,12 +83,25 @@ pub fn spawn(
                 total: 5,
             }));
             let transitions = client.get_transitions(&issue_key).await?;
-            let review = transitions
-                .into_iter()
-                .find(|t| t.name.to_lowercase().contains("review"));
-            if let Some(t) = review {
-                client.transition_issue(&issue_key, &t.id).await?;
-            }
+            let review_transition = transitions
+                .iter()
+                .find(|t| t.name.to_lowercase().contains("review"))
+                .or_else(|| {
+                    transitions
+                        .iter()
+                        .find(|t| t.name.to_lowercase().contains("done"))
+                })
+                .ok_or_else(|| {
+                    let names = transitions
+                        .iter()
+                        .map(|t| t.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    eyre!("No 'Review' transition found. Available: {names}")
+                })?;
+            client
+                .transition_issue(&issue_key, &review_transition.id)
+                .await?;
 
             Ok(pr_url)
         }

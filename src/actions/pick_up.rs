@@ -75,12 +75,25 @@ pub fn spawn(
                 total: 6,
             }));
             let transitions = client.get_transitions(&issue_key).await?;
-            let progress = transitions
-                .into_iter()
-                .find(|t| t.name.to_lowercase().contains("progress"));
-            if let Some(t) = progress {
-                client.transition_issue(&issue_key, &t.id).await?;
-            }
+            let in_progress_transition = transitions
+                .iter()
+                .find(|t| t.name.to_lowercase().contains("progress"))
+                .or_else(|| {
+                    transitions
+                        .iter()
+                        .find(|t| t.name.to_lowercase().contains("start"))
+                })
+                .ok_or_else(|| {
+                    let names = transitions
+                        .iter()
+                        .map(|t| t.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    eyre!("No 'In Progress' transition found. Available: {names}")
+                })?;
+            client
+                .transition_issue(&issue_key, &in_progress_transition.id)
+                .await?;
             client.move_issue_to_active_board(&issue_key).await?;
 
             let should_open_opencode = branch_setup.reused_existing || !has_uncommitted_changes;
