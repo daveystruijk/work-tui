@@ -10,7 +10,15 @@ use gouqi::{
 };
 use serde_json::{json, Value};
 
-pub use gouqi::{Issue, IssueType, TransitionOption, User};
+pub use gouqi::{Issue, TransitionOption, User};
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct IssueType {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "hierarchyLevel", default)]
+    pub hierarchy_level: i32,
+}
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct JiraConfig {

@@ -49,13 +49,13 @@ pub fn spawn(
                 let issue_type = if parent_key.is_some() {
                     issue_types
                         .iter()
-                        .find(|t| t.subtask)
+                        .find(|t| t.hierarchy_level == 0)
                         .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
                 } else {
                     issue_types
                         .iter()
-                        .find(|t| !t.subtask && t.name.eq_ignore_ascii_case("task"))
-                        .or_else(|| issue_types.iter().find(|t| !t.subtask))
+                        .find(|t| t.hierarchy_level > 0 && t.name.eq_ignore_ascii_case("task"))
+                        .or_else(|| issue_types.iter().find(|t| t.hierarchy_level > 0))
                         .ok_or_else(|| eyre!("No issue types found for project {project_key}"))?
                 };
 
