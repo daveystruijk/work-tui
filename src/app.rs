@@ -529,6 +529,7 @@ impl AppView {
                 self.message_tx.clone(),
                 self.client.clone(),
                 key.clone(),
+                self.config.jira.jira_jql.clone(),
             );
         }
     }
@@ -607,6 +608,7 @@ impl AppView {
             self.message_tx.clone(),
             self.client.clone(),
             parent_key.to_string(),
+            self.config.jira.jira_jql.clone(),
         );
     }
 
