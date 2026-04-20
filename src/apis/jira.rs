@@ -249,25 +249,10 @@ impl JiraClient {
     }
 
     async fn move_issue_to_flow_board(&self, board: &Board, issue_key: &str) -> Result<()> {
-        let path = format!("/board/{}/issue?maxResults=1", board.id);
-        let response = self.jira.get::<Value>("agile", &path).await?;
-        let anchor_key = response
-            .get("issues")
-            .and_then(|issues| issues.as_array())
-            .and_then(|issues| issues.first())
-            .and_then(|issue| issue.get("key"))
-            .and_then(|key| key.as_str())
-            .map(|key| key.to_string());
-        let Some(anchor) = anchor_key else {
-            return Ok(());
-        };
-
-        let payload = json!({
-            "issues": [issue_key],
-            "rankBeforeIssue": anchor,
-        });
+        let path = format!("/board/{}/issue", board.id);
+        let payload = json!({ "issues": [issue_key] });
         self.jira
-            .put::<(), _>("agile", "/issue/rank", payload)
+            .post::<(), _>("agile", &path, payload)
             .await?;
         Ok(())
     }
