@@ -45,17 +45,21 @@ pub struct StatusBarView {
 
 impl StatusBarView {
     pub fn set_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        tracing::error!("{message}");
         self.alerts = vec![StatusAlert {
             level: AlertLevel::Error,
-            message: message.into(),
+            message,
             created_at: Instant::now(),
         }];
     }
 
     pub fn set_warning(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        tracing::warn!("{message}");
         self.alerts = vec![StatusAlert {
             level: AlertLevel::Warning,
-            message: message.into(),
+            message,
             created_at: Instant::now(),
         }];
     }
