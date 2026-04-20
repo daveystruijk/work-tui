@@ -13,6 +13,7 @@ use std::env;
 use color_eyre::Result;
 use futures::StreamExt;
 use gouqi::{r#async::Jira, Credentials, SearchOptions};
+use work_tui::apis::jira::JiraConfig;
 
 /// Explicit overrides: label -> list of replacements (empty vec = remove).
 fn overrides() -> HashMap<&'static str, Vec<&'static str>> {
@@ -63,7 +64,7 @@ async fn main() -> Result<()> {
 
     let apply = env::args().any(|a| a == "--apply");
 
-    let config = work_tui::apis::jira::JiraConfig::from_env()?;
+    let config = JiraConfig::from_env()?;
     let host = config.jira_url.trim_end_matches('/').to_string();
     let credentials = Credentials::Basic(config.jira_email, config.jira_api_token);
     let jira = Jira::new(&host, credentials)?;

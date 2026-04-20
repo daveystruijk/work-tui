@@ -109,6 +109,7 @@ pub struct AppView {
     pub ci_log_popup: CiLogsView,
     pub previous_key: Option<KeyCode>,
     pub import_tasks_popup: Option<ImportTasksView>,
+    pub pending_selected_issue_key: Option<String>,
 }
 
 impl AppView {
@@ -144,6 +145,7 @@ impl AppView {
             ci_log_popup: CiLogsView::default(),
             previous_key: None,
             import_tasks_popup: None,
+            pending_selected_issue_key: None,
         };
 
         app.check_durations = cache::load().check_durations;
@@ -410,34 +412,23 @@ impl AppView {
         match result {
             Ok(issues) => {
                 let expanded_story_keys = self.expanded_loaded_story_keys();
-                let selected_key = self
-                    .list
-                    .selected_issue(&self.issues, &self.story_children)
-                    .map(|issue| issue.key.clone());
+                let selection_restore_keys = self.selected_issue_restore_keys();
                 self.issues = issues;
                 self.story_children.clear();
                 self.restore_expanded_story_loading(&expanded_story_keys);
                 self.list
                     .rebuild_display_rows(&self.issues, &self.story_children);
                 let previous_scroll_offset = self.list.scroll_offset;
-                let next_index = selected_key
-                    .and_then(|key| {
-                        self.list.display_rows.iter().position(|row| {
-                            self.list
-                                .issue_for_display_row(row, &self.issues, &self.story_children)
-                                .map(|issue| issue.key == key)
-                                .unwrap_or(false)
-                        })
-                    })
-                    .unwrap_or(0);
-                self.list.selected_index = if self.list.display_rows.is_empty() {
-                    0
-                } else {
-                    next_index.min(self.list.display_rows.len() - 1)
-                };
+                let restored_exact_selection =
+                    self.restore_selection_for_issue_keys(&selection_restore_keys);
                 self.list.scroll_offset = previous_scroll_offset;
                 self.list.adjust_scroll_offset();
                 self.loading = false;
+                self.pending_selected_issue_key = if restored_exact_selection {
+                    None
+                } else {
+                    selection_restore_keys.first().cloned()
+                };
                 self.refetch_story_children(&expanded_story_keys);
                 self.spawn_active_branches();
                 self.spawn_github_prs();
@@ -511,6 +502,7 @@ impl AppView {
         self.story_children.insert(parent_key, children);
         self.list
             .rebuild_display_rows(&self.issues, &self.story_children);
+        self.restore_pending_selection();
     }
 
     fn expanded_loaded_story_keys(&self) -> Vec<String> {
@@ -539,6 +531,68 @@ impl AppView {
                 key.clone(),
             );
         }
+    }
+
+    fn selected_issue_restore_keys(&self) -> Vec<String> {
+        let Some(issue) = self.list.selected_issue(&self.issues, &self.story_children) else {
+            return Vec::new();
+        };
+
+        let mut keys = Vec::with_capacity(1);
+        keys.push(issue.key.clone());
+        keys.extend(
+            crate::issue::ancestors(issue)
+                .into_iter()
+                .map(|ancestor| ancestor.key),
+        );
+        keys
+    }
+
+    fn restore_selection_for_issue_keys(&mut self, issue_keys: &[String]) -> bool {
+        if self.list.display_rows.is_empty() {
+            self.list.selected_index = 0;
+            return false;
+        }
+
+        for (index, key) in issue_keys.iter().enumerate() {
+            if let Some(position) = self.display_row_index_for_issue_key(key) {
+                self.list.selected_index = position;
+                return index == 0;
+            }
+        }
+
+        self.list.selected_index = self
+            .list
+            .selected_index
+            .min(self.list.display_rows.len() - 1);
+        false
+    }
+
+    fn restore_pending_selection(&mut self) {
+        let Some(key) = self.pending_selected_issue_key.clone() else {
+            return;
+        };
+        if self.select_issue_key_if_visible(&key) {
+            self.pending_selected_issue_key = None;
+        }
+    }
+
+    fn select_issue_key_if_visible(&mut self, key: &str) -> bool {
+        let Some(position) = self.display_row_index_for_issue_key(key) else {
+            return false;
+        };
+        self.list.selected_index = position;
+        self.list.adjust_scroll_offset();
+        true
+    }
+
+    fn display_row_index_for_issue_key(&self, key: &str) -> Option<usize> {
+        self.list.display_rows.iter().position(|row| {
+            self.list
+                .issue_for_display_row(row, &self.issues, &self.story_children)
+                .map(|issue| issue.key == key)
+                .unwrap_or(false)
+        })
     }
 
     /// Spawn children fetch for a story key.
@@ -639,6 +693,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
+        actions::Message,
         apis::jira::Issue,
         fixtures::{test_app, test_issue},
     };
@@ -649,9 +704,9 @@ mod tests {
     fn expanded_loaded_story_keys_only_keeps_open_story_rows() {
         let mut app = test_app();
         app.story_children
-            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2")]);
+            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
         app.story_children
-            .insert("TEST-3".to_string(), vec![ticket_issue("TEST-4")]);
+            .insert("TEST-3".to_string(), vec![ticket_issue("TEST-4", None)]);
         app.list.collapsed_stories.insert("TEST-3".to_string());
 
         assert_eq!(app.expanded_loaded_story_keys(), vec!["TEST-1".to_string()]);
@@ -664,7 +719,7 @@ mod tests {
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
         app.story_children
-            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2")]);
+            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
         app.list.collapsed_stories.remove("TEST-1");
 
         let expanded_story_keys = app.expanded_loaded_story_keys();
@@ -688,6 +743,60 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn restore_selection_falls_back_to_parent_story_during_reload() {
+        let mut app = test_app();
+        let story = story_issue("TEST-1", "Story parent");
+        app.issues = vec![story.clone()];
+        app.story_children.insert(
+            "TEST-1".to_string(),
+            vec![ticket_issue("TEST-2", Some(&story))],
+        );
+        app.list.collapsed_stories.remove("TEST-1");
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+        app.list.selected_index = 1;
+
+        let restore_keys = app.selected_issue_restore_keys();
+
+        app.story_children.clear();
+        app.restore_expanded_story_loading(&["TEST-1".to_string()]);
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+
+        assert!(!app.restore_selection_for_issue_keys(&restore_keys));
+        assert_eq!(
+            app.list
+                .selected_issue(&app.issues, &app.story_children)
+                .map(|issue| issue.key.as_str()),
+            Some("TEST-1")
+        );
+    }
+
+    #[test]
+    fn children_loaded_restores_pending_child_selection() {
+        let mut app = test_app();
+        let story = story_issue("TEST-1", "Story parent");
+        app.issues = vec![story.clone()];
+        app.restore_expanded_story_loading(&["TEST-1".to_string()]);
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+        app.pending_selected_issue_key = Some("TEST-2".to_string());
+
+        app.handle_message(Message::ChildrenLoaded(
+            "TEST-1".to_string(),
+            Ok(vec![ticket_issue("TEST-2", Some(&story))]),
+        ));
+
+        assert_eq!(
+            app.list
+                .selected_issue(&app.issues, &app.story_children)
+                .map(|issue| issue.key.as_str()),
+            Some("TEST-2")
+        );
+        assert_eq!(app.pending_selected_issue_key, None);
+    }
+
     fn story_issue(key: &str, summary: &str) -> Issue {
         let mut issue = test_issue();
         issue.key = key.to_string();
@@ -708,9 +817,30 @@ mod tests {
         issue
     }
 
-    fn ticket_issue(key: &str) -> Issue {
+    fn ticket_issue(key: &str, parent: Option<&Issue>) -> Issue {
         let mut issue = test_issue();
         issue.key = key.to_string();
+        if let Some(parent) = parent {
+            issue.fields.insert(
+                "parent".to_string(),
+                json!({
+                    "key": parent.key.clone(),
+                    "id": parent.id.clone(),
+                    "self": parent.self_link.clone(),
+                    "fields": {
+                        "summary": parent.summary().unwrap_or_default(),
+                        "issuetype": {
+                            "description": "",
+                            "iconUrl": "",
+                            "id": "10000",
+                            "name": "Story",
+                            "self": "http://localhost/issuetype/10000",
+                            "subtask": false
+                        }
+                    }
+                }),
+            );
+        }
         issue
     }
 }

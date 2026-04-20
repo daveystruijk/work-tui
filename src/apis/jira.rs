@@ -28,6 +28,14 @@ pub struct JiraConfig {
     pub jira_jql: String,
 }
 
+impl JiraConfig {
+    pub fn from_env() -> Result<Self> {
+        let mut config = envy::from_env::<Self>()?;
+        config.jira_url = config.jira_url.trim_end_matches('/').to_string();
+        Ok(config)
+    }
+}
+
 #[derive(Clone)]
 pub struct JiraClient {
     jira: GouqiJira,
@@ -431,5 +439,64 @@ impl JiraClient {
             return Err(eyre!("No issue types found for project {project_key}"));
         }
         Ok(types)
+    }
+}
+
+impl IssueType {
+    pub fn is_standard(&self) -> bool {
+        self.hierarchy_level == 0
+    }
+
+    pub fn is_subtask(&self) -> bool {
+        self.hierarchy_level < 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IssueType;
+
+    #[test]
+    fn identifies_subtask_issue_types_by_negative_hierarchy() {
+        let issue_type = IssueType {
+            id: "1".into(),
+            name: "Sub-task".into(),
+            hierarchy_level: -1,
+        };
+
+        assert!(issue_type.is_subtask());
+    }
+
+    #[test]
+    fn does_not_treat_standard_issue_types_as_subtasks() {
+        let issue_type = IssueType {
+            id: "2".into(),
+            name: "Task".into(),
+            hierarchy_level: 0,
+        };
+
+        assert!(!issue_type.is_subtask());
+    }
+
+    #[test]
+    fn identifies_standard_issue_types_by_zero_hierarchy() {
+        let issue_type = IssueType {
+            id: "3".into(),
+            name: "Task".into(),
+            hierarchy_level: 0,
+        };
+
+        assert!(issue_type.is_standard());
+    }
+
+    #[test]
+    fn does_not_treat_epics_as_standard_issue_types() {
+        let issue_type = IssueType {
+            id: "4".into(),
+            name: "Epic".into(),
+            hierarchy_level: 1,
+        };
+
+        assert!(!issue_type.is_standard());
     }
 }

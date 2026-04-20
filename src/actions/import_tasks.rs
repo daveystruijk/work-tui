@@ -175,7 +175,7 @@ async fn run(
     let issue_types = client.get_issue_types(project_key).await?;
     let subtask_type = issue_types
         .iter()
-        .find(|t| t.hierarchy_level == 0)
+        .find(|t| t.is_subtask())
         .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?;
     let subtask_type_id = subtask_type.id.clone();
 

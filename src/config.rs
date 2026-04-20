@@ -1,27 +1,27 @@
+use std::env;
 use std::path::PathBuf;
 
 use color_eyre::{eyre::eyre, Result};
-use serde::Deserialize;
 
 use crate::apis::jira::JiraConfig;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct AppConfig {
-    #[serde(flatten)]
     pub jira: JiraConfig,
     pub repos_dir: PathBuf,
 }
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
-        let mut config = envy::from_env::<Self>()?;
-        config.jira.jira_url = config.jira.jira_url.trim_end_matches('/').to_string();
-        if !config.repos_dir.is_dir() {
+        let jira = JiraConfig::from_env()?;
+        let repos_dir =
+            PathBuf::from(env::var("REPOS_DIR").map_err(|_| eyre!("REPOS_DIR is not set"))?);
+        if !repos_dir.is_dir() {
             return Err(eyre!(
                 "REPOS_DIR ({}) is not a directory",
-                config.repos_dir.display()
+                repos_dir.display()
             ));
         }
-        Ok(config)
+        Ok(Self { jira, repos_dir })
     }
 }

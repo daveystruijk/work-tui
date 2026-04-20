@@ -52,6 +52,7 @@ pub fn test_app() -> AppView {
         ci_log_popup: CiLogsView::default(),
         previous_key: None,
         import_tasks_popup: None,
+        pending_selected_issue_key: None,
     }
 }
 
