@@ -315,19 +315,78 @@ impl JiraClient {
         Ok(issue)
     }
 
+    const MANAGED_PANEL_MARKER: &'static str = "Spec (AI-generated)";
+
+    /// Build a managed ADF panel node containing the given text.
+    fn managed_panel(extra_text: &str) -> Value {
+        json!({
+            "type": "panel",
+            "attrs": { "panelType": "info" },
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": Self::MANAGED_PANEL_MARKER,
+                        "marks": [{ "type": "strong" }]
+                    }]
+                },
+                { "type": "rule" },
+                {
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": extra_text }]
+                }
+            ]
+        })
+    }
+
+    /// Check whether an ADF node is a managed panel written by this app.
+    fn is_managed_panel(node: &Value) -> bool {
+        if node.get("type").and_then(|t| t.as_str()) != Some("panel") {
+            return false;
+        }
+        let Some(content) = node.get("content").and_then(|c| c.as_array()) else {
+            return false;
+        };
+        let Some(first) = content.first() else {
+            return false;
+        };
+        first
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|text_node| text_node.get("text"))
+            .and_then(|t| t.as_str())
+            == Some(Self::MANAGED_PANEL_MARKER)
+    }
+
     pub async fn append_description(&self, issue_key: &str, extra_text: &str) -> Result<()> {
         let issue = self.get_issue(issue_key).await?;
-        let existing = issue.description().unwrap_or_default();
-        let new_description = if existing.is_empty() {
-            extra_text.to_string()
-        } else {
-            format!("{existing}\n\n{extra_text}")
-        };
-        let payload = json!({
-            "fields": {
-                "description": new_description
+        let panel = Self::managed_panel(extra_text);
+
+        let new_description = match issue.fields.get("description").cloned() {
+            Some(Value::Object(mut doc))
+                if doc.get("type").and_then(|t| t.as_str()) == Some("doc") =>
+            {
+                if let Some(Value::Array(content)) = doc.get_mut("content") {
+                    if let Some(pos) = content.iter().position(Self::is_managed_panel) {
+                        content[pos] = panel;
+                    } else {
+                        content.push(panel);
+                    }
+                }
+                Value::Object(doc)
             }
-        });
+            _ => {
+                json!({
+                    "version": 1,
+                    "type": "doc",
+                    "content": [panel]
+                })
+            }
+        };
+
+        let payload = json!({ "fields": { "description": new_description } });
         self.jira
             .put::<(), _>("api", &format!("/issue/{issue_key}"), payload)
             .await?;
