@@ -110,6 +110,9 @@ pub struct AppView {
     pub previous_key: Option<KeyCode>,
     pub import_tasks_popup: Option<ImportTasksView>,
     pub pending_selected_issue_key: Option<String>,
+    /// When set, a prefetch of the selected PR detail is scheduled after a short delay.
+    /// This avoids firing fetches while the user is scrolling quickly through the list.
+    pub pending_prefetch_since: Option<std::time::Instant>,
 }
 
 impl AppView {
@@ -146,6 +149,7 @@ impl AppView {
             previous_key: None,
             import_tasks_popup: None,
             pending_selected_issue_key: None,
+            pending_prefetch_since: None,
         };
 
         app.check_durations = cache::load().check_durations;
@@ -204,6 +208,25 @@ impl AppView {
             .collect();
         actions::fetch_github_prs::spawn(self.message_tx.clone(), active_repos);
         self.last_ci_refresh = std::time::Instant::now();
+    }
+
+    /// Schedule a debounced prefetch of the selected PR detail.
+    /// The actual fetch fires after the cursor has been idle for 150ms.
+    pub fn schedule_prefetch(&mut self) {
+        self.pending_prefetch_since = Some(std::time::Instant::now());
+    }
+
+    /// Called every event-loop tick. Fires the prefetch if the debounce delay has elapsed.
+    pub fn tick_prefetch(&mut self) {
+        const PREFETCH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+        let Some(since) = self.pending_prefetch_since else {
+            return;
+        };
+        if since.elapsed() < PREFETCH_DELAY {
+            return;
+        }
+        self.pending_prefetch_since = None;
+        self.prefetch_selected_pr_detail();
     }
 
     pub fn prefetch_selected_pr_detail(&mut self) {

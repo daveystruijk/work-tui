@@ -136,6 +136,7 @@ async fn run_app(
         terminal.draw(|frame| ui::render(&mut app, frame))?;
 
         app.tick_spinner();
+        app.tick_prefetch();
         app.status_bar.expire_alerts();
 
         // Drain all pending background messages (non-blocking)
@@ -196,7 +197,7 @@ async fn run_app(
                             if target < app.list.display_rows.len() {
                                 app.list.selected_index = target;
                                 app.list.adjust_scroll_offset();
-                                app.prefetch_selected_pr_detail();
+                                app.schedule_prefetch();
                             }
                         }
                         _ => {}

@@ -1138,12 +1138,12 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                     KeyCode::Char('d') | KeyCode::Char('D') => {
                         app.list
                             .move_selection_by(app.list.area_height as isize / 2);
-                        app.prefetch_selected_pr_detail();
+                        app.schedule_prefetch();
                     }
                     KeyCode::Char('u') | KeyCode::Char('U') => {
                         app.list
                             .move_selection_by(-(app.list.area_height as isize / 2));
-                        app.prefetch_selected_pr_detail();
+                        app.schedule_prefetch();
                     }
                     _ => {}
                 }
@@ -1155,7 +1155,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                     if previous_was_g && c == 'g' {
                         app.list.selected_index = 0;
                         app.list.adjust_scroll_offset();
-                        app.prefetch_selected_pr_detail();
+                        app.schedule_prefetch();
                         return;
                     }
 
@@ -1163,15 +1163,15 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                         'b' => spawn_branch_diff(app),
                         'j' => {
                             app.list.move_selection_down();
-                            app.prefetch_selected_pr_detail();
+                            app.schedule_prefetch();
                         }
                         'k' => {
                             app.list.move_selection_up();
-                            app.prefetch_selected_pr_detail();
+                            app.schedule_prefetch();
                         }
                         'G' => {
                             app.list.move_selection_to_end();
-                            app.prefetch_selected_pr_detail();
+                            app.schedule_prefetch();
                         }
                         'p' => spawn_pick_up(app),
                         'o' => match open_selected_pr_in_browser(app).await {
@@ -1233,11 +1233,11 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                 }
                 KeyCode::Down => {
                     app.list.move_selection_down();
-                    app.prefetch_selected_pr_detail();
+                    app.schedule_prefetch();
                 }
                 KeyCode::Up => {
                     app.list.move_selection_up();
-                    app.prefetch_selected_pr_detail();
+                    app.schedule_prefetch();
                 }
                 _ => {}
             }
