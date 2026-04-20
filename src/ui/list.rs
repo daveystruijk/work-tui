@@ -360,8 +360,36 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) {
+        let selected_key = self
+            .selected_issue(issues, story_children)
+            .map(|issue| issue.key.clone());
         self.search_filter.clear();
         self.rebuild_display_rows(issues, story_children);
+        if let Some(key) = selected_key {
+            if let Some(position) = self.display_rows.iter().position(|row| match row {
+                DisplayRow::Issue {
+                    index,
+                    child_of: None,
+                    ..
+                } => issues.get(*index).map(|i| &i.key) == Some(&key),
+                DisplayRow::Issue {
+                    index,
+                    child_of: Some(parent_key),
+                    ..
+                } => {
+                    story_children
+                        .get(parent_key)
+                        .and_then(|children| children.get(*index))
+                        .map(|i| &i.key)
+                        == Some(&key)
+                }
+                DisplayRow::StoryHeader { key: k, .. } => *k == key,
+                _ => false,
+            }) {
+                self.selected_index = position;
+            }
+        }
+        self.adjust_scroll_offset();
     }
 
     pub fn search_type_char(
