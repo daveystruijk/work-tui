@@ -1,12 +1,13 @@
 ---
 source: src/ui/sidebar.rs
+assertion_line: 453
 expression: rendered
 ---
                                             
- ◦ TEST-123 Snapshot the sidebar render     
+ ◦ Snapshot the sidebar render              
                                             
- ── Jira ────────────────────────────────── 
-  Status    ● In Progress                   
+ ── Jira ────────────────────── TEST-123 ── 
+  Status    In Progress                     
   Assignee  Casey Dev                       
   Author    Riley Author                    
   Reporter  Jordan QA                       
@@ -14,11 +15,11 @@ expression: rendered
   Confirm sidebar, list, and command        
   bar layouts.                              
                                             
- ── Review ──────────────────────────────── 
-  PR        #42 OPEN                        
+ ── GitHub ───────────────────────── #42 ── 
+  Status    Changes Requested               
+  Repo      work-tui                        
   Changes   3 files  +72 / -14              
   Comments  ⠹                               
-  Review    Changes Requested               
   Merge     ⠹                               
   Automerge On                              
                                             

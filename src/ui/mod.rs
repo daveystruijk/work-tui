@@ -27,7 +27,7 @@ use crate::{
     app::AppView,
 };
 
-pub const COLUMNS: &[&str] = &["Key", "Summary", "PR", "CI", "Status", "Assignee", "Repo"];
+pub const COLUMNS: &[&str] = &["Key", "Summary", "Status", "Dev", "PR", "CI", "Repo"];
 pub const SIDEBAR_SECTION_MARGIN: u16 = 1;
 
 pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;

@@ -417,6 +417,7 @@ impl AppView {
                 self.story_children.clear();
                 self.list
                     .rebuild_display_rows(&self.issues, &self.story_children);
+                let previous_scroll_offset = self.list.scroll_offset;
                 let next_index = selected_key
                     .and_then(|key| {
                         self.list.display_rows.iter().position(|row| {
@@ -432,6 +433,8 @@ impl AppView {
                 } else {
                     next_index.min(self.list.display_rows.len() - 1)
                 };
+                self.list.scroll_offset = previous_scroll_offset;
+                self.list.adjust_scroll_offset();
                 self.loading = false;
                 self.spawn_active_branches();
                 self.spawn_github_prs();

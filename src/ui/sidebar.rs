@@ -121,12 +121,11 @@ impl SidebarView {
 
         let header_line = Line::from(vec![
             Span::styled(
-                format!("{icon} {}", issue.key),
+                format!("{icon} "),
                 Style::default()
                     .fg(Theme::Accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" "),
             Span::styled(
                 summary.clone(),
                 Style::default()
@@ -134,20 +133,18 @@ impl SidebarView {
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
-        let header_height = super::wrapped_line_count(
-            &format!("{icon} {} {summary}", issue.key),
-            inner.width as usize,
-        ) as u16;
+        let header_height =
+            super::wrapped_line_count(&format!("{icon} {summary}"), inner.width as usize) as u16;
 
         let mut jira_lines = Vec::new();
         let status_name = issue.status().map(|status| status.name).unwrap_or_default();
         let status_style = status_color(&status_name);
-        jira_lines.push(Line::from(vec![
-            Span::styled("Status    ", Style::default().fg(Theme::Muted)),
-            Span::styled("●", status_style),
-            Span::raw(" "),
-            Span::styled(status_name, status_style),
-        ]));
+        let jira_status_color = status_style.fg.unwrap_or(Theme::Muted);
+        jira_lines.push(labeled_text_line(
+            "Status",
+            status_name.clone(),
+            jira_status_color,
+        ));
 
         let (assignee, assignee_color) = issue
             .assignee()
@@ -185,7 +182,7 @@ impl SidebarView {
 
         if let Some(description) = issue.description() {
             let desc_width = inner.width.saturating_sub(6) as usize;
-            let max_desc_lines = 8;
+            let max_desc_lines = 20;
             let total_desc_lines =
                 super::wrap_text(&description, desc_width.max(1), usize::MAX).len();
             jira_lines.push(Line::from(""));
@@ -207,6 +204,7 @@ impl SidebarView {
         }
 
         let mut github_lines = Vec::new();
+        let mut github_id: Option<String> = None;
         let mut ci_lines = Vec::new();
 
         match app.github_prs.get(&issue.key) {
@@ -215,27 +213,39 @@ impl SidebarView {
                 let detail_error = self.detail_errors.get(&issue.key);
                 let detail_loaded = self.detail_loaded.contains(&issue.key);
                 let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
-                let (pr_state_label, pr_state_color) = if pr.is_draft {
-                    ("DRAFT", Theme::Muted)
-                } else if pr.state.eq_ignore_ascii_case("open") {
-                    ("OPEN", Theme::Success)
-                } else if pr.state.eq_ignore_ascii_case("merged") {
-                    ("MERGED", Theme::Accent)
-                } else {
-                    (pr.state.as_str(), Theme::Muted)
-                };
 
-                github_lines.push(Line::from(vec![
-                    Span::styled("PR        ", Style::default().fg(Theme::Muted)),
-                    Span::styled(
-                        format!("#{}", pr.number),
-                        Style::default()
-                            .fg(Theme::Info)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(pr_state_label, Style::default().fg(pr_state_color)),
-                ]));
+                github_id = Some(format!("#{}", pr.number));
+
+                let (status_label, status_color) = if pr.is_draft {
+                    ("Draft", Theme::Muted)
+                } else if pr.state.eq_ignore_ascii_case("merged") {
+                    ("Merged", Theme::Accent)
+                } else {
+                    match &pr.review_decision {
+                        Some(ReviewDecision::Approved) => ("Approved", Theme::Success),
+                        Some(ReviewDecision::ChangesRequested) => {
+                            ("Changes Requested", Theme::Error)
+                        }
+                        _ if detail_loading && !detail_loaded => (spinner, Theme::Warning),
+                        _ => ("Review", Theme::Info),
+                    }
+                };
+                github_lines.push(labeled_text_line(
+                    "Status",
+                    status_label.to_string(),
+                    status_color,
+                ));
+
+                let repo_name = pr
+                    .repo_slug
+                    .split_once('/')
+                    .map(|(_, name)| name)
+                    .unwrap_or(&pr.repo_slug);
+                github_lines.push(labeled_text_line(
+                    "Repo",
+                    repo_name.to_string(),
+                    Theme::Text,
+                ));
 
                 if let (Some(files), Some(adds), Some(dels)) =
                     (pr.changed_files, pr.additions, pr.deletions)
@@ -247,9 +257,9 @@ impl SidebarView {
                             if files == 1 { " file  " } else { " files  " },
                             Style::default().fg(Theme::Muted),
                         ),
-                        Span::styled(format!("+{adds}"), Style::default().fg(Theme::Success)),
+                        Span::styled(format!("+{adds}"), Style::default().fg(Theme::Muted)),
                         Span::styled(" / ", Style::default().fg(Theme::Muted)),
-                        Span::styled(format!("-{dels}"), Style::default().fg(Theme::Error)),
+                        Span::styled(format!("-{dels}"), Style::default().fg(Theme::Muted)),
                     ]));
                 }
 
@@ -268,22 +278,6 @@ impl SidebarView {
                     "Comments",
                     comments_value,
                     comments_color,
-                ));
-
-                let (review_label, review_color) = match &pr.review_decision {
-                    Some(ReviewDecision::Approved) => ("Approved", Theme::Success),
-                    Some(ReviewDecision::ChangesRequested) => ("Changes Requested", Theme::Error),
-                    Some(ReviewDecision::ReviewRequired) | None
-                        if detail_loading && !detail_loaded =>
-                    {
-                        (spinner, Theme::Warning)
-                    }
-                    _ => ("Pending", Theme::Muted),
-                };
-                github_lines.push(labeled_text_line(
-                    "Review",
-                    review_label.to_string(),
-                    review_color,
                 ));
 
                 if let Some(mergeable) = &pr.mergeable {
@@ -361,43 +355,75 @@ impl SidebarView {
                     )));
                 }
             }
-            None => {
-                github_lines.push(Line::from(Span::styled(
-                    "No linked PR",
-                    Style::default().fg(Theme::Muted),
-                )));
-                ci_lines.push(Line::from(Span::styled(
-                    "No CI results",
-                    Style::default().fg(Theme::Muted),
-                )));
-            }
+            None => {}
         }
 
-        let constraints = vec![
+        let has_github = !github_lines.is_empty();
+        let has_ci = !ci_lines.is_empty();
+
+        let mut constraints = vec![
             Constraint::Length(header_height.max(1)),
             Constraint::Length(SIDEBAR_SECTION_MARGIN),
             Constraint::Length(section_height(&jira_lines)),
-            Constraint::Length(SIDEBAR_SECTION_MARGIN),
-            Constraint::Length(section_height(&github_lines)),
-            Constraint::Length(SIDEBAR_SECTION_MARGIN),
-            Constraint::Length(section_height(&ci_lines)),
-            Constraint::Min(0),
         ];
+        if has_github {
+            constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
+            constraints.push(Constraint::Length(section_height(&github_lines)));
+        }
+        if has_ci {
+            constraints.push(Constraint::Length(SIDEBAR_SECTION_MARGIN));
+            constraints.push(Constraint::Length(section_height(&ci_lines)));
+        }
+        constraints.push(Constraint::Min(0));
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(inner);
 
+        let mut chunk_index = 0;
+
         frame.render_widget(
             Paragraph::new(vec![header_line])
                 .style(Style::default().bg(Theme::SidebarBg))
                 .wrap(Wrap { trim: false }),
-            chunks[0],
+            chunks[chunk_index],
         );
-        render_sidebar_section(frame, chunks[2], "Jira", jira_lines, Theme::SurfaceAlt);
-        render_sidebar_section(frame, chunks[4], "Review", github_lines, Theme::SurfaceAlt);
-        render_sidebar_section(frame, chunks[6], "CI", ci_lines, Theme::SurfaceAlt);
+        chunk_index += 2; // skip margin
+
+        render_sidebar_section_with_status(
+            frame,
+            chunks[chunk_index],
+            "Jira",
+            jira_lines,
+            Theme::SurfaceAlt,
+            Some((&issue.key, Theme::Muted)),
+        );
+        chunk_index += 1;
+
+        if has_github {
+            chunk_index += 1; // skip margin
+            render_sidebar_section_with_status(
+                frame,
+                chunks[chunk_index],
+                "GitHub",
+                github_lines,
+                Theme::SurfaceAlt,
+                github_id.as_deref().map(|id| (id, Theme::Muted)),
+            );
+            chunk_index += 1;
+        }
+
+        if has_ci {
+            chunk_index += 1; // skip margin
+            render_sidebar_section(
+                frame,
+                chunks[chunk_index],
+                "CI",
+                ci_lines,
+                Theme::SurfaceAlt,
+            );
+        }
     }
 
     #[allow(dead_code)]
@@ -443,6 +469,17 @@ fn render_sidebar_section<'a>(
     lines: Vec<Line<'a>>,
     border_color: ratatui::style::Color,
 ) {
+    render_sidebar_section_with_status(frame, area, title, lines, border_color, None);
+}
+
+fn render_sidebar_section_with_status<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: Vec<Line<'a>>,
+    border_color: ratatui::style::Color,
+    status: Option<(&str, ratatui::style::Color)>,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -475,6 +512,19 @@ fn render_sidebar_section<'a>(
             ),
         area,
     );
+
+    if let Some((status_text, status_color)) = status {
+        let padded = format!(" {status_text} ");
+        let total_width = padded.len() as u16;
+        let right_x = area.right().saturating_sub(total_width + 2);
+        if right_x > area.x {
+            let status_area = Rect::new(right_x, area.y, total_width, 1);
+            frame.render_widget(
+                Span::styled(padded, Style::default().fg(status_color)),
+                status_area,
+            );
+        }
+    }
 }
 
 fn section_height(lines: &[Line<'_>]) -> u16 {

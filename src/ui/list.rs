@@ -13,7 +13,7 @@ use ratatui::{
 use crate::actions;
 use crate::actions::Message;
 use crate::apis::{
-    github::{CheckStatus, MergeableState, PrInfo},
+    github::{CheckStatus, MergeableState, PrInfo, ReviewDecision},
     jira::Issue,
 };
 use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus};
@@ -843,10 +843,10 @@ impl ListView {
         let constraints = [
             Constraint::Length(max_col_width(&row_data, "Key").min(16)),
             Constraint::Min(10),
+            Constraint::Length(max_col_width(&row_data, "Status").min(14)),
+            Constraint::Length(max_col_width(&row_data, "Dev").min(12)),
             Constraint::Length(max_col_width(&row_data, "PR").min(8)),
             Constraint::Length(max_col_width(&row_data, "CI").min(14)),
-            Constraint::Length(max_col_width(&row_data, "Status").min(14)),
-            Constraint::Length(max_col_width(&row_data, "Assignee").min(20)),
             Constraint::Length(max_col_width(&row_data, "Repo").min(24)),
         ];
 
@@ -1542,7 +1542,16 @@ fn issue_row(
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
     let status_style = status_color(&status_name);
-    let assignee = issue.assignee().map(|u| u.display_name).unwrap_or_default();
+    let assignee = issue
+        .assignee()
+        .map(|u| {
+            u.display_name
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .unwrap_or_default();
     let is_active = ctx.active_branches.contains_key(&issue.key);
     let repos = repo_labels_for_issue(ctx.repo_entries, issue);
     let summary = issue
@@ -1589,16 +1598,9 @@ fn issue_row(
                 Style::default().fg(Theme::Text),
             ),
         ),
+        ("Status", Line::styled(status_name, status_style)),
         (
-            "Status",
-            Line::from(vec![
-                Span::styled("●", status_style),
-                Span::raw(" "),
-                Span::styled(status_name, status_style),
-            ]),
-        ),
-        (
-            "Assignee",
+            "Dev",
             Line::styled(assignee, Style::default().fg(Theme::Muted)),
         ),
         (
@@ -1617,8 +1619,14 @@ fn issue_row(
     if let Some(pr) = ctx.github_prs.get(&issue.key) {
         let pr_color = if pr.is_draft {
             Theme::Muted
+        } else if pr.state.eq_ignore_ascii_case("merged") {
+            Theme::Accent
         } else {
-            Theme::Info
+            match &pr.review_decision {
+                Some(ReviewDecision::Approved) => Theme::Success,
+                Some(ReviewDecision::ChangesRequested) => Theme::Error,
+                _ => Theme::Info,
+            }
         };
         let mut pr_spans = vec![Span::styled(
             format!("#{}", pr.number),
