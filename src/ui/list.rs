@@ -78,7 +78,84 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn nested_story_renders_only_under_its_parent() {
+        let issues = vec![
+            story_issue("EPIC-1", "Epic parent"),
+            story_issue_with_parent("STORY-1", "Child story", "EPIC-1", "Epic parent"),
+            task_issue_with_parent("TASK-1", "Nested task", "STORY-1", "Child story"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        list.expand_story(&issues, &story_children);
+        list.selected_index = 1;
+        list.expand_story(&issues, &story_children);
+
+        assert_eq!(story_header_count(&list.display_rows, "STORY-1"), 1);
+        assert!(matches!(
+            list.display_rows.as_slice(),
+            [
+                DisplayRow::StoryHeader { key: epic_key, depth: 0, .. },
+                DisplayRow::StoryHeader { key: story_key, depth: 1, .. },
+                DisplayRow::Issue { index: 2, depth: 2, child_of: None },
+            ] if epic_key == "EPIC-1" && story_key == "STORY-1"
+        ));
+    }
+
+    #[test]
+    fn child_story_is_not_duplicated_when_loaded_twice() {
+        let issues = vec![
+            story_issue_with_parent("STORY-1", "Child story", "EPIC-1", "Epic parent"),
+            task_issue_with_parent("TASK-1", "Nested task", "STORY-1", "Child story"),
+        ];
+        let story_children = HashMap::from([(
+            "EPIC-1".to_string(),
+            vec![story_issue_with_parent(
+                "STORY-1",
+                "Child story",
+                "EPIC-1",
+                "Epic parent",
+            )],
+        )]);
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        list.selected_index = 1;
+        list.expand_story(&issues, &story_children);
+
+        assert_eq!(story_header_count(&list.display_rows, "STORY-1"), 1);
+    }
+
     fn story_issue(key: &str, summary: &str) -> Issue {
+        issue_with_parent(key, summary, "Story", None)
+    }
+
+    fn story_issue_with_parent(
+        key: &str,
+        summary: &str,
+        parent_key: &str,
+        parent_summary: &str,
+    ) -> Issue {
+        issue_with_parent(key, summary, "Story", Some((parent_key, parent_summary)))
+    }
+
+    fn task_issue_with_parent(
+        key: &str,
+        summary: &str,
+        parent_key: &str,
+        parent_summary: &str,
+    ) -> Issue {
+        issue_with_parent(key, summary, "Task", Some((parent_key, parent_summary)))
+    }
+
+    fn issue_with_parent(
+        key: &str,
+        summary: &str,
+        issue_type: &str,
+        parent: Option<(&str, &str)>,
+    ) -> Issue {
         let mut issue = test_issue();
         issue.key = key.to_string();
         issue
@@ -90,12 +167,41 @@ mod tests {
                 "description": "",
                 "iconUrl": "",
                 "id": "10000",
-                "name": "Story",
+                "name": issue_type,
                 "self": "http://localhost/issuetype/10000",
                 "subtask": false
             }),
         );
+        if let Some((parent_key, parent_summary)) = parent {
+            issue.fields.insert(
+                "parent".to_string(),
+                json!({
+                    "id": format!("{parent_key}-id"),
+                    "key": parent_key,
+                    "self": format!("http://localhost/rest/api/2/issue/{parent_key}"),
+                    "fields": {
+                        "summary": parent_summary,
+                        "issuetype": {
+                            "description": "",
+                            "iconUrl": "",
+                            "id": "10000",
+                            "name": "Story",
+                            "self": "http://localhost/issuetype/10000",
+                            "subtask": false
+                        }
+                    }
+                }),
+            );
+        }
         issue
+    }
+
+    fn story_header_count(rows: &[DisplayRow], key: &str) -> usize {
+        rows.iter()
+            .filter(
+                |row| matches!(row, DisplayRow::StoryHeader { key: row_key, .. } if row_key == key),
+            )
+            .count()
     }
 }
 
@@ -513,6 +619,7 @@ impl ListView {
 
         let mut parent_groups: StdMap<String, (String, Vec<usize>)> = StdMap::new();
         let mut standalone_indices: Vec<usize> = Vec::new();
+        let mut nested_issue_keys: HashSet<String> = HashSet::new();
 
         for (idx, issue) in issues.iter().enumerate() {
             if let Some(ref matching) = matching_indices {
@@ -521,6 +628,7 @@ impl ListView {
                 }
             }
             if let Some(parent) = issue.parent() {
+                nested_issue_keys.insert(issue.key.clone());
                 let parent_key = parent.key.clone();
                 let parent_summary = parent.summary().unwrap_or_default();
                 let entry = parent_groups
@@ -542,7 +650,11 @@ impl ListView {
             });
         }
 
-        let parent_key_set: HashSet<String> = parent_groups.keys().cloned().collect();
+        let root_group_keys: HashSet<String> = parent_groups
+            .keys()
+            .filter(|key| !nested_issue_keys.contains(*key))
+            .cloned()
+            .collect();
 
         enum TopLevel {
             Standalone(usize),
@@ -550,7 +662,6 @@ impl ListView {
                 key: String,
                 summary: String,
                 parent_issue_idx: Option<usize>,
-                children: Vec<usize>,
             },
         }
 
@@ -559,49 +670,59 @@ impl ListView {
 
         for &idx in &standalone_indices {
             let issue_key = &issues[idx].key;
-            if parent_key_set.contains(issue_key) {
+            if root_group_keys.contains(issue_key) {
                 emitted_parents.insert(issue_key.clone());
-                let (_, children) = parent_groups.remove(issue_key.as_str()).unwrap();
                 top_levels.push(TopLevel::StoryGroup {
                     key: issue_key.clone(),
                     summary: issues[idx].summary().unwrap_or_default(),
                     parent_issue_idx: Some(idx),
-                    children,
                 });
             } else {
                 top_levels.push(TopLevel::Standalone(idx));
             }
         }
 
-        for (parent_key, (summary, children)) in parent_groups {
+        for (parent_key, (summary, _)) in &parent_groups {
+            if !root_group_keys.contains(parent_key) || emitted_parents.contains(parent_key) {
+                continue;
+            }
             top_levels.push(TopLevel::StoryGroup {
-                key: parent_key,
-                summary,
+                key: parent_key.clone(),
+                summary: summary.clone(),
                 parent_issue_idx: None,
-                children,
             });
         }
 
         top_levels.sort_by(|a, b| {
-            let rank_a = top_level_status_rank(a, issues);
-            let rank_b = top_level_status_rank(b, issues);
-            rank_a
-                .cmp(&rank_b)
-                .then_with(|| top_level_created(b, issues).cmp(&top_level_created(a, issues)))
+            let rank_a = top_level_status_rank(a, issues, &parent_groups);
+            let rank_b = top_level_status_rank(b, issues, &parent_groups);
+            rank_a.cmp(&rank_b).then_with(|| {
+                top_level_created(b, issues, &parent_groups).cmp(&top_level_created(
+                    a,
+                    issues,
+                    &parent_groups,
+                ))
+            })
         });
 
-        fn top_level_created(entry: &TopLevel, issues: &[Issue]) -> String {
+        fn top_level_created(
+            entry: &TopLevel,
+            issues: &[Issue],
+            parent_groups: &StdMap<String, (String, Vec<usize>)>,
+        ) -> String {
             match entry {
                 TopLevel::Standalone(idx) => issue_created_str(&issues[*idx]),
                 TopLevel::StoryGroup {
+                    key,
                     parent_issue_idx,
-                    children,
                     ..
                 } => {
                     let parent_created =
                         parent_issue_idx.map(|idx| issue_created_str(&issues[idx]));
-                    let child_max = children
-                        .iter()
+                    let child_max = parent_groups
+                        .get(key)
+                        .into_iter()
+                        .flat_map(|(_, children)| children.iter())
                         .map(|idx| issue_created_str(&issues[*idx]))
                         .max();
                     parent_created
@@ -613,23 +734,22 @@ impl ListView {
             }
         }
 
-        fn issue_created_str(issue: &Issue) -> String {
-            issue
-                .field::<String>("created")
-                .and_then(|r| r.ok())
-                .unwrap_or_default()
-        }
-
-        fn top_level_status_rank(entry: &TopLevel, issues: &[Issue]) -> u8 {
+        fn top_level_status_rank(
+            entry: &TopLevel,
+            issues: &[Issue],
+            parent_groups: &StdMap<String, (String, Vec<usize>)>,
+        ) -> u8 {
             match entry {
                 TopLevel::Standalone(idx) => status_rank(&issues[*idx]),
                 TopLevel::StoryGroup {
+                    key,
                     parent_issue_idx,
-                    children,
                     ..
                 } => {
-                    let child_min = children
-                        .iter()
+                    let child_min = parent_groups
+                        .get(key)
+                        .into_iter()
+                        .flat_map(|(_, children)| children.iter())
                         .map(|idx| status_rank(&issues[*idx]))
                         .min()
                         .unwrap_or(u8::MAX);
@@ -642,13 +762,18 @@ impl ListView {
         }
 
         let mut rows = Vec::new();
+        let mut rendered_keys = HashSet::new();
         for entry in top_levels {
             match entry {
                 TopLevel::Standalone(idx) => {
                     let issue = &issues[idx];
                     let issue_key = issue.key.clone();
+                    if !rendered_keys.insert(issue_key.clone()) {
+                        continue;
+                    }
                     let expandable = crate::issue::is_expandable(issue)
-                        || story_children.contains_key(&issue_key);
+                        || story_children.contains_key(&issue_key)
+                        || parent_groups.contains_key(&issue_key);
                     if expandable {
                         if !story_children.contains_key(&issue_key)
                             && !self.loading_children.contains(&issue_key)
@@ -663,7 +788,15 @@ impl ListView {
                             depth: 0,
                         });
                         if !self.collapsed_stories.contains(&issue_key) {
-                            self.append_nested_children(&issue_key, 1, &mut rows, story_children);
+                            self.append_nested_children(
+                                &issue_key,
+                                1,
+                                &mut rows,
+                                issues,
+                                &parent_groups,
+                                story_children,
+                                &mut rendered_keys,
+                            );
                         }
                     } else {
                         rows.push(DisplayRow::Issue {
@@ -677,58 +810,26 @@ impl ListView {
                     key,
                     summary,
                     parent_issue_idx,
-                    children,
                 } => {
+                    if !rendered_keys.insert(key.clone()) {
+                        continue;
+                    }
                     rows.push(DisplayRow::StoryHeader {
                         key: key.clone(),
                         summary,
                         depth: 0,
                     });
                     if !self.collapsed_stories.contains(&key) {
-                        if let Some(idx) = parent_issue_idx {
-                            let issue_key = &issues[idx].key;
-                            if *issue_key != key {
-                                rows.push(DisplayRow::Issue {
-                                    index: idx,
-                                    depth: 1,
-                                    child_of: None,
-                                });
-                            }
-                        }
-                        for child_idx in children {
-                            let child_issue = &issues[child_idx];
-                            let child_key = child_issue.key.clone();
-                            let expandable = crate::issue::is_expandable(child_issue)
-                                || story_children.contains_key(&child_key);
-                            if expandable {
-                                if !story_children.contains_key(&child_key)
-                                    && !self.loading_children.contains(&child_key)
-                                    && !self.has_story_header(&child_key)
-                                {
-                                    self.collapsed_stories.insert(child_key.clone());
-                                }
-                                let child_summary = child_issue.summary().unwrap_or_default();
-                                rows.push(DisplayRow::StoryHeader {
-                                    key: child_key.clone(),
-                                    summary: child_summary,
-                                    depth: 1,
-                                });
-                                if !self.collapsed_stories.contains(&child_key) {
-                                    self.append_nested_children(
-                                        &child_key,
-                                        2,
-                                        &mut rows,
-                                        story_children,
-                                    );
-                                }
-                            } else {
-                                rows.push(DisplayRow::Issue {
-                                    index: child_idx,
-                                    depth: 1,
-                                    child_of: None,
-                                });
-                            }
-                        }
+                        let _ = parent_issue_idx;
+                        self.append_nested_children(
+                            &key,
+                            1,
+                            &mut rows,
+                            issues,
+                            &parent_groups,
+                            story_children,
+                            &mut rendered_keys,
+                        );
                     }
                 }
             }
@@ -742,45 +843,121 @@ impl ListView {
 
     /// Append children for a nested story header.
     fn append_nested_children(
-        &self,
+        &mut self,
         parent_key: &str,
         depth: u8,
         rows: &mut Vec<DisplayRow>,
+        issues: &[Issue],
+        parent_groups: &HashMap<String, (String, Vec<usize>)>,
         story_children: &HashMap<String, Vec<Issue>>,
+        rendered_keys: &mut HashSet<String>,
     ) {
-        if self.loading_children.contains(parent_key) {
-            rows.push(DisplayRow::Loading { depth });
-            return;
-        }
-        let Some(children) = story_children.get(parent_key) else {
-            rows.push(DisplayRow::Loading { depth });
-            return;
-        };
-        if children.is_empty() {
-            rows.push(DisplayRow::Empty { depth });
-            return;
-        }
-        for (idx, child) in children.iter().enumerate() {
-            let child_key = child.key.clone();
-            let expandable =
-                crate::issue::is_expandable(child) || story_children.contains_key(&child_key);
-            if expandable {
-                let child_summary = child.summary().unwrap_or_default();
-                rows.push(DisplayRow::StoryHeader {
-                    key: child_key.clone(),
-                    summary: child_summary,
-                    depth,
-                });
-                if !self.collapsed_stories.contains(&child_key) {
-                    self.append_nested_children(&child_key, depth + 1, rows, story_children);
+        let mut rendered_child = false;
+
+        if let Some((_, grouped_children)) = parent_groups.get(parent_key) {
+            for &idx in grouped_children {
+                let child = &issues[idx];
+                let child_key = child.key.clone();
+                if !rendered_keys.insert(child_key.clone()) {
+                    continue;
                 }
-            } else {
-                rows.push(DisplayRow::Issue {
-                    index: idx,
-                    depth,
-                    child_of: Some(parent_key.to_string()),
-                });
+                rendered_child = true;
+                let expandable = crate::issue::is_expandable(child)
+                    || story_children.contains_key(&child_key)
+                    || parent_groups.contains_key(&child_key);
+                if expandable {
+                    if !story_children.contains_key(&child_key)
+                        && !self.loading_children.contains(&child_key)
+                        && !self.has_story_header(&child_key)
+                    {
+                        self.collapsed_stories.insert(child_key.clone());
+                    }
+                    rows.push(DisplayRow::StoryHeader {
+                        key: child_key.clone(),
+                        summary: child.summary().unwrap_or_default(),
+                        depth,
+                    });
+                    if !self.collapsed_stories.contains(&child_key) {
+                        self.append_nested_children(
+                            &child_key,
+                            depth + 1,
+                            rows,
+                            issues,
+                            parent_groups,
+                            story_children,
+                            rendered_keys,
+                        );
+                    }
+                } else {
+                    rows.push(DisplayRow::Issue {
+                        index: idx,
+                        depth,
+                        child_of: None,
+                    });
+                }
             }
+        }
+
+        if let Some(children) = story_children.get(parent_key) {
+            for (idx, child) in children.iter().enumerate() {
+                let child_key = child.key.clone();
+                if !rendered_keys.insert(child_key.clone()) {
+                    continue;
+                }
+                rendered_child = true;
+                let expandable = crate::issue::is_expandable(child)
+                    || story_children.contains_key(&child_key)
+                    || parent_groups.contains_key(&child_key);
+                if expandable {
+                    if !story_children.contains_key(&child_key)
+                        && !self.loading_children.contains(&child_key)
+                        && !self.has_story_header(&child_key)
+                    {
+                        self.collapsed_stories.insert(child_key.clone());
+                    }
+                    rows.push(DisplayRow::StoryHeader {
+                        key: child_key.clone(),
+                        summary: child.summary().unwrap_or_default(),
+                        depth,
+                    });
+                    if !self.collapsed_stories.contains(&child_key) {
+                        self.append_nested_children(
+                            &child_key,
+                            depth + 1,
+                            rows,
+                            issues,
+                            parent_groups,
+                            story_children,
+                            rendered_keys,
+                        );
+                    }
+                } else {
+                    rows.push(DisplayRow::Issue {
+                        index: idx,
+                        depth,
+                        child_of: Some(parent_key.to_string()),
+                    });
+                }
+            }
+        }
+
+        if rendered_child {
+            return;
+        }
+
+        if self.loading_children.contains(parent_key)
+            || (!parent_groups.contains_key(parent_key) && !story_children.contains_key(parent_key))
+        {
+            rows.push(DisplayRow::Loading { depth });
+            return;
+        }
+
+        if story_children
+            .get(parent_key)
+            .map(|children| children.is_empty())
+            .unwrap_or(false)
+        {
+            rows.push(DisplayRow::Empty { depth });
         }
     }
 
@@ -1802,4 +1979,11 @@ pub fn find_issue_by_key<'a>(
             .flat_map(|children| children.iter())
             .find(|issue| issue.key == key)
     })
+}
+
+fn issue_created_str(issue: &Issue) -> String {
+    issue
+        .field::<String>("created")
+        .and_then(|r| r.ok())
+        .unwrap_or_default()
 }
