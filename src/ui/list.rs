@@ -352,7 +352,7 @@ impl ListView {
     }
 
     pub fn confirm_search(&mut self) {
-        // Focus is handled by caller
+        // Focus is handled by caller; filter persists to keep the list filtered.
     }
 
     pub fn cancel_search(
@@ -558,8 +558,8 @@ impl ListView {
                 TopLevel::Standalone(idx) => {
                     let issue = &issues[idx];
                     let issue_key = issue.key.clone();
-                    let expandable =
-                        crate::issue::is_expandable(issue) || story_children.contains_key(&issue_key);
+                    let expandable = crate::issue::is_expandable(issue)
+                        || story_children.contains_key(&issue_key);
                     if expandable {
                         if !story_children.contains_key(&issue_key)
                             && !self.loading_children.contains(&issue_key)
@@ -671,7 +671,8 @@ impl ListView {
         }
         for (idx, child) in children.iter().enumerate() {
             let child_key = child.key.clone();
-            let expandable = crate::issue::is_expandable(child) || story_children.contains_key(&child_key);
+            let expandable =
+                crate::issue::is_expandable(child) || story_children.contains_key(&child_key);
             if expandable {
                 let child_summary = child.summary().unwrap_or_default();
                 rows.push(DisplayRow::StoryHeader {
@@ -1674,8 +1675,6 @@ fn pr_eta(check_durations: &HashMap<String, u64>, pr: &PrInfo) -> Option<String>
     }
     max_remaining.map(|r| format!("~{}", crate::utils::time::format_duration(r)))
 }
-
-
 
 /// Numeric rank for sorting issues by status.
 fn status_rank(issue: &Issue) -> u8 {

@@ -6,8 +6,8 @@ mod config;
 #[cfg(test)]
 mod fixtures;
 mod git;
-mod repos;
 mod issue;
+mod repos;
 mod theme;
 mod ui;
 mod utils;

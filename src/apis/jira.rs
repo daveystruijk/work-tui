@@ -251,9 +251,7 @@ impl JiraClient {
     async fn move_issue_to_flow_board(&self, board: &Board, issue_key: &str) -> Result<()> {
         let path = format!("/board/{}/issue", board.id);
         let payload = json!({ "issues": [issue_key] });
-        self.jira
-            .post::<(), _>("agile", &path, payload)
-            .await?;
+        self.jira.post::<(), _>("agile", &path, payload).await?;
         Ok(())
     }
 

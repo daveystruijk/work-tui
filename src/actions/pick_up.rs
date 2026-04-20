@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -104,8 +105,7 @@ pub fn spawn(
                     current: 6,
                     total: 6,
                 }));
-                let mut context =
-                    format!("{issue_summary}\n\n{issue_description}");
+                let mut context = format!("{issue_summary}\n\n{issue_description}");
                 context.push_str(&crate::issue::format_ancestor_context(&ancestors));
                 let escaped_prompt = context.replace('\'', "'\\''");
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");

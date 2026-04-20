@@ -151,6 +151,8 @@ impl StatusBarView {
                         .add_modifier(Modifier::SLOW_BLINK),
                 ),
             ])
+        } else if !self.alerts.is_empty() || !ctx.running_tasks.is_empty() {
+            self.render_status_items(ctx)
         } else if !ctx.search_filter.is_empty() {
             let count = ctx.display_row_count;
             Line::from(vec![
