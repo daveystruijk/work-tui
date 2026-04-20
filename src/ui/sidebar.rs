@@ -98,7 +98,7 @@ impl SidebarView {
     pub fn render(&self, frame: &mut Frame, area: Rect, ctx: &SidebarRenderContext) {
         let app = ctx.app;
         let sidebar = Block::default()
-            .padding(Padding::new(1, 1, 1, 0))
+            .padding(Padding::new(2, 2, 1, 0))
             .style(Style::default().bg(Theme::SidebarBg));
         let inner = sidebar.inner(area);
         frame.render_widget(sidebar, area);
@@ -206,6 +206,7 @@ impl SidebarView {
         let mut github_lines = Vec::new();
         let mut github_id: Option<String> = None;
         let mut ci_lines = Vec::new();
+        let mut ci_status: Option<(String, ratatui::style::Color)> = None;
 
         match app.github_prs.get(&issue.key) {
             Some(pr) => {
@@ -301,6 +302,22 @@ impl SidebarView {
                 ));
 
                 if !pr.check_runs.is_empty() {
+                    let total = pr.check_runs.len();
+                    let passed = pr
+                        .check_runs
+                        .iter()
+                        .filter(|r| r.status == CheckStatus::Pass)
+                        .count();
+                    let failed = pr.check_runs.iter().any(|r| r.status == CheckStatus::Fail);
+                    let status_color = if failed {
+                        Theme::Error
+                    } else if passed == total {
+                        Theme::Success
+                    } else {
+                        Theme::Warning
+                    };
+                    ci_status = Some((format!("{passed}/{total}"), status_color));
+
                     for run in &pr.check_runs {
                         let (icon, color) = match run.status {
                             CheckStatus::Pass => ("✓", Theme::Success),
@@ -416,12 +433,15 @@ impl SidebarView {
 
         if has_ci {
             chunk_index += 1; // skip margin
-            render_sidebar_section(
+            render_sidebar_section_with_status(
                 frame,
                 chunks[chunk_index],
                 "CI",
                 ci_lines,
                 Theme::SurfaceAlt,
+                ci_status
+                    .as_ref()
+                    .map(|(text, color)| (text.as_str(), *color)),
             );
         }
     }
@@ -478,16 +498,6 @@ mod tests {
     }
 }
 
-fn render_sidebar_section<'a>(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    lines: Vec<Line<'a>>,
-    border_color: ratatui::style::Color,
-) {
-    render_sidebar_section_with_status(frame, area, title, lines, border_color, None);
-}
-
 fn render_sidebar_section_with_status<'a>(
     frame: &mut Frame,
     area: Rect,
@@ -523,7 +533,7 @@ fn render_sidebar_section_with_status<'a>(
                         Style::default().fg(border_color),
                     ))
                     .border_style(Style::default().fg(border_color))
-                    .padding(Padding::new(1, 2, 0, 0))
+                    .padding(Padding::new(0, 0, 1, 0))
                     .style(Style::default().bg(Theme::SidebarBg)),
             ),
         area,
@@ -544,7 +554,7 @@ fn render_sidebar_section_with_status<'a>(
 }
 
 fn section_height(lines: &[Line<'_>]) -> u16 {
-    (lines.len() as u16).saturating_add(1)
+    (lines.len() as u16).saturating_add(2)
 }
 
 fn comment_counts(pr: &PrInfo) -> (usize, usize) {
