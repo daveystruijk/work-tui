@@ -1,7 +1,7 @@
 //! **Openspec Propose** — opens an opencode session that proposes an openspec change.
 //!
 //! 1. Build a slug from the issue key + summary
-//! 2. Assemble context from ticket details, parent stories, and linked repos
+//! 2. Assemble context from ticket details, parent stories, and tagged repos
 //! 3. Open a tmux window in REPOS_DIR with opencode as prompt
 //!
 //! # Channel messages produced
@@ -41,7 +41,7 @@ pub fn spawn(
                 context.push_str(&crate::issue::format_ancestor_context(&ancestors));
                 if !repo_slugs.is_empty() {
                     context.push_str(&format!(
-                        "\n\nLinked repositories: {}",
+                        "\n\nTagged repositories: {}",
                         repo_slugs.join(", ")
                     ));
                 }

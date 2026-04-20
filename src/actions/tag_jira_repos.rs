@@ -1,4 +1,4 @@
-//! **Link Jira Repos** — discovers PRs via GitHub search and labels unlinked Jira issues.
+//! **Tag Jira Repos** — discovers PRs via GitHub search and labels untagged Jira issues.
 //!
 //! Uses a single GitHub GraphQL search query to find open PRs across the org
 //! whose branch names match Jira issue keys. When a PR's repository matches a
@@ -16,7 +16,7 @@ use crate::apis::jira::JiraClient;
 use crate::repos;
 
 /// An issue that has no repo label match: `(issue_key, current_labels)`.
-pub type UnlinkedIssue = (String, Vec<String>);
+pub type UntaggedIssue = (String, Vec<String>);
 
 /// A discovered PR from GitHub search: `(repo_name, branch_name)`.
 #[derive(Debug)]
@@ -25,28 +25,28 @@ struct DiscoveredPr {
     branch: String,
 }
 
-/// Spawn repo linking for unlinked issues.
+/// Spawn repo tagging for untagged issues.
 ///
 /// Searches GitHub for open PRs across the org, matches branches to issue keys,
 /// and labels issues whose PR repo matches a local directory.
 pub fn spawn(
     tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
-    unlinked: Vec<UnlinkedIssue>,
+    untagged: Vec<UntaggedIssue>,
     repo_normalized_names: Vec<(String, String)>,
     github_org: String,
 ) {
-    if unlinked.is_empty() || repo_normalized_names.is_empty() || github_org.is_empty() {
+    if untagged.is_empty() || repo_normalized_names.is_empty() || github_org.is_empty() {
         return;
     }
 
-    super::spawn_action(tx, "link_jira_repos", "Linking repos", |tx| async move {
+    super::spawn_action(tx, "tag_jira_repos", "Tagging repos", |tx| async move {
         let discovered = match search_org_prs(&github_org).await {
             Ok(prs) => prs,
             Err(_) => return,
         };
 
-        for (issue_key, current_labels) in &unlinked {
+        for (issue_key, current_labels) in &untagged {
             let key_lower = issue_key.to_lowercase();
             let matched_pr = discovered
                 .iter()

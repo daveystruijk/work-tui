@@ -1078,7 +1078,7 @@ fn spawn_pick_up(app: &mut AppView) {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
-                .set_warning(format!("Cannot pick up {issue_key}: no linked repo"));
+                .set_warning(format!("Cannot pick up {issue_key}: no tagged repo"));
             return;
         }
     };
@@ -1107,7 +1107,7 @@ fn spawn_branch_diff(app: &mut AppView) {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
-                .set_warning(format!("Cannot open diff for {issue_key}: no linked repo"));
+                .set_warning(format!("Cannot open diff for {issue_key}: no tagged repo"));
             return;
         }
     };
@@ -1141,7 +1141,7 @@ fn spawn_finish(app: &mut AppView) {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
-                .set_warning(format!("Cannot finish {issue_key}: no linked repo"));
+                .set_warning(format!("Cannot finish {issue_key}: no tagged repo"));
             return;
         }
     };

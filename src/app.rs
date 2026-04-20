@@ -245,9 +245,9 @@ impl AppView {
         actions::detect_active_branches::spawn(self.message_tx.clone(), issue_data);
     }
 
-    /// Spawn repo linking for issues that have no repo label match.
-    fn spawn_link_jira_repos(&self) {
-        let unlinked: Vec<_> = self
+    /// Spawn repo tagging for issues that have no repo label match.
+    fn spawn_tag_jira_repos(&self) {
+        let untagged: Vec<_> = self
             .issues
             .iter()
             .filter(|issue| self.repo_matches(issue).is_empty())
@@ -273,10 +273,10 @@ impl AppView {
             .next()
             .unwrap_or_default();
 
-        actions::link_jira_repos::spawn(
+        actions::tag_jira_repos::spawn(
             self.message_tx.clone(),
             self.client.clone(),
-            unlinked,
+            untagged,
             repo_normalized_names,
             github_org,
         );
@@ -438,7 +438,7 @@ impl AppView {
                 self.loading = false;
                 self.spawn_active_branches();
                 self.spawn_github_prs();
-                self.spawn_link_jira_repos();
+                self.spawn_tag_jira_repos();
                 self.spawn_scan_import_tasks();
             }
             Err(_) => {

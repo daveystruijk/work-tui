@@ -344,13 +344,13 @@ fn spawn_fix_ci(app: &mut AppView) {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
-                .set_warning(format!("Cannot fix CI for {issue_key}: no linked repo"));
+                .set_warning(format!("Cannot fix CI for {issue_key}: no tagged repo"));
             return;
         }
     };
     let Some(pr) = app.github_prs.get(&issue_key) else {
         app.status_bar
-            .set_warning(format!("No linked PR for {issue_key}"));
+            .set_warning(format!("No PR found for {issue_key}"));
         return;
     };
 

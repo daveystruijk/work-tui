@@ -22,11 +22,11 @@ pub mod finish;
 pub mod fix_ci;
 pub mod import_tasks;
 pub mod initialize;
-pub mod link_jira_repos;
 pub mod openspec_propose;
 pub mod pick_up;
 pub mod refresh;
 pub mod scan_import_tasks;
+pub mod tag_jira_repos;
 
 use color_eyre::Result;
 use std::collections::{HashMap, HashSet};
