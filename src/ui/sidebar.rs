@@ -184,15 +184,26 @@ impl SidebarView {
         }
 
         if let Some(description) = issue.description() {
+            let desc_width = inner.width.saturating_sub(6) as usize;
+            let max_desc_lines = 8;
+            let total_desc_lines =
+                super::wrap_text(&description, desc_width.max(1), usize::MAX).len();
             jira_lines.push(Line::from(""));
             push_wrapped_block(
                 &mut jira_lines,
                 &description,
-                inner.width.saturating_sub(6) as usize,
-                8,
+                desc_width,
+                max_desc_lines,
                 Theme::Text,
                 "",
             );
+            let hidden_lines = total_desc_lines.saturating_sub(max_desc_lines);
+            if hidden_lines > 0 {
+                jira_lines.push(Line::from(Span::styled(
+                    format!("(+{hidden_lines} more lines)"),
+                    Style::default().fg(Theme::Muted),
+                )));
+            }
         }
 
         let mut github_lines = Vec::new();
@@ -226,6 +237,22 @@ impl SidebarView {
                     Span::styled(pr_state_label, Style::default().fg(pr_state_color)),
                 ]));
 
+                if let (Some(files), Some(adds), Some(dels)) =
+                    (pr.changed_files, pr.additions, pr.deletions)
+                {
+                    github_lines.push(Line::from(vec![
+                        Span::styled("Changes   ", Style::default().fg(Theme::Muted)),
+                        Span::styled(format!("{files}"), Style::default().fg(Theme::Text)),
+                        Span::styled(
+                            if files == 1 { " file  " } else { " files  " },
+                            Style::default().fg(Theme::Muted),
+                        ),
+                        Span::styled(format!("+{adds}"), Style::default().fg(Theme::Success)),
+                        Span::styled(" / ", Style::default().fg(Theme::Muted)),
+                        Span::styled(format!("-{dels}"), Style::default().fg(Theme::Error)),
+                    ]));
+                }
+
                 let (comments_value, comments_color) = if detail_loading && !detail_loaded {
                     (spinner.to_string(), Theme::Warning)
                 } else if detail_error.is_some() {
@@ -242,22 +269,6 @@ impl SidebarView {
                     comments_value,
                     comments_color,
                 ));
-
-                if let (Some(files), Some(adds), Some(dels)) =
-                    (pr.changed_files, pr.additions, pr.deletions)
-                {
-                    github_lines.push(Line::from(vec![
-                        Span::styled("Changes   ", Style::default().fg(Theme::Muted)),
-                        Span::styled(format!("{files}"), Style::default().fg(Theme::Text)),
-                        Span::styled(
-                            if files == 1 { " file  " } else { " files  " },
-                            Style::default().fg(Theme::Muted),
-                        ),
-                        Span::styled(format!("+{adds}"), Style::default().fg(Theme::Success)),
-                        Span::styled(" / ", Style::default().fg(Theme::Muted)),
-                        Span::styled(format!("-{dels}"), Style::default().fg(Theme::Error)),
-                    ]));
-                }
 
                 let (review_label, review_color) = match &pr.review_decision {
                     Some(ReviewDecision::Approved) => ("Approved", Theme::Success),
