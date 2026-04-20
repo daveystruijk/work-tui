@@ -1,0 +1,30 @@
+---
+source: src/ui/sidebar.rs
+expression: rendered
+---
+                                            
+ ◦ Snapshot the sidebar render              
+                                            
+ ── Jira ────────────────────── TEST-123 ── 
+  Status    In Progress                     
+  Assignee  Casey Dev                       
+  Author    Riley Author                    
+  Reporter  Jordan QA                       
+                                            
+  Open [release                             
+  notes](https://example.com/releases…      
+  before merging the change.                
+                                            
+ ── GitHub ───────────────────────── #42 ── 
+  Status    Changes Requested               
+  Repo      work-tui                        
+  Changes   3 files  +72 / -14              
+  Comments  ⠹                               
+  Merge     ⠹                               
+  Automerge On                              
+                                            
+ ── CI ──────────────────────────────────── 
+   ✓ lint  2m                               
+   ● build                                  
+     ✓ compile  1m                          
+     ● integration

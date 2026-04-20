@@ -434,6 +434,7 @@ impl SidebarView {
 mod tests {
     use insta::assert_snapshot;
     use ratatui::layout::Rect;
+    use serde_json::json;
 
     use crate::fixtures::{render_to_string, sidebar_app, test_app};
 
@@ -459,6 +460,21 @@ mod tests {
         });
 
         assert_snapshot!("sidebar_with_pr", rendered);
+    }
+
+    #[test]
+    fn snapshots_sidebar_with_markdown_link_in_description() {
+        let mut app = sidebar_app();
+        app.issues[0].fields.insert(
+            "description".to_string(),
+            json!("Open [release notes](https://example.com/releases/very/long/link) before merging the change."),
+        );
+        let ctx = SidebarRenderContext { app: &app };
+        let rendered = render_to_string(44, 26, |frame| {
+            app.sidebar.render(frame, Rect::new(0, 0, 44, 26), &ctx);
+        });
+
+        assert_snapshot!("sidebar_with_markdown_link_in_description", rendered);
     }
 }
 

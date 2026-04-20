@@ -168,6 +168,24 @@ pub fn humanize_timestamp(timestamp: &str) -> String {
     local.format("%Y-%m-%d %H:%M").to_string()
 }
 
+fn text_char_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn truncate_word(word: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    if width == 1 {
+        return "…".to_string();
+    }
+
+    let mut truncated = word.chars().take(width - 1).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 pub fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     if width == 0 || max_lines == 0 {
         return Vec::new();
@@ -194,10 +212,26 @@ pub fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
         let mut current = String::new();
         for word in paragraph.split_whitespace() {
+            if text_char_width(word) > width {
+                if !current.is_empty() {
+                    wrapped.push(current);
+                    if wrapped.len() >= max_lines {
+                        break 'outer;
+                    }
+                    current = String::new();
+                }
+
+                wrapped.push(truncate_word(word, width));
+                if wrapped.len() >= max_lines {
+                    break 'outer;
+                }
+                continue;
+            }
+
             let candidate_width = if current.is_empty() {
-                word.len()
+                text_char_width(word)
             } else {
-                current.len() + 1 + word.len()
+                text_char_width(&current) + 1 + text_char_width(word)
             };
 
             if candidate_width > width && !current.is_empty() {
@@ -206,19 +240,6 @@ pub fn wrap_text(text: &str, width: usize, max_lines: usize) -> Vec<String> {
                     break 'outer;
                 }
                 current = word.to_string();
-                continue;
-            }
-
-            if word.len() > width && current.is_empty() {
-                wrapped.push(
-                    word.chars()
-                        .take(width.saturating_sub(1))
-                        .collect::<String>()
-                        + "…",
-                );
-                if wrapped.len() >= max_lines {
-                    break 'outer;
-                }
                 continue;
             }
 
@@ -336,4 +357,17 @@ pub fn issue_type_icon(issue_type: &str) -> &'static str {
     }
 
     "•"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_text;
+
+    #[test]
+    fn wrap_text_truncates_long_word_after_line_break() {
+        assert_eq!(
+            wrap_text("Short https://example.com/really/long/link", 12, usize::MAX),
+            vec!["Short".to_string(), "https://exa…".to_string()],
+        );
+    }
 }
