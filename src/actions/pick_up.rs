@@ -14,7 +14,6 @@
 
 use std::path::PathBuf;
 
-use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -61,12 +60,42 @@ pub fn spawn(
             let branch_setup =
                 git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
 
-            if branch_setup.reused_existing {
+            let _ = tx.send(Message::Progress(Progress {
+                task_id: "pick_up".into(),
+                message: "Assigning issue...".into(),
+                current: 4,
+                total: 7,
+            }));
+            client.assign_issue(&issue_key, &my_account_id).await?;
+
+            let _ = tx.send(Message::Progress(Progress {
+                task_id: "pick_up".into(),
+                message: "Transitioning to In Progress and moving issue to board...".into(),
+                current: 5,
+                total: 7,
+            }));
+            let transitions = client.get_transitions(&issue_key).await?;
+            if let Some(in_progress_transition) = transitions
+                .iter()
+                .find(|t| t.name.to_lowercase().contains("progress"))
+                .or_else(|| {
+                    transitions
+                        .iter()
+                        .find(|t| t.name.to_lowercase().contains("start"))
+                })
+            {
+                client
+                    .transition_issue(&issue_key, &in_progress_transition.id)
+                    .await?;
+            }
+            client.move_issue_to_active_board(&issue_key).await?;
+
+            if !has_uncommitted_changes {
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
                     message: "Opening opencode session...".into(),
-                    current: 4,
-                    total: 4,
+                    current: 6,
+                    total: 7,
                 }));
                 let mut context = format!("{issue_summary}\n\n{issue_description}");
                 context.push_str(&crate::issue::format_ancestor_context(&ancestors));
@@ -85,69 +114,10 @@ pub fn spawn(
             } else {
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
-                    message: "Assigning issue...".into(),
-                    current: 4,
+                    message: "Skipping opencode (uncommitted changes)...".into(),
+                    current: 6,
                     total: 7,
                 }));
-                client.assign_issue(&issue_key, &my_account_id).await?;
-
-                let _ = tx.send(Message::Progress(Progress {
-                    task_id: "pick_up".into(),
-                    message: "Transitioning to In Progress and moving issue to board...".into(),
-                    current: 5,
-                    total: 7,
-                }));
-                let transitions = client.get_transitions(&issue_key).await?;
-                let in_progress_transition = transitions
-                    .iter()
-                    .find(|t| t.name.to_lowercase().contains("progress"))
-                    .or_else(|| {
-                        transitions
-                            .iter()
-                            .find(|t| t.name.to_lowercase().contains("start"))
-                    })
-                    .ok_or_else(|| {
-                        let names = transitions
-                            .iter()
-                            .map(|t| t.name.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        eyre!("No 'In Progress' transition found. Available: {names}")
-                    })?;
-                client
-                    .transition_issue(&issue_key, &in_progress_transition.id)
-                    .await?;
-                client.move_issue_to_active_board(&issue_key).await?;
-
-                if !has_uncommitted_changes {
-                    let _ = tx.send(Message::Progress(Progress {
-                        task_id: "pick_up".into(),
-                        message: "Opening opencode session...".into(),
-                        current: 6,
-                        total: 7,
-                    }));
-                    let mut context = format!("{issue_summary}\n\n{issue_description}");
-                    context.push_str(&crate::issue::format_ancestor_context(&ancestors));
-                    let escaped_prompt = context.replace('\'', "'\\''");
-                    let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
-                    let repo_dir = repo_path.display().to_string();
-
-                    let _ = Command::new("tmux")
-                        .args(["new-window", "-c", &repo_dir])
-                        .output()
-                        .await;
-                    let _ = Command::new("tmux")
-                        .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
-                        .output()
-                        .await;
-                } else {
-                    let _ = tx.send(Message::Progress(Progress {
-                        task_id: "pick_up".into(),
-                        message: "Skipping opencode (uncommitted changes)...".into(),
-                        current: 6,
-                        total: 7,
-                    }));
-                }
             }
 
             Ok(PickUpResult {
