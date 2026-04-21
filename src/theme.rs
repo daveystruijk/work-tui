@@ -12,6 +12,7 @@ impl Theme {
     pub const SurfaceAlt: Color = Color::DarkGray;
     pub const Panel: Color = Color::Reset;
     pub const SidebarBg: Color = Color::Rgb(42, 42, 55);
+    pub const Selection: Color = Color::Rgb(50, 50, 65);
     pub const Success: Color = Color::Green;
     pub const Warning: Color = Color::Yellow;
     pub const Error: Color = Color::Red;

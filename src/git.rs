@@ -142,12 +142,68 @@ pub async fn fetch_origin(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create a new branch off origin/main in the given repo.
+/// Find a local branch whose name starts with the given prefix (case-insensitive).
+async fn find_branch_by_prefix(repo_path: &Path, prefix: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["branch", "--list", &format!("{prefix}*")])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let prefix_lower = prefix.to_lowercase();
+    let matching_branch = stdout
+        .lines()
+        .map(|line| line.trim().trim_start_matches("* "))
+        .find(|branch| branch.to_lowercase().starts_with(&prefix_lower));
+
+    Ok(matching_branch.map(String::from))
+}
+
+/// Create a new branch off origin/main, or check out an existing branch
+/// that matches the issue key. Refuses to switch to an existing branch
+/// when the working tree is dirty.
 pub async fn create_branch_from_origin_main(
     repo_path: &Path,
     issue_key: &str,
     summary: &str,
 ) -> Result<BranchCheckoutResult> {
+    // Check for any existing branch matching this issue key before creating.
+    if let Some(existing) = find_branch_by_prefix(repo_path, issue_key).await? {
+        if !is_clean(repo_path).await? {
+            return Err(eyre!(
+                "Cannot switch to {existing}: working tree has uncommitted changes"
+            ));
+        }
+
+        let checkout = Command::new("git")
+            .args(["checkout", &existing])
+            .current_dir(repo_path)
+            .output()
+            .await?;
+
+        if checkout.status.success() {
+            return Ok(BranchCheckoutResult {
+                branch_name: existing,
+                reused_existing: true,
+            });
+        }
+
+        let stderr = String::from_utf8_lossy(&checkout.stderr).trim().to_string();
+        return Err(eyre!(
+            "git checkout {existing} failed: {}",
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                &stderr
+            }
+        ));
+    }
+
     let slug = slugify(summary);
     let branch_name = format_branch_name(issue_key, &slug);
 
@@ -165,35 +221,6 @@ pub async fn create_branch_from_origin_main(
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stderr_lower = stderr.to_lowercase();
-
-    if stderr_lower.contains("already exists") {
-        let checkout_existing = Command::new("git")
-            .args(["checkout", &branch_name])
-            .current_dir(repo_path)
-            .output()
-            .await?;
-
-        if checkout_existing.status.success() {
-            return Ok(BranchCheckoutResult {
-                branch_name,
-                reused_existing: true,
-            });
-        }
-
-        let checkout_stderr = String::from_utf8_lossy(&checkout_existing.stderr)
-            .trim()
-            .to_string();
-        return Err(eyre!(
-            "{}",
-            if checkout_stderr.is_empty() {
-                "git checkout failed".to_string()
-            } else {
-                checkout_stderr
-            }
-        ));
-    }
-
     Err(eyre!(
         "{}",
         if stderr.is_empty() {

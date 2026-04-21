@@ -363,7 +363,11 @@ impl AppView {
                 }
             }
             Message::BranchDiffOpened(_) => {}
-            Message::ApproveAutoMerged(_) => {}
+            Message::ApproveAutoMerged(result) => {
+                if result.is_ok() {
+                    self.spawn_github_prs_active();
+                }
+            }
             Message::Finished(result) => {
                 if result.is_ok() {
                     self.spawn_refresh();

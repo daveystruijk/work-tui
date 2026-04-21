@@ -154,10 +154,13 @@ async fn run_app(
         }
 
         // Auto-refresh: every 10s when CI checks are pending, every 60s otherwise
+        // Skip full refresh while user is typing an inline new item to avoid
+        // rebuilding display rows and losing the in-progress entry.
         if !app.is_busy() {
+            let is_inline_editing = app.input_focus == InputFocus::InlineNew;
             if app.has_pending_checks() && app.last_ci_refresh.elapsed() >= CI_AUTO_REFRESH {
                 app.spawn_github_prs_active();
-            } else if app.last_ci_refresh.elapsed() >= AUTO_REFRESH {
+            } else if !is_inline_editing && app.last_ci_refresh.elapsed() >= AUTO_REFRESH {
                 app.spawn_refresh();
             }
         }

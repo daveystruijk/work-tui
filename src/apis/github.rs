@@ -136,19 +136,15 @@ impl PrInfo {
         self.auto_merge_enabled = detail.auto_merge_enabled;
     }
 
-    /// Copy detail-enriched fields from a previously loaded PR.
+    /// Copy detail-only fields from a previously loaded PR.
     /// Used to carry forward cached CI logs across auto-refresh cycles
-    /// when the check run set hasn't changed.
+    /// when the check run set hasn't changed. Fields already present in
+    /// the list fetch (mergeable, review_decision, auto_merge_enabled, etc.)
+    /// are intentionally left untouched so fresh data is preserved.
     pub fn apply_detail_from(&mut self, old: &PrInfo) {
         self.check_runs = old.check_runs.clone();
         self.comments = old.comments.clone();
         self.review_threads = old.review_threads.clone();
-        self.changed_files = old.changed_files;
-        self.additions = old.additions;
-        self.deletions = old.deletions;
-        self.mergeable = old.mergeable.clone();
-        self.review_decision = old.review_decision.clone();
-        self.auto_merge_enabled = old.auto_merge_enabled;
     }
 
     pub fn latest_failed_check(&self) -> Option<&CheckRun> {

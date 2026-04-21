@@ -6,7 +6,7 @@ use ratatui::{
     layout::Constraint,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Cell, Row, Table, TableState},
+    widgets::{Block, Cell, HighlightSpacing, Row, Table, TableState},
     Frame,
 };
 
@@ -1118,10 +1118,11 @@ impl ListView {
             .column_spacing(2)
             .row_highlight_style(
                 Style::default()
-                    .fg(Theme::Text)
-                    .bg(Theme::SurfaceAlt)
+                    .bg(Theme::Selection)
                     .add_modifier(Modifier::BOLD),
             )
+            .highlight_symbol("▌")
+            .highlight_spacing(HighlightSpacing::Always)
             .block(Block::default().style(Style::default().bg(Theme::Panel)));
         frame.render_stateful_widget(table, area, &mut state);
         self.scroll_offset = state.offset();
