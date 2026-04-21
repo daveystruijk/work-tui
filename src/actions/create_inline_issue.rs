@@ -46,12 +46,26 @@ pub fn spawn(
             }));
             let result: color_eyre::Result<RunResult> = async {
                 let issue_types = client.get_issue_types(&project_key).await?;
-                let issue_type = if parent_key.is_some() {
+
+                let parent_is_epic = match &parent_key {
+                    Some(key) => {
+                        let parent = client.get_issue(key).await?;
+                        parent
+                            .issue_type()
+                            .map(|ty| ty.name.to_lowercase().contains("epic"))
+                            .unwrap_or(false)
+                    }
+                    None => false,
+                };
+
+                let issue_type = if parent_key.is_some() && !parent_is_epic {
+                    // Parent is a story/task — create a subtask underneath it.
                     issue_types
                         .iter()
                         .find(|t| t.is_subtask())
                         .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?
                 } else {
+                    // No parent, or parent is an epic — create a standard task.
                     issue_types
                         .iter()
                         .find(|t| t.is_standard() && t.name.eq_ignore_ascii_case("task"))
