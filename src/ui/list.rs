@@ -1195,7 +1195,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                             app.loading = true;
                             app.spawn_refresh();
                         }
-                        's' => spawn_toggle_story_type(app),
+                        'S' => spawn_toggle_story_type(app),
                         'f' => spawn_finish(app),
                         '/' => {
                             app.list.start_search();
