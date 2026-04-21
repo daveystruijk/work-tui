@@ -62,19 +62,24 @@ pub fn spawn(
                 git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
 
             if branch_setup.reused_existing {
-                // Branch already existed — just switch to its tmux window.
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
-                    message: format!(
-                        "Switching to existing branch {}...",
-                        branch_setup.branch_name
-                    ),
+                    message: "Opening opencode session...".into(),
                     current: 4,
                     total: 4,
                 }));
+                let mut context = format!("{issue_summary}\n\n{issue_description}");
+                context.push_str(&crate::issue::format_ancestor_context(&ancestors));
+                let escaped_prompt = context.replace('\'', "'\\''");
+                let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
                 let repo_dir = repo_path.display().to_string();
+
                 let _ = Command::new("tmux")
-                    .args(["select-window", "-t", &repo_dir])
+                    .args(["new-window", "-c", &repo_dir])
+                    .output()
+                    .await;
+                let _ = Command::new("tmux")
+                    .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
                     .output()
                     .await;
             } else {
