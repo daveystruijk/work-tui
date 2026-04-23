@@ -36,10 +36,13 @@ pub fn spawn(
                 let slug = git::format_branch_name(&issue_key, &git::slugify(&issue_summary))
                     .to_ascii_lowercase();
 
-                let mut context = format!(
-                    "This change solves the following ticket: {issue_summary}\n{issue_description}"
+                let mut context = crate::issue::format_ticket_context_parts(
+                    &issue_key,
+                    &issue_summary,
+                    &issue_description,
+                    None,
+                    &ancestors,
                 );
-                context.push_str(&crate::issue::format_ancestor_context(&ancestors));
                 if !repo_slugs.is_empty() {
                     context.push_str(&format!(
                         "\n\nTagged repositories: {}",

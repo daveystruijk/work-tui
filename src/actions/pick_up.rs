@@ -97,8 +97,13 @@ pub fn spawn(
                     current: 6,
                     total: 7,
                 }));
-                let mut context = format!("{issue_summary}\n\n{issue_description}");
-                context.push_str(&crate::issue::format_ancestor_context(&ancestors));
+                let context = crate::issue::format_ticket_context_parts(
+                    &issue_key,
+                    &issue_summary,
+                    &issue_description,
+                    None,
+                    &ancestors,
+                );
                 let escaped_prompt = context.replace('\'', "'\\''");
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
                 let repo_dir = repo_path.display().to_string();
