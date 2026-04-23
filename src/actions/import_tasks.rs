@@ -1,11 +1,12 @@
 //! **Import Tasks** — imports tasks from a `tasks.json` file in openspec changes.
 //!
 //! Discovers `$REPOS_DIR/openspec/changes/<issue-key-lowercased>-*/tasks.json`,
-//! reads the task list, and creates Jira subtasks under the current issue.
+//! reads the task list, and creates Jira child issues under the current issue.
 //!
 //! If there is only one task, updates the current issue directly instead of
-//! creating a subtask. If the issue is not already a Story and there are
-//! multiple tasks, converts it to a Story first.
+//! creating a child issue. If there are multiple tasks and the current issue is
+//! an Epic, creates standard tasks beneath it. Otherwise, creates subtasks and
+//! converts non-Story parents to Story first.
 //!
 //! Appends the task description to the Jira issue description (preserving any
 //! existing description). After creating each task, writes back the Jira key
@@ -24,7 +25,7 @@ use tokio::sync::mpsc;
 
 use super::Message;
 use crate::actions::Progress;
-use crate::apis::jira::JiraClient;
+use crate::apis::jira::{IssueType, JiraClient};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TaskEntry {
@@ -111,6 +112,58 @@ pub fn spawn(
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildCreationMode {
+    StandardTask,
+    Subtask,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MultiTaskImportPlan {
+    child_creation_mode: ChildCreationMode,
+    should_convert_parent_to_story: bool,
+}
+
+fn plan_multi_task_import(issue_type_name: &str) -> MultiTaskImportPlan {
+    let issue_type_name = issue_type_name.to_lowercase();
+
+    if issue_type_name.contains("epic") {
+        return MultiTaskImportPlan {
+            child_creation_mode: ChildCreationMode::StandardTask,
+            should_convert_parent_to_story: false,
+        };
+    }
+
+    MultiTaskImportPlan {
+        child_creation_mode: ChildCreationMode::Subtask,
+        should_convert_parent_to_story: !issue_type_name.contains("story"),
+    }
+}
+
+fn select_child_issue_type<'a>(
+    issue_types: &'a [IssueType],
+    child_creation_mode: ChildCreationMode,
+    project_key: &str,
+) -> Result<&'a IssueType> {
+    match child_creation_mode {
+        ChildCreationMode::StandardTask => issue_types
+            .iter()
+            .find(|issue_type| {
+                issue_type.is_standard() && issue_type.name.eq_ignore_ascii_case("task")
+            })
+            .or_else(|| {
+                issue_types
+                    .iter()
+                    .find(|issue_type| issue_type.is_standard())
+            })
+            .ok_or_else(|| eyre!("No standard issue types found for project {project_key}")),
+        ChildCreationMode::Subtask => issue_types
+            .iter()
+            .find(|issue_type| issue_type.is_subtask())
+            .ok_or_else(|| eyre!("No subtask type found for project {project_key}")),
+    }
+}
+
 async fn run(
     tx: &mpsc::UnboundedSender<Message>,
     client: &JiraClient,
@@ -155,13 +208,12 @@ async fn run(
         return Ok(());
     }
 
-    // Multiple tasks: ensure the issue is a Story first
-    let issue_type_name = issue_type_name.to_lowercase();
-    let is_story = issue_type_name.contains("story") || issue_type_name.contains("epic");
-    let multi_task_progress_total = base_progress_total + 1;
-    let first_create_step = 2;
+    let plan = plan_multi_task_import(issue_type_name);
+    let multi_task_progress_total =
+        base_progress_total + usize::from(plan.should_convert_parent_to_story);
+    let first_create_step = 1 + usize::from(plan.should_convert_parent_to_story);
 
-    if !is_story {
+    if plan.should_convert_parent_to_story {
         let _ = tx.send(Message::Progress(Progress {
             task_id: "import_tasks".into(),
             message: format!("Converting {issue_key} to Story..."),
@@ -173,18 +225,20 @@ async fn run(
 
     // Get subtask issue type
     let issue_types = client.get_issue_types(project_key).await?;
-    let subtask_type = issue_types
-        .iter()
-        .find(|t| t.is_subtask())
-        .ok_or_else(|| eyre!("No subtask type found for project {project_key}"))?;
-    let subtask_type_id = subtask_type.id.clone();
+    let child_issue_type =
+        select_child_issue_type(&issue_types, plan.child_creation_mode, project_key)?;
+    let child_issue_type_id = child_issue_type.id.clone();
 
     for (step, &task_index) in pending_tasks.iter().enumerate() {
         let task = &tasks[task_index];
+        let progress_label = match plan.child_creation_mode {
+            ChildCreationMode::StandardTask => "Creating task",
+            ChildCreationMode::Subtask => "Creating subtask",
+        };
 
         let _ = tx.send(Message::Progress(Progress {
             task_id: "import_tasks".into(),
-            message: format!("Creating subtask: {}...", task.title),
+            message: format!("{progress_label}: {}...", task.title),
             current: step + first_create_step,
             total: multi_task_progress_total,
         }));
@@ -192,7 +246,7 @@ async fn run(
         let created_key = client
             .create_issue(
                 project_key,
-                &subtask_type_id,
+                &child_issue_type_id,
                 &task.title,
                 Some(&task.description),
                 Some(issue_key),
@@ -280,5 +334,91 @@ mod tests {
         assert!(err
             .to_string()
             .contains("No openspec/changes directory found"));
+    }
+
+    #[test]
+    fn multi_task_import_creates_standard_tasks_under_epics() {
+        let plan = plan_multi_task_import("Epic");
+
+        assert_eq!(
+            plan,
+            MultiTaskImportPlan {
+                child_creation_mode: ChildCreationMode::StandardTask,
+                should_convert_parent_to_story: false,
+            }
+        );
+    }
+
+    #[test]
+    fn multi_task_import_keeps_story_parents_as_subtask_parents() {
+        let plan = plan_multi_task_import("Story");
+
+        assert_eq!(
+            plan,
+            MultiTaskImportPlan {
+                child_creation_mode: ChildCreationMode::Subtask,
+                should_convert_parent_to_story: false,
+            }
+        );
+    }
+
+    #[test]
+    fn multi_task_import_converts_non_story_non_epic_parents_before_subtasks() {
+        let plan = plan_multi_task_import("Task");
+
+        assert_eq!(
+            plan,
+            MultiTaskImportPlan {
+                child_creation_mode: ChildCreationMode::Subtask,
+                should_convert_parent_to_story: true,
+            }
+        );
+    }
+
+    #[test]
+    fn standard_child_issue_type_prefers_task_issue_type() {
+        let issue_types = vec![
+            IssueType {
+                id: "1".into(),
+                name: "Story".into(),
+                hierarchy_level: 0,
+            },
+            IssueType {
+                id: "2".into(),
+                name: "Task".into(),
+                hierarchy_level: 0,
+            },
+            IssueType {
+                id: "3".into(),
+                name: "Sub-task".into(),
+                hierarchy_level: -1,
+            },
+        ];
+
+        let selected =
+            select_child_issue_type(&issue_types, ChildCreationMode::StandardTask, "INI").unwrap();
+
+        assert_eq!(selected.id, "2");
+    }
+
+    #[test]
+    fn subtask_child_issue_type_requires_subtask_hierarchy() {
+        let issue_types = vec![
+            IssueType {
+                id: "1".into(),
+                name: "Task".into(),
+                hierarchy_level: 0,
+            },
+            IssueType {
+                id: "2".into(),
+                name: "Sub-task".into(),
+                hierarchy_level: -1,
+            },
+        ];
+
+        let selected =
+            select_child_issue_type(&issue_types, ChildCreationMode::Subtask, "INI").unwrap();
+
+        assert_eq!(selected.id, "2");
     }
 }
