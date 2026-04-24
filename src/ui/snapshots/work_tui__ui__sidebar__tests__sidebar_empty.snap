@@ -1,6 +1,7 @@
 ---
 source: src/ui/sidebar.rs
+assertion_line: 471
 expression: rendered
 ---
                                             
- No issue selected
+  No issue selected

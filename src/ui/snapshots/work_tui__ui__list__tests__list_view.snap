@@ -1,12 +1,12 @@
 ---
 source: src/ui/list.rs
-assertion_line: 43
+assertion_line: 52
 expression: rendered
 ---
-Key       Summary                                   Status       Dev                                                    
-TEST-123  ◦ Snapshot the sidebar render             In Progress  Casey       ◦ Snapshot the sidebar render              
+ Key       Summary                                  Status       Dev                                                    
+▌TEST-123  ◦ Snapshot the sidebar render            In Progress  Casey        ◦ Snapshot the sidebar render             
                                                                                                                         
-                                                                             ── Jira ────────────────────── TEST-123 ── 
+                                                                              ── Jira ──────────────────── TEST-123 ──  
                                                                               Status    In Progress                     
                                                                               Assignee  Casey Dev                       
                                                                               Author    Riley Author                    

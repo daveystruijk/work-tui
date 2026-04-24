@@ -1,21 +1,22 @@
 ---
 source: src/ui/sidebar.rs
+assertion_line: 497
 expression: rendered
 ---
                                             
- ◦ Snapshot the sidebar render              
+  ◦ Snapshot the sidebar render             
                                             
- ── Jira ────────────────────── TEST-123 ── 
+  ── Jira ──────────────────── TEST-123 ──  
   Status    In Progress                     
   Assignee  Casey Dev                       
   Author    Riley Author                    
   Reporter  Jordan QA                       
                                             
   Open [release                             
-  notes](https://example.com/releases…      
+  notes](https://example.com/releas…        
   before merging the change.                
                                             
- ── GitHub ───────────────────────── #42 ── 
+  ── GitHub ─────────────────────── #42 ──  
   Status    Changes Requested               
   Repo      work-tui                        
   Changes   3 files  +72 / -14              
@@ -23,7 +24,7 @@ expression: rendered
   Merge     ⠹                               
   Automerge On                              
                                             
- ── CI ──────────────────────────────────── 
+  ── CI ─────────────────────────── 1/2 ──  
    ✓ lint  2m                               
    ● build                                  
      ✓ compile  1m                          

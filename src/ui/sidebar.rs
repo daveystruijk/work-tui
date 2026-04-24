@@ -533,7 +533,6 @@ fn render_sidebar_section_with_status<'a>(
                         Style::default().fg(border_color),
                     ))
                     .border_style(Style::default().fg(border_color))
-                    .padding(Padding::new(0, 0, 1, 0))
                     .style(Style::default().bg(Theme::SidebarBg)),
             ),
         area,
@@ -554,7 +553,7 @@ fn render_sidebar_section_with_status<'a>(
 }
 
 fn section_height(lines: &[Line<'_>]) -> u16 {
-    (lines.len() as u16).saturating_add(2)
+    (lines.len() as u16).saturating_add(1)
 }
 
 fn comment_counts(pr: &PrInfo) -> (usize, usize) {

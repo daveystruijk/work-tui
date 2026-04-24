@@ -1,12 +1,12 @@
 ---
 source: src/ui/sidebar.rs
-assertion_line: 453
+assertion_line: 482
 expression: rendered
 ---
                                             
- ◦ Snapshot the sidebar render              
+  ◦ Snapshot the sidebar render             
                                             
- ── Jira ────────────────────── TEST-123 ── 
+  ── Jira ──────────────────── TEST-123 ──  
   Status    In Progress                     
   Assignee  Casey Dev                       
   Author    Riley Author                    
@@ -15,7 +15,7 @@ expression: rendered
   Confirm sidebar, list, and command        
   bar layouts.                              
                                             
- ── GitHub ───────────────────────── #42 ── 
+  ── GitHub ─────────────────────── #42 ──  
   Status    Changes Requested               
   Repo      work-tui                        
   Changes   3 files  +72 / -14              
@@ -23,7 +23,7 @@ expression: rendered
   Merge     ⠹                               
   Automerge On                              
                                             
- ── CI ──────────────────────────────────── 
+  ── CI ─────────────────────────── 1/2 ──  
    ✓ lint  2m                               
    ● build                                  
      ✓ compile  1m                          
