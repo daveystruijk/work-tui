@@ -1,12 +1,10 @@
-//! **Pick Up** — claims an issue and creates a feature branch.
+//! **Pick Up** — claims an issue and optionally creates a feature branch.
 //!
 //! Performs the full "pick up" workflow:
-//! 1. Note whether the working tree has local changes
-//! 2. Fetch from origin
-//! 3. Create a new branch off `origin/main`
-//! 4. Assign the issue to the current user
-//! 5. Transition the issue to "In Progress" (if available)
-//! 6. Open a tmux pane with an opencode session for the repo
+//! 1. If a repo is linked, inspect the working tree and create/reuse a branch
+//! 2. Assign the issue to the current user
+//! 3. Transition the issue to "In Progress" (if available)
+//! 4. Open a tmux pane with an opencode session
 //!
 //! # Channel messages produced
 //! - [`Message::Progress`] (per-step progress)
@@ -14,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use color_eyre::eyre::eyre;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -29,50 +28,59 @@ pub fn spawn(
     issue_key: String,
     issue_summary: String,
     issue_description: String,
-    repo_path: PathBuf,
+    repo_path: Option<PathBuf>,
     my_account_id: String,
     ancestors: Vec<Issue>,
 ) {
     super::spawn_action(tx, "pick_up", "Picking up", |tx| async move {
         let result: color_eyre::Result<PickUpResult> = async {
-            let _ = tx.send(Message::Progress(Progress {
-                task_id: "pick_up".into(),
-                message: "Inspecting working tree...".into(),
-                current: 1,
-                total: 6,
-            }));
-            let has_uncommitted_changes = !git::is_clean(&repo_path).await?;
+            let has_linked_repo = repo_path.is_some();
+            let total_steps = if has_linked_repo { 6 } else { 3 };
+            let branch_setup = if let Some(repo_path) = repo_path.as_ref() {
+                let _ = tx.send(Message::Progress(Progress {
+                    task_id: "pick_up".into(),
+                    message: "Inspecting working tree...".into(),
+                    current: 1,
+                    total: total_steps,
+                }));
+                let has_uncommitted_changes = !git::is_clean(repo_path).await?;
 
-            let _ = tx.send(Message::Progress(Progress {
-                task_id: "pick_up".into(),
-                message: "Fetching origin...".into(),
-                current: 2,
-                total: 6,
-            }));
-            git::fetch_origin(&repo_path).await?;
+                let _ = tx.send(Message::Progress(Progress {
+                    task_id: "pick_up".into(),
+                    message: "Fetching origin...".into(),
+                    current: 2,
+                    total: total_steps,
+                }));
+                git::fetch_origin(repo_path).await?;
 
-            let _ = tx.send(Message::Progress(Progress {
-                task_id: "pick_up".into(),
-                message: "Creating or reusing branch...".into(),
-                current: 3,
-                total: 6,
-            }));
-            let branch_setup =
-                git::create_branch_from_origin_main(&repo_path, &issue_key, &issue_summary).await?;
+                let _ = tx.send(Message::Progress(Progress {
+                    task_id: "pick_up".into(),
+                    message: "Creating or reusing branch...".into(),
+                    current: 3,
+                    total: total_steps,
+                }));
+                let branch_setup =
+                    git::create_branch_from_origin_main(repo_path, &issue_key, &issue_summary)
+                        .await?;
+
+                Some((branch_setup, has_uncommitted_changes))
+            } else {
+                None
+            };
 
             let _ = tx.send(Message::Progress(Progress {
                 task_id: "pick_up".into(),
                 message: "Assigning issue...".into(),
-                current: 4,
-                total: 7,
+                current: if has_linked_repo { 4 } else { 1 },
+                total: total_steps,
             }));
             client.assign_issue(&issue_key, &my_account_id).await?;
 
             let _ = tx.send(Message::Progress(Progress {
                 task_id: "pick_up".into(),
                 message: "Transitioning to In Progress and moving issue to board...".into(),
-                current: 5,
-                total: 7,
+                current: if has_linked_repo { 5 } else { 2 },
+                total: total_steps,
             }));
             let transitions = client.get_transitions(&issue_key).await?;
             if let Some(in_progress_transition) = transitions
@@ -90,12 +98,16 @@ pub fn spawn(
             }
             client.move_issue_to_active_board(&issue_key).await?;
 
-            if !has_uncommitted_changes {
+            if branch_setup
+                .as_ref()
+                .map(|(_, dirty)| !dirty)
+                .unwrap_or(true)
+            {
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
                     message: "Opening opencode session...".into(),
-                    current: 6,
-                    total: 7,
+                    current: if has_linked_repo { 6 } else { 3 },
+                    total: total_steps,
                 }));
                 let context = crate::issue::format_ticket_context_parts(
                     &issue_key,
@@ -106,7 +118,17 @@ pub fn spawn(
                 );
                 let escaped_prompt = context.replace('\'', "'\\''");
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
-                let repo_dir = repo_path.display().to_string();
+                let repo_dir = branch_setup
+                    .as_ref()
+                    .and_then(|_| repo_path.as_ref())
+                    .cloned()
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        dirs::home_dir()
+                            .map(|dir| dir.join("momo"))
+                            .ok_or_else(|| eyre!("HOME is not set; cannot resolve ~/momo"))
+                    })?;
+                let repo_dir = repo_dir.display().to_string();
 
                 let _ = Command::new("tmux")
                     .args(["new-window", "-c", &repo_dir])
@@ -121,12 +143,12 @@ pub fn spawn(
                     task_id: "pick_up".into(),
                     message: "Skipping opencode (uncommitted changes)...".into(),
                     current: 6,
-                    total: 7,
+                    total: total_steps,
                 }));
             }
 
             Ok(PickUpResult {
-                branch: branch_setup.branch_name,
+                branch: branch_setup.map(|(setup, _)| setup.branch_name),
             })
         }
         .await;

@@ -1314,17 +1314,13 @@ fn spawn_pick_up(app: &mut AppView) {
     };
     let issue_key = issue.key.clone();
     let issue_summary = issue.summary().unwrap_or_default();
-    let issue_description = issue.description().unwrap_or_default();
-    let repo_path = match app.repo_matches(issue).first() {
-        Some(entry) => entry.path.clone(),
-        None => {
-            app.status_bar
-                .set_warning(format!("Cannot pick up {issue_key}: no tagged repo"));
-            return;
-        }
-    };
+    let issue_description = crate::issue::description(issue).unwrap_or_default();
+    let repo_path = app
+        .repo_matches(issue)
+        .first()
+        .map(|entry| entry.path.clone());
 
-    let ancestors = crate::issue::ancestors(issue);
+    let ancestors = crate::issue::ancestors_from_sources(issue, &app.issues, &app.story_children);
 
     actions::pick_up::spawn(
         app.message_tx.clone(),
@@ -1591,7 +1587,7 @@ fn spawn_openspec_propose(app: &mut AppView) {
     };
     let issue_key = issue.key.clone();
     let issue_summary = issue.summary().unwrap_or_default();
-    let issue_description = issue.description().unwrap_or_default();
+    let issue_description = crate::issue::description(issue).unwrap_or_default();
 
     let repo_slugs: Vec<String> = app
         .repo_matches(issue)
@@ -1599,7 +1595,7 @@ fn spawn_openspec_propose(app: &mut AppView) {
         .filter_map(|entry| entry.github_slug.clone())
         .collect();
 
-    let ancestors = crate::issue::ancestors(issue);
+    let ancestors = crate::issue::ancestors_from_sources(issue, &app.issues, &app.story_children);
 
     actions::openspec_propose::spawn(
         app.message_tx.clone(),

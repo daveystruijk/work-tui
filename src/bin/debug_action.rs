@@ -13,7 +13,7 @@
 //!   detect-branches <issue-key> <repo-path>
 //!   approve-merge <owner/repo> <pr-number>
 //!   finish <issue-key> <issue-summary> <repo-path>
-//!   pick-up <issue-key> <issue-summary> <repo-path>
+//!   pick-up <issue-key> <issue-summary> [repo-path]
 
 use std::{env, path::PathBuf};
 
@@ -275,27 +275,30 @@ async fn finish(args: &[String]) -> Result<()> {
 }
 
 async fn pick_up(args: &[String]) -> Result<()> {
-    if args.len() != 3 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(eyre!(
-            "pick-up requires <issue-key> <issue-summary> <repo-path>"
+            "pick-up requires <issue-key> <issue-summary> [repo-path]"
         ));
     }
     let issue_key = &args[0];
     let issue_summary = &args[1];
-    let repo_path = PathBuf::from(&args[2]);
+    let repo_path = args.get(2).map(PathBuf::from);
     let (client, _) = jira_client()?;
     println!("WARNING: WRITE operation: pick-up workflow");
     let myself = client.get_myself().await?;
     let account_id = myself.account_id.unwrap_or_default();
     println!("my_account_id: {:?}", account_id);
-    let clean = work_tui::git::is_clean(&repo_path).await?;
-    println!("working_tree_clean: {}", clean);
-    work_tui::git::fetch_origin(&repo_path).await?;
-    println!("fetch_origin: ok");
-    let branch_setup =
-        work_tui::git::create_branch_from_origin_main(&repo_path, issue_key, issue_summary).await?;
-    println!("branch_name: {}", branch_setup.branch_name);
-    println!("reused_existing: {}", branch_setup.reused_existing);
+    if let Some(repo_path) = repo_path.as_ref() {
+        let clean = work_tui::git::is_clean(repo_path).await?;
+        println!("working_tree_clean: {}", clean);
+        work_tui::git::fetch_origin(repo_path).await?;
+        println!("fetch_origin: ok");
+        let branch_setup =
+            work_tui::git::create_branch_from_origin_main(repo_path, issue_key, issue_summary)
+                .await?;
+        println!("branch_name: {}", branch_setup.branch_name);
+        println!("reused_existing: {}", branch_setup.reused_existing);
+    }
     client.assign_issue(issue_key, &account_id).await?;
     println!("assign_issue: ok");
     let transitions = client.get_transitions(issue_key).await?;

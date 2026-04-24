@@ -358,8 +358,10 @@ impl AppView {
             }
             Message::PickedUp(result) => {
                 if let Ok(pickup) = result {
-                    self.current_branch = pickup.branch;
-                    self.spawn_active_branches();
+                    if let Some(branch) = pickup.branch {
+                        self.current_branch = branch;
+                        self.spawn_active_branches();
+                    }
                 }
             }
             Message::BranchDiffOpened(_) => {}
@@ -770,6 +772,18 @@ mod tests {
                 DisplayRow::Loading { depth: 1 },
             ] if key == "TEST-1" && summary == "Story parent"
         ));
+    }
+
+    #[test]
+    fn picked_up_without_branch_does_not_change_current_branch() {
+        let mut app = test_app();
+        app.current_branch = "existing-branch".to_string();
+
+        app.handle_message(Message::PickedUp(Ok(crate::actions::PickUpResult {
+            branch: None,
+        })));
+
+        assert_eq!(app.current_branch, "existing-branch");
     }
 
     #[test]

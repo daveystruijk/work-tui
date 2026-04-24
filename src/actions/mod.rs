@@ -69,7 +69,7 @@ impl fmt::Display for Progress {
 
 #[derive(Debug, Clone)]
 pub struct PickUpResult {
-    pub branch: String,
+    pub branch: Option<String>,
 }
 
 /// Messages sent from background actions back to the main event loop.

@@ -180,7 +180,7 @@ impl SidebarView {
             ));
         }
 
-        if let Some(description) = issue.description() {
+        if let Some(description) = crate::issue::description(issue) {
             let desc_width = inner.width.saturating_sub(6) as usize;
             let max_desc_lines = 20;
             let total_desc_lines =
