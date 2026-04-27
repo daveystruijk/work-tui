@@ -36,21 +36,14 @@ pub fn spawn(
                 let slug = git::format_branch_name(&issue_key, &git::slugify(&issue_summary))
                     .to_ascii_lowercase();
 
-                let mut context = crate::issue::format_ticket_context_parts(
+                let prompt = crate::issue::format_openspec_propose_prompt(
+                    &slug,
                     &issue_key,
                     &issue_summary,
                     &issue_description,
-                    None,
                     &ancestors,
+                    &repo_slugs,
                 );
-                if !repo_slugs.is_empty() {
-                    context.push_str(&format!(
-                        "\n\nTagged repositories: {}",
-                        repo_slugs.join(", ")
-                    ));
-                }
-
-                let prompt = format!("/opsx-propose {slug}\n\n{context}");
                 let escaped_prompt = prompt.replace('\'', "'\\''");
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
                 let dir = repos_dir.display().to_string();

@@ -1,0 +1,25 @@
+---
+source: src/issue.rs
+assertion_line: 420
+expression: prompt
+---
+/opsx-propose task-1-task-summary
+
+Use the ticket context below to propose the openspec changes needed for this work. Treat the primary ticket as the requested change. Use ancestor tickets for background, scope, and constraints.
+
+<<< PRIMARY TICKET START: TASK-1 >>>
+Key: TASK-1
+Summary: Task summary
+Description:
+Task description
+<<< PRIMARY TICKET END: TASK-1 >>>
+
+<<< ANCESTOR TICKET START: STORY-1 >>>
+Key: STORY-1
+Summary: Story summary
+Type: Story
+Description:
+Story description
+<<< ANCESTOR TICKET END: STORY-1 >>>
+
+Tagged repositories: org/repo-a, org/repo-b

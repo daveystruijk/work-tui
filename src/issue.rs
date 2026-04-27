@@ -185,13 +185,72 @@ pub fn format_ticket_context_parts(
     context
 }
 
+fn format_ticket_prompt(
+    goal: &str,
+    key: &str,
+    summary: &str,
+    description: &str,
+    issue_type: Option<&str>,
+    ancestors: &[Issue],
+) -> String {
+    format!(
+        "{goal}\n\n{}",
+        format_ticket_context_parts(key, summary, description, issue_type, ancestors)
+    )
+}
+
+const PICK_UP_GOAL: &str = "Use the ticket context below to implement the requested change. Treat the primary ticket as the task to complete. Use ancestor tickets for background, scope, and constraints.";
+
+const OPENSPEC_PROPOSE_GOAL: &str = "Use the ticket context below to propose the openspec changes needed for this work. Treat the primary ticket as the requested change. Use ancestor tickets for background, scope, and constraints.";
+
+pub fn format_pick_up_prompt(
+    key: &str,
+    summary: &str,
+    description: &str,
+    ancestors: &[Issue],
+) -> String {
+    format_ticket_prompt(PICK_UP_GOAL, key, summary, description, None, ancestors)
+}
+
+pub fn format_openspec_propose_prompt(
+    slug: &str,
+    key: &str,
+    summary: &str,
+    description: &str,
+    ancestors: &[Issue],
+    repo_slugs: &[String],
+) -> String {
+    let mut prompt = format!(
+        "/opsx-propose {slug}\n\n{}",
+        format_ticket_prompt(
+            OPENSPEC_PROPOSE_GOAL,
+            key,
+            summary,
+            description,
+            None,
+            ancestors,
+        )
+    );
+    if !repo_slugs.is_empty() {
+        prompt.push_str(&format!(
+            "\n\nTagged repositories: {}",
+            repo_slugs.join(", ")
+        ));
+    }
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use serde_json::json;
 
-    use super::{ancestors_from_sources, description};
+    use insta::assert_snapshot;
+
+    use super::{
+        ancestors_from_sources, description, format_openspec_propose_prompt, format_pick_up_prompt,
+    };
     use crate::fixtures::test_issue;
 
     #[test]
@@ -314,5 +373,50 @@ mod tests {
             description(&ancestors[1]).as_deref(),
             Some("Epic description")
         );
+    }
+
+    fn make_ancestor() -> crate::apis::jira::Issue {
+        let mut ancestor = test_issue();
+        ancestor.key = "STORY-1".to_string();
+        ancestor
+            .fields
+            .insert("summary".to_string(), json!("Story summary"));
+        ancestor
+            .fields
+            .insert("description".to_string(), json!("Story description"));
+        ancestor.fields.insert(
+            "issuetype".to_string(),
+            json!({
+                "description": "",
+                "iconUrl": "",
+                "id": "10000",
+                "name": "Story",
+                "self": "http://localhost/issuetype/10000",
+                "subtask": false
+            }),
+        );
+        ancestor
+    }
+
+    #[test]
+    fn snapshots_pick_up_prompt() {
+        let ancestor = make_ancestor();
+        let prompt =
+            format_pick_up_prompt("TASK-1", "Task summary", "Task description", &[ancestor]);
+        assert_snapshot!("pick_up_prompt", prompt);
+    }
+
+    #[test]
+    fn snapshots_openspec_propose_prompt() {
+        let ancestor = make_ancestor();
+        let prompt = format_openspec_propose_prompt(
+            "task-1-task-summary",
+            "TASK-1",
+            "Task summary",
+            "Task description",
+            &[ancestor],
+            &["org/repo-a".to_string(), "org/repo-b".to_string()],
+        );
+        assert_snapshot!("openspec_propose_prompt", prompt);
     }
 }

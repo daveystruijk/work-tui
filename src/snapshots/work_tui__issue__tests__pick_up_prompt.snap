@@ -1,0 +1,21 @@
+---
+source: src/issue.rs
+assertion_line: 406
+expression: prompt
+---
+Use the ticket context below to implement the requested change. Treat the primary ticket as the task to complete. Use ancestor tickets for background, scope, and constraints.
+
+<<< PRIMARY TICKET START: TASK-1 >>>
+Key: TASK-1
+Summary: Task summary
+Description:
+Task description
+<<< PRIMARY TICKET END: TASK-1 >>>
+
+<<< ANCESTOR TICKET START: STORY-1 >>>
+Key: STORY-1
+Summary: Story summary
+Type: Story
+Description:
+Story description
+<<< ANCESTOR TICKET END: STORY-1 >>>

@@ -109,14 +109,13 @@ pub fn spawn(
                     current: if has_linked_repo { 6 } else { 3 },
                     total: total_steps,
                 }));
-                let context = crate::issue::format_ticket_context_parts(
+                let prompt = crate::issue::format_pick_up_prompt(
                     &issue_key,
                     &issue_summary,
                     &issue_description,
-                    None,
                     &ancestors,
                 );
-                let escaped_prompt = context.replace('\'', "'\\''");
+                let escaped_prompt = prompt.replace('\'', "'\\''");
                 let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
                 let repo_dir = branch_setup
                     .as_ref()
