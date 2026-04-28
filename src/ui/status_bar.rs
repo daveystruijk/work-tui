@@ -33,6 +33,7 @@ pub struct StatusBarRenderContext<'a> {
     pub input_focus: InputFocus,
     pub search_filter: &'a str,
     pub display_row_count: usize,
+    pub issue_count: usize,
     pub running_tasks: &'a [RunningAction],
     pub spinner_tick: usize,
 }
@@ -176,7 +177,8 @@ impl StatusBarView {
 
         let updated_text = self.last_updated.map(|last_updated| {
             format!(
-                "updated {} ago  ",
+                "{} issues · updated {} ago  ",
+                ctx.issue_count,
                 crate::utils::time::format_duration(last_updated.elapsed().as_secs())
             )
         });
@@ -251,6 +253,7 @@ mod tests {
             input_focus: app.input_focus,
             search_filter: &app.list.search_filter,
             display_row_count: app.list.display_rows.len(),
+            issue_count: app.issues.len(),
             running_tasks: &app.running_tasks,
             spinner_tick: app.animation.spinner_tick,
         };
@@ -274,6 +277,7 @@ mod tests {
             input_focus: app.input_focus,
             search_filter: &app.list.search_filter,
             display_row_count: app.list.display_rows.len(),
+            issue_count: app.issues.len(),
             running_tasks: &app.running_tasks,
             spinner_tick: app.animation.spinner_tick,
         };
@@ -293,6 +297,7 @@ mod tests {
             input_focus: app.input_focus,
             search_filter: &app.list.search_filter,
             display_row_count: app.list.display_rows.len(),
+            issue_count: app.issues.len(),
             running_tasks: &app.running_tasks,
             spinner_tick: app.animation.spinner_tick,
         };

@@ -69,10 +69,13 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
     let display_row_count = app.list.display_rows.len();
     let spinner_tick = app.animation.spinner_tick;
 
+    let issue_count = app.issues.len();
+
     let status_bar_ctx = status_bar::StatusBarRenderContext {
         input_focus,
         search_filter: &search_filter,
         display_row_count,
+        issue_count,
         running_tasks: &app.running_tasks,
         spinner_tick,
     };
@@ -103,6 +106,7 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
             input_focus,
             search_filter: &search_filter,
             display_row_count,
+            issue_count,
             running_tasks: &app.running_tasks,
             spinner_tick,
         };

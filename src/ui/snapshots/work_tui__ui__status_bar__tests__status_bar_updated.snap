@@ -1,6 +1,6 @@
 ---
 source: src/ui/status_bar.rs
-assertion_line: 58
+assertion_line: 308
 expression: rendered
 ---
-                             updated 1m30s ago
+                  0 issues · updated 1m30s ago
