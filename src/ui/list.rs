@@ -26,6 +26,58 @@ use super::{
     issue_type_icon, max_col_width, status_color, CellMap, UiAnimationView, COLUMNS, SPINNER_FRAMES,
 };
 
+/// Returns true if the issue's status indicates it belongs in the backlog section.
+fn is_backlog_status(issue: &Issue) -> bool {
+    let name = issue
+        .status()
+        .map(|s| s.name)
+        .unwrap_or_default()
+        .to_lowercase();
+    name.contains("plan") || name.contains("proposed")
+}
+
+/// Returns true if the parent has at least one child matching the given section filter.
+/// For expandable children (stories/epics), recurses into their own children instead
+/// of using the child's own status.
+fn has_children_in_section(
+    parent_key: &str,
+    issues: &[Issue],
+    parent_groups: &HashMap<String, (String, Vec<usize>)>,
+    story_children: &HashMap<String, Vec<Issue>>,
+    section_filter: Option<bool>,
+) -> bool {
+    let child_in_section = |issue: &Issue| {
+        let expandable = crate::issue::is_expandable(issue)
+            || story_children.contains_key(&issue.key)
+            || parent_groups.contains_key(&issue.key);
+        if expandable {
+            return has_children_in_section(
+                &issue.key,
+                issues,
+                parent_groups,
+                story_children,
+                section_filter,
+            );
+        }
+        match section_filter {
+            Some(true) => !is_backlog_status(issue),
+            Some(false) => is_backlog_status(issue),
+            None => true,
+        }
+    };
+
+    parent_groups
+        .get(parent_key)
+        .into_iter()
+        .flat_map(|(_, children)| children.iter())
+        .any(|idx| child_in_section(&issues[*idx]))
+        || story_children
+            .get(parent_key)
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .any(child_in_section)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -53,28 +105,50 @@ mod tests {
     }
 
     #[test]
-    fn expand_story_keeps_story_open_while_children_load() {
-        let issues = vec![story_issue("TEST-1", "Story parent")];
+    fn board_story_starts_expanded_with_children() {
+        let issues = vec![
+            story_issue("TEST-1", "Story parent"),
+            task_issue_with_parent("TASK-1", "Board task", "TEST-1", "Story parent"),
+        ];
         let story_children = HashMap::new();
         let mut list = ListView::default();
 
         list.rebuild_display_rows(&issues, &story_children);
-        assert!(list.collapsed_stories.contains("TEST-1"));
-
-        let fetch_key = list.expand_story(&issues, &story_children);
-
-        assert_eq!(fetch_key.as_deref(), Some("TEST-1"));
-        assert!(!list.collapsed_stories.contains("TEST-1"));
+        // Board stories with children default to expanded
+        assert!(!list
+            .collapsed_stories
+            .contains(&("TEST-1".to_string(), Some(true))));
         assert!(matches!(
             list.display_rows.as_slice(),
             [
-                DisplayRow::StoryHeader {
-                    key,
-                    summary,
-                    depth: 0,
-                },
-                DisplayRow::Loading { depth: 1 },
-            ] if key == "TEST-1" && summary == "Story parent"
+                DisplayRow::SectionHeader { label, .. },
+                DisplayRow::StoryHeader { key, depth: 0, section, .. },
+                DisplayRow::Issue { index: 1, depth: 1, .. },
+            ] if label == "BOARD" && key == "TEST-1" && section == &Some(true)
+        ));
+    }
+
+    #[test]
+    fn backlog_story_with_known_children_starts_expanded() {
+        let issues = vec![
+            backlog_story_issue("TEST-1", "Backlog story"),
+            backlog_task_issue_with_parent("TASK-1", "Backlog task", "TEST-1", "Backlog story"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        // Story with known children in parent_groups starts expanded in BACKLOG.
+        assert!(!list
+            .collapsed_stories
+            .contains(&("TEST-1".to_string(), Some(false))));
+        assert!(matches!(
+            list.display_rows.as_slice(),
+            [
+                DisplayRow::SectionHeader { label, .. },
+                DisplayRow::StoryHeader { key, depth: 0, section, .. },
+                DisplayRow::Issue { index: 1, depth: 1, .. },
+            ] if label == "BACKLOG" && key == "TEST-1" && section == &Some(false)
         ));
     }
 
@@ -89,18 +163,22 @@ mod tests {
         let mut list = ListView::default();
 
         list.rebuild_display_rows(&issues, &story_children);
-        list.expand_story(&issues, &story_children);
         list.selected_index = 1;
         list.expand_story(&issues, &story_children);
+        list.selected_index = 2;
+        list.expand_story(&issues, &story_children);
 
+        // STORY-1 appears once in BOARD (expanded under EPIC-1); BACKLOG epic starts collapsed
         assert_eq!(story_header_count(&list.display_rows, "STORY-1"), 1);
+        // Verify BOARD section has the correct nested structure
         assert!(matches!(
-            list.display_rows.as_slice(),
+            &list.display_rows[..4],
             [
-                DisplayRow::StoryHeader { key: epic_key, depth: 0, .. },
-                DisplayRow::StoryHeader { key: story_key, depth: 1, .. },
+                DisplayRow::SectionHeader { label, .. },
+                DisplayRow::StoryHeader { key: epic_key, depth: 0, section: epic_section, .. },
+                DisplayRow::StoryHeader { key: story_key, depth: 1, section: story_section, .. },
                 DisplayRow::Issue { index: 2, depth: 2, child_of: None },
-            ] if epic_key == "EPIC-1" && story_key == "STORY-1"
+            ] if label == "BOARD" && epic_key == "EPIC-1" && story_key == "STORY-1" && epic_section == &Some(true) && story_section == &Some(true)
         ));
     }
 
@@ -130,6 +208,21 @@ mod tests {
 
     fn story_issue(key: &str, summary: &str) -> Issue {
         issue_with_parent(key, summary, "Story", None)
+    }
+
+    fn backlog_story_issue(key: &str, summary: &str) -> Issue {
+        let mut issue = story_issue(key, summary);
+        issue.fields.insert(
+            "status".to_string(),
+            json!({
+                "description": "",
+                "iconUrl": "",
+                "id": "1",
+                "name": "Proposed",
+                "self": "http://localhost/status/1"
+            }),
+        );
+        issue
     }
 
     fn story_issue_with_parent(
@@ -196,6 +289,366 @@ mod tests {
         issue
     }
 
+    fn epic_issue(key: &str, summary: &str) -> Issue {
+        issue_with_parent(key, summary, "Epic", None)
+    }
+
+    fn backlog_epic_issue(key: &str, summary: &str) -> Issue {
+        set_backlog_status(epic_issue(key, summary))
+    }
+
+    fn backlog_task_issue_with_parent(
+        key: &str,
+        summary: &str,
+        parent_key: &str,
+        parent_summary: &str,
+    ) -> Issue {
+        set_backlog_status(task_issue_with_parent(
+            key,
+            summary,
+            parent_key,
+            parent_summary,
+        ))
+    }
+
+    fn set_backlog_status(mut issue: Issue) -> Issue {
+        issue.fields.insert(
+            "status".to_string(),
+            json!({
+                "description": "",
+                "iconUrl": "",
+                "id": "1",
+                "name": "Proposed",
+                "self": "http://localhost/status/1"
+            }),
+        );
+        issue
+    }
+
+    fn format_display_rows(
+        rows: &[DisplayRow],
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) -> String {
+        let mut lines = Vec::new();
+        for row in rows {
+            match row {
+                DisplayRow::SectionHeader { label, count } => {
+                    lines.push(format!("── {label} ({count}) ──"));
+                }
+                DisplayRow::StoryHeader {
+                    key,
+                    summary,
+                    depth,
+                    section,
+                } => {
+                    let indent = "  ".repeat(*depth as usize);
+                    let section_label = match section {
+                        Some(true) => "board",
+                        Some(false) => "backlog",
+                        None => "none",
+                    };
+                    lines.push(format!("{indent}▸ {key} {summary} [{section_label}]"));
+                }
+                DisplayRow::Issue {
+                    index,
+                    depth,
+                    child_of,
+                } => {
+                    let indent = "  ".repeat(*depth as usize);
+                    let issue = match child_of {
+                        Some(parent_key) => &story_children[parent_key][*index],
+                        None => &issues[*index],
+                    };
+                    let key = &issue.key;
+                    let summary = issue.summary().unwrap_or_default();
+                    let status = issue.status().map(|s| s.name).unwrap_or_default();
+                    lines.push(format!("{indent}• {key} {summary} [{status}]"));
+                }
+                DisplayRow::Loading { depth } => {
+                    let indent = "  ".repeat(*depth as usize);
+                    lines.push(format!("{indent}⟳ loading..."));
+                }
+                DisplayRow::Empty { depth } => {
+                    let indent = "  ".repeat(*depth as usize);
+                    lines.push(format!("{indent}(empty)"));
+                }
+                DisplayRow::InlineNew { depth } => {
+                    let indent = "  ".repeat(*depth as usize);
+                    lines.push(format!("{indent}+ new issue"));
+                }
+            }
+        }
+        lines.join("\n")
+    }
+
+    // ── Snapshot tests for complex listings ──
+
+    /// Epic with board-status children: appears only in BOARD.
+    #[test]
+    fn snapshots_epic_with_board_children() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Platform migration"),
+            story_issue_with_parent(
+                "STORY-1",
+                "Migrate auth service",
+                "EPIC-1",
+                "Platform migration",
+            ),
+            task_issue_with_parent(
+                "TASK-1",
+                "Update OAuth config",
+                "STORY-1",
+                "Migrate auth service",
+            ),
+            task_issue_with_parent(
+                "TASK-2",
+                "Write integration tests",
+                "STORY-1",
+                "Migrate auth service",
+            ),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        // Expand the epic and story in BOARD
+        list.selected_index = 1;
+        list.expand_story(&issues, &story_children);
+        list.selected_index = 2;
+        list.expand_story(&issues, &story_children);
+
+        assert_snapshot!(
+            "epic_with_board_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Epic with only backlog children: appears only in BACKLOG, not BOARD.
+    #[test]
+    fn snapshots_epic_with_only_backlog_children() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Future work"),
+            backlog_task_issue_with_parent("TASK-1", "Research caching", "EPIC-1", "Future work"),
+            backlog_task_issue_with_parent("TASK-2", "Draft RFC", "EPIC-1", "Future work"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "epic_with_only_backlog_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Epic with children in both sections: appears in both BOARD and BACKLOG.
+    #[test]
+    fn snapshots_epic_with_mixed_children() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Cross-team initiative"),
+            task_issue_with_parent(
+                "TASK-1",
+                "Implement API endpoint",
+                "EPIC-1",
+                "Cross-team initiative",
+            ),
+            task_issue_with_parent(
+                "TASK-2",
+                "Add monitoring",
+                "EPIC-1",
+                "Cross-team initiative",
+            ),
+            backlog_task_issue_with_parent(
+                "TASK-3",
+                "Plan rollout",
+                "EPIC-1",
+                "Cross-team initiative",
+            ),
+            backlog_task_issue_with_parent(
+                "TASK-4",
+                "Write docs",
+                "EPIC-1",
+                "Cross-team initiative",
+            ),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        // Expand the epic in BOARD
+        list.selected_index = 1;
+        list.expand_story(&issues, &story_children);
+
+        assert_snapshot!(
+            "epic_with_mixed_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Story with no loaded children: appears in both sections (children unknown).
+    #[test]
+    fn snapshots_story_with_unknown_children() {
+        let issues = vec![
+            story_issue("STORY-1", "User authentication"),
+            task_issue_with_parent("TASK-1", "Standalone board task", "PROJ-99", "Other parent"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "story_with_unknown_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Mixed listing: multiple epics and standalone tasks across both sections.
+    #[test]
+    fn snapshots_mixed_board_and_backlog() {
+        let issues = vec![
+            // Board epic with board children
+            epic_issue("EPIC-1", "Active sprint work"),
+            task_issue_with_parent("TASK-1", "Fix login bug", "EPIC-1", "Active sprint work"),
+            task_issue_with_parent("TASK-2", "Update dashboard", "EPIC-1", "Active sprint work"),
+            // Backlog epic with backlog children
+            backlog_epic_issue("EPIC-2", "Next quarter planning"),
+            backlog_task_issue_with_parent(
+                "TASK-3",
+                "Research competitors",
+                "EPIC-2",
+                "Next quarter planning",
+            ),
+            // Standalone board task
+            issue_with_parent("TASK-4", "Hotfix deploy script", "Task", None),
+            // Standalone backlog task
+            set_backlog_status(issue_with_parent(
+                "TASK-5",
+                "Evaluate new framework",
+                "Task",
+                None,
+            )),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+        // Expand EPIC-1 in BOARD
+        list.selected_index = 1;
+        list.expand_story(&issues, &story_children);
+
+        assert_snapshot!(
+            "mixed_board_and_backlog",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Backlog epic with loaded children via story_children (fetched).
+    #[test]
+    fn snapshots_backlog_epic_with_fetched_children() {
+        let issues = vec![backlog_epic_issue("EPIC-1", "Backlog epic")];
+        let story_children = HashMap::from([(
+            "EPIC-1".to_string(),
+            vec![
+                set_backlog_status(task_issue_with_parent(
+                    "TASK-1",
+                    "Backlog child 1",
+                    "EPIC-1",
+                    "Backlog epic",
+                )),
+                set_backlog_status(task_issue_with_parent(
+                    "TASK-2",
+                    "Backlog child 2",
+                    "EPIC-1",
+                    "Backlog epic",
+                )),
+            ],
+        )]);
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "backlog_epic_with_fetched_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Epic with a nested story whose children are all backlog: story should
+    /// not appear in BOARD, only in BACKLOG under the epic.
+    #[test]
+    fn snapshots_nested_story_with_only_backlog_children() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Platform work"),
+            story_issue_with_parent("STORY-1", "Auth migration", "EPIC-1", "Platform work"),
+            backlog_task_issue_with_parent(
+                "TASK-1",
+                "Research OAuth providers",
+                "STORY-1",
+                "Auth migration",
+            ),
+            backlog_task_issue_with_parent(
+                "TASK-2",
+                "Draft migration plan",
+                "STORY-1",
+                "Auth migration",
+            ),
+            task_issue_with_parent("TASK-3", "Update CI pipeline", "EPIC-1", "Platform work"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "nested_story_with_only_backlog_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Story under epic with only backlog children — story appears in issues
+    /// list, story_children, and has children via parent_groups. Should not
+    /// appear in BOARD.
+    #[test]
+    fn snapshots_fetched_story_without_board_children() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Platform work"),
+            story_issue_with_parent("STORY-1", "Auth migration", "EPIC-1", "Platform work"),
+            task_issue_with_parent("TASK-1", "Board task", "EPIC-1", "Platform work"),
+            backlog_task_issue_with_parent(
+                "TASK-2",
+                "Backlog subtask",
+                "STORY-1",
+                "Auth migration",
+            ),
+            backlog_task_issue_with_parent(
+                "TASK-3",
+                "Another backlog subtask",
+                "STORY-1",
+                "Auth migration",
+            ),
+        ];
+        let story_children = HashMap::from([(
+            "EPIC-1".to_string(),
+            vec![story_issue_with_parent(
+                "STORY-1",
+                "Auth migration",
+                "EPIC-1",
+                "Platform work",
+            )],
+        )]);
+        let mut list = ListView::default();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "fetched_story_without_board_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
     fn story_header_count(rows: &[DisplayRow], key: &str) -> usize {
         rows.iter()
             .filter(
@@ -225,7 +678,7 @@ pub struct ListView {
     pub selected_index: usize,
     pub display_rows: Vec<DisplayRow>,
     pub search_filter: String,
-    pub collapsed_stories: HashSet<String>,
+    pub collapsed_stories: HashSet<(String, Option<bool>)>,
     pub inline_new: Option<InlineNewView>,
     pub pending_import_keys: HashSet<String>,
 }
@@ -296,6 +749,7 @@ impl ListView {
             } => story_children.get(parent_key)?.get(*index),
             DisplayRow::StoryHeader { key, .. } => find_issue_by_key(issues, story_children, key),
             DisplayRow::InlineNew { .. }
+            | DisplayRow::SectionHeader { .. }
             | DisplayRow::Loading { .. }
             | DisplayRow::Empty { .. } => None,
         }
@@ -308,14 +762,14 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> Option<String> {
-        let key = match self.display_rows.get(self.selected_index) {
-            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+        let (key, section) = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, section, .. }) => (key.clone(), *section),
             _ => return None,
         };
-        let needs_fetch = if self.collapsed_stories.remove(&key) {
+        let needs_fetch = if self.collapsed_stories.remove(&(key.clone(), section)) {
             self.maybe_needs_fetch(&key, story_children)
         } else {
-            self.collapsed_stories.insert(key.clone());
+            self.collapsed_stories.insert((key.clone(), section));
             None
         };
         self.rebuild_display_rows(issues, story_children);
@@ -329,11 +783,11 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> Option<String> {
-        let key = match self.display_rows.get(self.selected_index) {
-            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+        let (key, section) = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, section, .. }) => (key.clone(), *section),
             _ => return None,
         };
-        if !self.collapsed_stories.remove(&key) {
+        if !self.collapsed_stories.remove(&(key.clone(), section)) {
             return None;
         }
         let needs_fetch = self.maybe_needs_fetch(&key, story_children);
@@ -347,14 +801,14 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> bool {
-        let key = match self.display_rows.get(self.selected_index) {
-            Some(DisplayRow::StoryHeader { key, .. }) => key.clone(),
+        let (key, section) = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::StoryHeader { key, section, .. }) => (key.clone(), *section),
             _ => return false,
         };
-        if self.collapsed_stories.contains(&key) {
+        if self.collapsed_stories.contains(&(key.clone(), section)) {
             return false;
         }
-        self.collapsed_stories.insert(key);
+        self.collapsed_stories.insert((key, section));
         self.rebuild_display_rows(issues, story_children);
         true
     }
@@ -378,6 +832,7 @@ impl ListView {
             | DisplayRow::InlineNew { depth }
             | DisplayRow::Loading { depth }
             | DisplayRow::Empty { depth } => *depth,
+            DisplayRow::SectionHeader { .. } => return None,
             DisplayRow::StoryHeader { .. } => return None,
         };
         if current_depth == 0 {
@@ -401,6 +856,12 @@ impl ListView {
             self.display_rows.get(self.selected_index)
         {
             return Some((key.clone(), *depth));
+        }
+        if matches!(
+            self.display_rows.get(self.selected_index),
+            Some(DisplayRow::SectionHeader { .. })
+        ) {
+            return None;
         }
         self.enclosing_story_key_and_depth()
     }
@@ -463,6 +924,7 @@ impl ListView {
             | DisplayRow::InlineNew { depth }
             | DisplayRow::Loading { depth }
             | DisplayRow::Empty { depth } => *depth,
+            DisplayRow::SectionHeader { .. } => return from,
         };
         let mut end = from;
         for i in (from + 1)..self.display_rows.len() {
@@ -472,6 +934,7 @@ impl ListView {
                 | DisplayRow::InlineNew { depth }
                 | DisplayRow::Loading { depth }
                 | DisplayRow::Empty { depth } => *depth,
+                DisplayRow::SectionHeader { .. } => break,
             };
             if row_depth > base_depth {
                 end = i;
@@ -649,7 +1112,6 @@ impl ListView {
                     })
             });
         }
-
         let root_group_keys: HashSet<String> = parent_groups
             .keys()
             .filter(|key| !nested_issue_keys.contains(*key))
@@ -763,75 +1225,163 @@ impl ListView {
 
         let mut rows = Vec::new();
         let mut rendered_keys = HashSet::new();
-        for entry in top_levels {
-            match entry {
-                TopLevel::Standalone(idx) => {
-                    let issue = &issues[idx];
-                    let issue_key = issue.key.clone();
-                    if !rendered_keys.insert(issue_key.clone()) {
-                        continue;
-                    }
-                    let expandable = crate::issue::is_expandable(issue)
-                        || story_children.contains_key(&issue_key)
-                        || parent_groups.contains_key(&issue_key);
-                    if expandable {
-                        if !story_children.contains_key(&issue_key)
-                            && !self.loading_children.contains(&issue_key)
-                            && !self.has_story_header(&issue_key)
-                        {
-                            self.collapsed_stories.insert(issue_key.clone());
+
+        for (label, section_filter) in [("BOARD", Some(true)), ("BACKLOG", Some(false))] {
+            let section_top_levels: Vec<&TopLevel> = top_levels
+                .iter()
+                .filter(|entry| match entry {
+                    TopLevel::Standalone(idx) => {
+                        let issue = &issues[*idx];
+                        let backlog = is_backlog_status(issue);
+                        let expandable = crate::issue::is_expandable(issue)
+                            || story_children.contains_key(&issue.key)
+                            || parent_groups.contains_key(&issue.key);
+                        if expandable {
+                            // Section placement is inferred entirely from children.
+                            return has_children_in_section(
+                                &issue.key,
+                                issues,
+                                &parent_groups,
+                                story_children,
+                                section_filter,
+                            );
                         }
-                        let summary = issue.summary().unwrap_or_default();
+                        match section_filter {
+                            Some(true) => !backlog,
+                            Some(false) => backlog,
+                            None => true,
+                        }
+                    }
+                    TopLevel::StoryGroup { key, .. } => has_children_in_section(
+                        key,
+                        issues,
+                        &parent_groups,
+                        story_children,
+                        section_filter,
+                    ),
+                })
+                .collect();
+
+            if section_top_levels.is_empty() {
+                continue;
+            }
+
+            let section_header_index = rows.len();
+            rows.push(DisplayRow::SectionHeader {
+                label: label.to_string(),
+                count: 0,
+            });
+            rendered_keys.clear();
+
+            for entry in section_top_levels {
+                match entry {
+                    TopLevel::Standalone(idx) => {
+                        let issue = &issues[*idx];
+                        let issue_key = issue.key.clone();
+                        if !rendered_keys.insert(issue_key.clone()) {
+                            continue;
+                        }
+                        let backlog = is_backlog_status(issue);
+                        let belongs = match section_filter {
+                            Some(true) => !backlog,
+                            Some(false) => backlog,
+                            None => true,
+                        };
+                        let expandable = crate::issue::is_expandable(issue)
+                            || story_children.contains_key(&issue_key)
+                            || parent_groups.contains_key(&issue_key);
+                        if expandable {
+                            if section_filter != Some(true)
+                                && !story_children.contains_key(&issue_key)
+                                && !self.loading_children.contains(&issue_key)
+                                && !self.has_story_header(&issue_key)
+                            {
+                                self.collapsed_stories
+                                    .insert((issue_key.clone(), section_filter));
+                            }
+                            rows.push(DisplayRow::StoryHeader {
+                                key: issue_key.clone(),
+                                summary: issue.summary().unwrap_or_default(),
+                                depth: 0,
+                                section: section_filter,
+                            });
+                            if !self
+                                .collapsed_stories
+                                .contains(&(issue_key.clone(), section_filter))
+                            {
+                                self.append_nested_children(
+                                    &issue_key,
+                                    1,
+                                    &mut rows,
+                                    issues,
+                                    &parent_groups,
+                                    story_children,
+                                    &mut rendered_keys,
+                                    section_filter,
+                                );
+                            }
+                        } else if belongs {
+                            rows.push(DisplayRow::Issue {
+                                index: *idx,
+                                depth: 0,
+                                child_of: None,
+                            });
+                        }
+                    }
+                    TopLevel::StoryGroup {
+                        key,
+                        summary,
+                        parent_issue_idx,
+                    } => {
+                        if !rendered_keys.insert(key.clone()) {
+                            continue;
+                        }
+                        if section_filter != Some(true)
+                            && !has_children_in_section(
+                                key,
+                                issues,
+                                &parent_groups,
+                                story_children,
+                                section_filter,
+                            )
+                            && !self.loading_children.contains(key.as_str())
+                            && !self.has_story_header(key)
+                        {
+                            self.collapsed_stories.insert((key.clone(), section_filter));
+                        }
                         rows.push(DisplayRow::StoryHeader {
-                            key: issue_key.clone(),
-                            summary,
+                            key: key.clone(),
+                            summary: summary.clone(),
                             depth: 0,
+                            section: section_filter,
                         });
-                        if !self.collapsed_stories.contains(&issue_key) {
+                        if !self
+                            .collapsed_stories
+                            .contains(&(key.clone(), section_filter))
+                        {
+                            let _ = parent_issue_idx;
                             self.append_nested_children(
-                                &issue_key,
+                                &key,
                                 1,
                                 &mut rows,
                                 issues,
                                 &parent_groups,
                                 story_children,
                                 &mut rendered_keys,
+                                section_filter,
                             );
                         }
-                    } else {
-                        rows.push(DisplayRow::Issue {
-                            index: idx,
-                            depth: 0,
-                            child_of: None,
-                        });
                     }
                 }
-                TopLevel::StoryGroup {
-                    key,
-                    summary,
-                    parent_issue_idx,
-                } => {
-                    if !rendered_keys.insert(key.clone()) {
-                        continue;
-                    }
-                    rows.push(DisplayRow::StoryHeader {
-                        key: key.clone(),
-                        summary,
-                        depth: 0,
-                    });
-                    if !self.collapsed_stories.contains(&key) {
-                        let _ = parent_issue_idx;
-                        self.append_nested_children(
-                            &key,
-                            1,
-                            &mut rows,
-                            issues,
-                            &parent_groups,
-                            story_children,
-                            &mut rendered_keys,
-                        );
-                    }
-                }
+            }
+
+            // Count issue rows in this section and update the header.
+            let section_issue_count = rows[section_header_index + 1..]
+                .iter()
+                .filter(|row| matches!(row, DisplayRow::Issue { .. }))
+                .count();
+            if let DisplayRow::SectionHeader { count, .. } = &mut rows[section_header_index] {
+                *count = section_issue_count;
             }
         }
 
@@ -839,6 +1389,7 @@ impl ListView {
         if !self.display_rows.is_empty() && self.selected_index >= self.display_rows.len() {
             self.selected_index = self.display_rows.len() - 1;
         }
+        self.skip_section_headers(1);
     }
 
     /// Append children for a nested story header.
@@ -851,6 +1402,7 @@ impl ListView {
         parent_groups: &HashMap<String, (String, Vec<usize>)>,
         story_children: &HashMap<String, Vec<Issue>>,
         rendered_keys: &mut HashSet<String>,
+        section_filter: Option<bool>,
     ) {
         let mut rendered_child = false;
 
@@ -858,26 +1410,60 @@ impl ListView {
             for &idx in grouped_children {
                 let child = &issues[idx];
                 let child_key = child.key.clone();
-                if !rendered_keys.insert(child_key.clone()) {
-                    continue;
-                }
-                rendered_child = true;
                 let expandable = crate::issue::is_expandable(child)
                     || story_children.contains_key(&child_key)
                     || parent_groups.contains_key(&child_key);
                 if expandable {
-                    if !story_children.contains_key(&child_key)
+                    // Expandable children: section placement inferred from their own children.
+                    if !has_children_in_section(
+                        &child_key,
+                        issues,
+                        parent_groups,
+                        story_children,
+                        section_filter,
+                    ) {
+                        rendered_keys.remove(&child_key);
+                        continue;
+                    }
+                } else if let Some(filter) = section_filter {
+                    if filter && is_backlog_status(child) {
+                        rendered_keys.remove(&child.key);
+                        continue;
+                    }
+                    if !filter && !is_backlog_status(child) {
+                        rendered_keys.remove(&child.key);
+                        continue;
+                    }
+                }
+                if !rendered_keys.insert(child_key.clone()) {
+                    continue;
+                }
+                rendered_child = true;
+                if expandable {
+                    if section_filter != Some(true)
+                        && !has_children_in_section(
+                            &child_key,
+                            issues,
+                            parent_groups,
+                            story_children,
+                            section_filter,
+                        )
                         && !self.loading_children.contains(&child_key)
                         && !self.has_story_header(&child_key)
                     {
-                        self.collapsed_stories.insert(child_key.clone());
+                        self.collapsed_stories
+                            .insert((child_key.clone(), section_filter));
                     }
                     rows.push(DisplayRow::StoryHeader {
                         key: child_key.clone(),
                         summary: child.summary().unwrap_or_default(),
                         depth,
+                        section: section_filter,
                     });
-                    if !self.collapsed_stories.contains(&child_key) {
+                    if !self
+                        .collapsed_stories
+                        .contains(&(child_key.clone(), section_filter))
+                    {
                         self.append_nested_children(
                             &child_key,
                             depth + 1,
@@ -886,6 +1472,7 @@ impl ListView {
                             parent_groups,
                             story_children,
                             rendered_keys,
+                            section_filter,
                         );
                     }
                 } else {
@@ -901,26 +1488,59 @@ impl ListView {
         if let Some(children) = story_children.get(parent_key) {
             for (idx, child) in children.iter().enumerate() {
                 let child_key = child.key.clone();
-                if !rendered_keys.insert(child_key.clone()) {
-                    continue;
-                }
-                rendered_child = true;
                 let expandable = crate::issue::is_expandable(child)
                     || story_children.contains_key(&child_key)
                     || parent_groups.contains_key(&child_key);
                 if expandable {
-                    if !story_children.contains_key(&child_key)
+                    if !has_children_in_section(
+                        &child_key,
+                        issues,
+                        parent_groups,
+                        story_children,
+                        section_filter,
+                    ) {
+                        rendered_keys.remove(&child_key);
+                        continue;
+                    }
+                } else if let Some(filter) = section_filter {
+                    if filter && is_backlog_status(child) {
+                        rendered_keys.remove(&child.key);
+                        continue;
+                    }
+                    if !filter && !is_backlog_status(child) {
+                        rendered_keys.remove(&child.key);
+                        continue;
+                    }
+                }
+                if !rendered_keys.insert(child_key.clone()) {
+                    continue;
+                }
+                rendered_child = true;
+                if expandable {
+                    if section_filter != Some(true)
+                        && !has_children_in_section(
+                            &child_key,
+                            issues,
+                            parent_groups,
+                            story_children,
+                            section_filter,
+                        )
                         && !self.loading_children.contains(&child_key)
                         && !self.has_story_header(&child_key)
                     {
-                        self.collapsed_stories.insert(child_key.clone());
+                        self.collapsed_stories
+                            .insert((child_key.clone(), section_filter));
                     }
                     rows.push(DisplayRow::StoryHeader {
                         key: child_key.clone(),
                         summary: child.summary().unwrap_or_default(),
                         depth,
+                        section: section_filter,
                     });
-                    if !self.collapsed_stories.contains(&child_key) {
+                    if !self
+                        .collapsed_stories
+                        .contains(&(child_key.clone(), section_filter))
+                    {
                         self.append_nested_children(
                             &child_key,
                             depth + 1,
@@ -929,6 +1549,7 @@ impl ListView {
                             parent_groups,
                             story_children,
                             rendered_keys,
+                            section_filter,
                         );
                     }
                 } else {
@@ -942,6 +1563,14 @@ impl ListView {
         }
 
         if rendered_child {
+            return;
+        }
+
+        // When filtering by section, children may exist in the other section.
+        // Only suppress placeholders when children data has actually been loaded.
+        let children_data_exists =
+            parent_groups.contains_key(parent_key) || story_children.contains_key(parent_key);
+        if section_filter.is_some() && children_data_exists {
             return;
         }
 
@@ -961,15 +1590,39 @@ impl ListView {
         }
     }
 
+    fn is_section_header(&self, index: usize) -> bool {
+        matches!(
+            self.display_rows.get(index),
+            Some(DisplayRow::SectionHeader { .. })
+        )
+    }
+
+    fn skip_section_headers(&mut self, direction: isize) {
+        let len = self.display_rows.len();
+        while self.is_section_header(self.selected_index) {
+            let next = self.selected_index as isize + direction;
+            if next < 0 || next >= len as isize {
+                let other = self.selected_index as isize - direction;
+                if other >= 0 && (other as usize) < len {
+                    self.selected_index = other as usize;
+                }
+                break;
+            }
+            self.selected_index = next as usize;
+        }
+    }
+
     pub fn move_selection_down(&mut self) {
         if self.display_rows.is_empty() {
             self.selected_index = 0;
+            self.skip_section_headers(1);
             return;
         }
         let last = self.display_rows.len() - 1;
         if self.selected_index < last {
             self.selected_index += 1;
         }
+        self.skip_section_headers(1);
         self.adjust_scroll_offset();
     }
 
@@ -978,6 +1631,7 @@ impl ListView {
             return;
         }
         self.selected_index -= 1;
+        self.skip_section_headers(-1);
         self.adjust_scroll_offset();
     }
 
@@ -986,6 +1640,7 @@ impl ListView {
             return;
         }
         self.selected_index = self.display_rows.len() - 1;
+        self.skip_section_headers(-1);
         self.adjust_scroll_offset();
     }
 
@@ -996,6 +1651,7 @@ impl ListView {
         let last = self.display_rows.len() - 1;
         let new_index = (self.selected_index as isize + delta).clamp(0, last as isize) as usize;
         self.selected_index = new_index;
+        self.skip_section_headers(delta.signum());
         self.adjust_scroll_offset();
     }
 
@@ -1015,6 +1671,7 @@ impl ListView {
         } else if self.selected_index >= new_offset + height {
             self.selected_index = (new_offset + height - 1).min(last);
         }
+        self.skip_section_headers(delta.signum());
     }
 
     pub fn adjust_scroll_offset(&mut self) {
@@ -1056,8 +1713,9 @@ impl ListView {
                     key,
                     summary,
                     depth,
+                    section,
                 } => {
-                    let collapsed = self.collapsed_stories.contains(key);
+                    let collapsed = self.collapsed_stories.contains(&(key.clone(), *section));
                     let has_pending_import = self.pending_import_keys.contains(key);
                     story_header_row(key, summary, row_idx, collapsed, *depth, has_pending_import)
                 }
@@ -1071,6 +1729,9 @@ impl ListView {
                         None => &ctx.issues[*index],
                     };
                     issue_row(ctx, &self.pending_import_keys, issue, row_idx, *depth)
+                }
+                DisplayRow::SectionHeader { label, count } => {
+                    section_header_row(label, *count, area.width)
                 }
                 DisplayRow::InlineNew { depth } => inline_new_row(ctx.inline_new, row_idx, *depth),
                 DisplayRow::Loading { depth } => {
@@ -1155,6 +1816,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                 KeyCode::Char(c) => {
                     if previous_was_g && c == 'g' {
                         app.list.selected_index = 0;
+                        app.list.skip_section_headers(1);
                         app.list.adjust_scroll_offset();
                         app.schedule_prefetch();
                         return;
@@ -1207,6 +1869,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                         'i' => open_import_tasks_popup(app),
                         'h' => {
                             app.list.collapse_story(&app.issues, &app.story_children);
+                            app.save_cache();
                         }
                         'l' => {
                             if let Some(key) =
@@ -1214,6 +1877,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                             {
                                 app.spawn_fetch_children(&key);
                             }
+                            app.save_cache();
                         }
                         ' ' => {
                             if let Some(key) = app
@@ -1222,6 +1886,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                             {
                                 app.spawn_fetch_children(&key);
                             }
+                            app.save_cache();
                         }
                         _ => {}
                     }
@@ -1698,6 +2363,23 @@ fn story_header_row(
             Line::styled(format!("§ {}", first_line), header_style),
         ),
     ]);
+    (cells, row_style)
+}
+
+fn section_header_row(label: &str, count: usize, _width: u16) -> (CellMap<'static>, Style) {
+    let row_style = Style::default().fg(Theme::Muted).bg(Theme::SidebarBg);
+    let header_style = Style::default()
+        .fg(Theme::AccentSoft)
+        .bg(Theme::SidebarBg)
+        .add_modifier(Modifier::BOLD);
+    let issue_word = if count == 1 { "issue" } else { "issues" };
+    let cells = HashMap::from([(
+        "Summary",
+        Line::from(vec![Span::styled(
+            format!("{label} ({count} {issue_word})"),
+            header_style,
+        )]),
+    )]);
     (cells, row_style)
 }
 

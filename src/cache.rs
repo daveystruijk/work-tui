@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -11,6 +11,9 @@ pub struct Cache {
     /// Stores the most recent completed duration for ETA estimation.
     #[serde(default)]
     pub check_durations: HashMap<String, u64>,
+    /// Collapsed story keys with their section context.
+    #[serde(default)]
+    pub collapsed_stories: HashSet<(String, Option<bool>)>,
 }
 
 fn cache_path() -> Option<PathBuf> {

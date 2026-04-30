@@ -1,0 +1,13 @@
+---
+source: src/ui/list.rs
+assertion_line: 521
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (1) ──
+▸ EPIC-1 Platform work [board]
+  • TASK-1 Board task [In Progress]
+── BACKLOG (2) ──
+▸ EPIC-1 Platform work [backlog]
+  ▸ STORY-1 Auth migration [backlog]
+    • TASK-2 Backlog subtask [Proposed]
+    • TASK-3 Another backlog subtask [Proposed]

@@ -1,0 +1,9 @@
+---
+source: src/ui/list.rs
+assertion_line: 356
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BACKLOG (2) ──
+▸ EPIC-1 Future work [backlog]
+  • TASK-1 Research caching [Proposed]
+  • TASK-2 Draft RFC [Proposed]

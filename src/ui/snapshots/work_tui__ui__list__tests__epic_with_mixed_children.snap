@@ -1,0 +1,13 @@
+---
+source: src/ui/list.rs
+assertion_line: 377
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (2) ──
+▸ EPIC-1 Cross-team initiative [board]
+  • TASK-1 Implement API endpoint [In Progress]
+  • TASK-2 Add monitoring [In Progress]
+── BACKLOG (2) ──
+▸ EPIC-1 Cross-team initiative [backlog]
+  • TASK-3 Plan rollout [Proposed]
+  • TASK-4 Write docs [Proposed]

@@ -1,0 +1,9 @@
+---
+source: src/ui/list.rs
+assertion_line: 439
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BACKLOG (2) ──
+▸ EPIC-1 Backlog epic [backlog]
+  • TASK-1 Backlog child 1 [Proposed]
+  • TASK-2 Backlog child 2 [Proposed]

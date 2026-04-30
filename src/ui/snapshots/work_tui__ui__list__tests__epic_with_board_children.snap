@@ -1,0 +1,10 @@
+---
+source: src/ui/list.rs
+assertion_line: 340
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (2) ──
+▸ EPIC-1 Platform migration [board]
+  ▸ STORY-1 Migrate auth service [board]
+    • TASK-1 Update OAuth config [In Progress]
+    • TASK-2 Write integration tests [In Progress]

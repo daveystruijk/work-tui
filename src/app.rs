@@ -30,11 +30,15 @@ pub struct RunningAction {
 /// A row in the display list — either a story header, an issue, or an inline-new placeholder.
 #[derive(Debug, Clone)]
 pub enum DisplayRow {
+    /// Visual section divider (e.g. "BOARD", "BACKLOG").
+    SectionHeader { label: String, count: usize },
     /// A parent story header (not necessarily in the fetched issues list).
     StoryHeader {
         key: String,
         summary: String,
         depth: u8,
+        /// Which section this header belongs to (`Some(true)` = board, `Some(false)` = backlog, `None` = unsectioned).
+        section: Option<bool>,
     },
     /// An actual issue row.
     Issue {
@@ -152,7 +156,9 @@ impl AppView {
             pending_prefetch_since: None,
         };
 
-        app.check_durations = cache::load().check_durations;
+        let cached = cache::load();
+        app.check_durations = cached.check_durations;
+        app.list.collapsed_stories = cached.collapsed_stories;
 
         app.reload_repo_entries();
 
@@ -525,7 +531,12 @@ impl AppView {
 
         for child in &children {
             if crate::issue::is_expandable(child) {
-                self.list.collapsed_stories.insert(child.key.clone());
+                self.list
+                    .collapsed_stories
+                    .insert((child.key.clone(), Some(true)));
+                self.list
+                    .collapsed_stories
+                    .insert((child.key.clone(), Some(false)));
             }
         }
         self.story_children.insert(parent_key, children);
@@ -538,7 +549,16 @@ impl AppView {
         let mut keys = self
             .story_children
             .keys()
-            .filter(|key| !self.list.collapsed_stories.contains(*key))
+            .filter(|key| {
+                !self
+                    .list
+                    .collapsed_stories
+                    .contains(&((*key).clone(), Some(true)))
+                    || !self
+                        .list
+                        .collapsed_stories
+                        .contains(&((*key).clone(), Some(false)))
+            })
             .cloned()
             .collect::<Vec<_>>();
         keys.sort();
@@ -547,7 +567,12 @@ impl AppView {
 
     fn restore_expanded_story_loading(&mut self, story_keys: &[String]) {
         for key in story_keys {
-            self.list.collapsed_stories.remove(key);
+            self.list
+                .collapsed_stories
+                .remove(&(key.clone(), Some(true)));
+            self.list
+                .collapsed_stories
+                .remove(&(key.clone(), Some(false)));
             self.list.start_loading_children(key);
         }
     }
@@ -696,9 +721,10 @@ impl AppView {
     }
 
     /// Build a Cache from current app state and save to disk.
-    fn save_cache(&self) {
+    pub fn save_cache(&self) {
         cache::save(&Cache {
             check_durations: self.check_durations.clone(),
+            collapsed_stories: self.list.collapsed_stories.clone(),
         });
     }
 
@@ -738,7 +764,12 @@ mod tests {
             .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
         app.story_children
             .insert("TEST-3".to_string(), vec![ticket_issue("TEST-4", None)]);
-        app.list.collapsed_stories.insert("TEST-3".to_string());
+        app.list
+            .collapsed_stories
+            .insert(("TEST-3".to_string(), Some(true)));
+        app.list
+            .collapsed_stories
+            .insert(("TEST-3".to_string(), Some(false)));
 
         assert_eq!(app.expanded_loaded_story_keys(), vec!["TEST-1".to_string()]);
     }
@@ -746,12 +777,18 @@ mod tests {
     #[test]
     fn restore_expanded_story_loading_keeps_story_open_during_reload() {
         let mut app = test_app();
-        app.issues = vec![story_issue("TEST-1", "Story parent")];
+        let story = story_issue("TEST-1", "Story parent");
+        app.issues = vec![story.clone(), ticket_issue("TEST-3", Some(&story))];
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
         app.story_children
             .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
-        app.list.collapsed_stories.remove("TEST-1");
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), Some(true)));
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), Some(false)));
 
         let expanded_story_keys = app.expanded_loaded_story_keys();
 
@@ -761,16 +798,19 @@ mod tests {
             .rebuild_display_rows(&app.issues, &app.story_children);
 
         assert!(app.list.loading_children.contains("TEST-1"));
+        // Story appears in BOARD (expanded) with its child issue from parent_groups
         assert!(matches!(
             app.list.display_rows.as_slice(),
             [
+                DisplayRow::SectionHeader { label, .. },
                 DisplayRow::StoryHeader {
                     key,
                     summary,
                     depth: 0,
+                    section,
                 },
-                DisplayRow::Loading { depth: 1 },
-            ] if key == "TEST-1" && summary == "Story parent"
+                DisplayRow::Issue { index: 1, depth: 1, .. },
+            ] if label == "BOARD" && key == "TEST-1" && summary == "Story parent" && section == &Some(true)
         ));
     }
 
@@ -790,12 +830,18 @@ mod tests {
     fn restore_selection_falls_back_to_parent_story_during_reload() {
         let mut app = test_app();
         let story = story_issue("TEST-1", "Story parent");
-        app.issues = vec![story.clone()];
+        // Include a child in issues so the story appears via parent_groups after reload.
+        app.issues = vec![story.clone(), ticket_issue("TEST-3", Some(&story))];
         app.story_children.insert(
             "TEST-1".to_string(),
             vec![ticket_issue("TEST-2", Some(&story))],
         );
-        app.list.collapsed_stories.remove("TEST-1");
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), Some(true)));
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), Some(false)));
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
         app.list.selected_index = 1;
@@ -807,7 +853,7 @@ mod tests {
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
 
-        assert!(!app.restore_selection_for_issue_keys(&restore_keys));
+        assert!(app.restore_selection_for_issue_keys(&restore_keys));
         assert_eq!(
             app.list
                 .selected_issue(&app.issues, &app.story_children)

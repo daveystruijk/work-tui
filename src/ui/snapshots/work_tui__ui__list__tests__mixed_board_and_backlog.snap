@@ -1,0 +1,14 @@
+---
+source: src/ui/list.rs
+assertion_line: 419
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (3) ──
+▸ EPIC-1 Active sprint work [board]
+  • TASK-1 Fix login bug [In Progress]
+  • TASK-2 Update dashboard [In Progress]
+• TASK-4 Hotfix deploy script [In Progress]
+── BACKLOG (2) ──
+▸ EPIC-2 Next quarter planning [backlog]
+  • TASK-3 Research competitors [Proposed]
+• TASK-5 Evaluate new framework [Proposed]

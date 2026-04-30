@@ -1,0 +1,8 @@
+---
+source: src/ui/list.rs
+assertion_line: 387
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (1) ──
+▸ PROJ-99 Other parent [board]
+  • TASK-1 Standalone board task [In Progress]

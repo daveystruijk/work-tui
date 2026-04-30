@@ -177,8 +177,7 @@ impl StatusBarView {
 
         let updated_text = self.last_updated.map(|last_updated| {
             format!(
-                "{} issues · updated {} ago  ",
-                ctx.issue_count,
+                "updated {} ago  ",
                 crate::utils::time::format_duration(last_updated.elapsed().as_secs())
             )
         });
