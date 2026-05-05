@@ -81,5 +81,6 @@ pub(crate) fn test_pr() -> PrInfo {
         mergeable: Some(MergeableState::Unknown),
         review_decision: Some(ReviewDecision::ChangesRequested),
         auto_merge_enabled: true,
+        updated_at: Some("2024-01-01T12:00:00Z".to_string()),
     }
 }

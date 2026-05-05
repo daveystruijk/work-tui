@@ -97,6 +97,7 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
         check_durations: &app.check_durations,
         animation: &app.animation,
         inline_new: inline_new_clone.as_ref(),
+        dev_active_issues: &app.dev_active_issues,
     };
     app.list.render(frame, list_chunks[0], &list_ctx);
 

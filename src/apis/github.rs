@@ -106,6 +106,7 @@ pub struct PrInfo {
     pub mergeable: Option<MergeableState>,
     pub review_decision: Option<ReviewDecision>,
     pub auto_merge_enabled: bool,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +260,7 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
                 mergeable: None,
                 review_decision: None,
                 auto_merge_enabled: false,
+                updated_at: None,
             }
         })
         .collect())
@@ -305,6 +307,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         changedFiles
                         additions
                         deletions
+                        updatedAt
                         statusCheckRollup: commits(last: 1) {{
                             nodes {{
                                 commit {{
@@ -445,6 +448,10 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
             let mergeable = parse_mergeable_state(pr);
             let review_decision = parse_review_decision(pr);
             let auto_merge_enabled = pr.get("autoMergeRequest").is_some_and(|v| !v.is_null());
+            let updated_at = pr
+                .get("updatedAt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let mut rollup_option = {
                 let rollups = extract_check_rollups(pr);
                 if rollups.is_empty() {
@@ -491,6 +498,7 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 mergeable,
                 review_decision,
                 auto_merge_enabled,
+                updated_at,
             });
         }
     }

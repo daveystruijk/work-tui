@@ -105,6 +105,22 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_list_view_with_dev_active_issue() {
+        use crate::fixtures::pr::test_pr;
+
+        let mut app = selected_issue_app();
+        let issue_key = app.issues[0].key.clone();
+        app.github_prs.insert(issue_key.clone(), test_pr());
+        // Mark this issue as the dev's active issue (most recent PR)
+        app.dev_active_issues.insert("acc-1".to_string(), issue_key);
+        let rendered = render_to_string(120, 16, |frame| {
+            render(&mut app, frame);
+        });
+
+        assert_snapshot!("list_view_with_dev_active_issue", rendered);
+    }
+
+    #[test]
     fn board_story_starts_expanded_with_children() {
         let issues = vec![
             story_issue("TEST-1", "Story parent"),
@@ -668,6 +684,8 @@ pub struct ListRenderContext<'a> {
     pub check_durations: &'a HashMap<String, u64>,
     pub animation: &'a UiAnimationView,
     pub inline_new: Option<&'a InlineNewView>,
+    /// Maps assignee account ID → issue key for the issue with the most recently updated PR per dev.
+    pub dev_active_issues: &'a HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2461,8 +2479,9 @@ fn issue_row(
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
     let status_style = status_color(&status_name);
-    let assignee = issue
-        .assignee()
+    let assignee_user = issue.assignee();
+    let assignee = assignee_user
+        .as_ref()
         .map(|u| {
             u.display_name
                 .split_whitespace()
@@ -2471,6 +2490,11 @@ fn issue_row(
                 .to_string()
         })
         .unwrap_or_default();
+    let is_dev_active_issue = assignee_user
+        .as_ref()
+        .and_then(|u| u.account_id.as_deref())
+        .and_then(|account_id| ctx.dev_active_issues.get(account_id))
+        .is_some_and(|active_key| active_key == &issue.key);
     let is_active = ctx.active_branches.contains_key(&issue.key);
     let repos = repo_labels_for_issue(ctx.repo_entries, issue);
     let summary = issue
@@ -2520,7 +2544,14 @@ fn issue_row(
         ("Status", Line::styled(status_name, status_style)),
         (
             "Dev",
-            Line::styled(assignee, Style::default().fg(Theme::Muted)),
+            if is_dev_active_issue {
+                Line::from(vec![
+                    Span::styled(assignee, Style::default().fg(Theme::Text)),
+                    Span::styled(" ◆", Style::default().fg(Theme::Accent)),
+                ])
+            } else {
+                Line::styled(assignee, Style::default().fg(Theme::Muted))
+            },
         ),
         (
             "Repo",

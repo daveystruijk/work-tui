@@ -1,6 +1,6 @@
 mod app;
 mod issue;
-mod pr;
+pub(crate) mod pr;
 mod render;
 
 pub use app::{selected_issue_app, sidebar_app, test_app};

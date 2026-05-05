@@ -1,0 +1,21 @@
+---
+source: src/ui/list.rs
+assertion_line: 121
+expression: rendered
+---
+ Key       Summary                         Status       Dev      PR   CI                                                
+▌TEST-123  ◦ Snapshot the sidebar render   In Progress  Casey ◆  #42  ✓● ⠋    ◦ Snapshot the sidebar render             
+                                                                                                                        
+                                                                              ── Jira ──────────────────── TEST-123 ──  
+                                                                                                                        
+                                                                              ── GitHub ─────────────────────── #42 ──  
+                                                                              Status    Changes Requested               
+                                                                              Repo      work-tui                        
+                                                                              Changes   3 files  +72 / -14              
+                                                                              Comments  2 unresolved · 0 resolved       
+                                                                                                                        
+                                                                              ── CI ─────────────────────────── 1/2 ──  
+                                                                               ✓ lint  2m                               
+                                                                               ● build                                  
+                                                                                 ✓ compile  1m                          
+                                                                                 ● integration
