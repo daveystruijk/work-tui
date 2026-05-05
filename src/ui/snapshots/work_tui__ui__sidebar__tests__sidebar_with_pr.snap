@@ -1,6 +1,5 @@
 ---
 source: src/ui/sidebar.rs
-assertion_line: 482
 expression: rendered
 ---
                                             
@@ -11,6 +10,7 @@ expression: rendered
   Assignee  Casey Dev                       
   Author    Riley Author                    
   Reporter  Jordan QA                       
+  Updated   2024-01-01 13:00                
                                             
   Confirm sidebar, list, and command        
   bar layouts.                              

@@ -27,7 +27,7 @@ use crate::{
     app::AppView,
 };
 
-pub const COLUMNS: &[&str] = &["Key", "Summary", "Status", "Dev", "PR", "CI", "Repo"];
+pub const COLUMNS: &[&str] = &["Key", "Summary", "Status", "Dev", "◷", "PR", "CI", "Repo"];
 pub const SIDEBAR_SECTION_MARGIN: u16 = 1;
 
 pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;
@@ -97,7 +97,6 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
         check_durations: &app.check_durations,
         animation: &app.animation,
         inline_new: inline_new_clone.as_ref(),
-        dev_active_issues: &app.dev_active_issues,
     };
     app.list.render(frame, list_chunks[0], &list_ctx);
 

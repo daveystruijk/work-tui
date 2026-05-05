@@ -54,7 +54,6 @@ pub fn test_app() -> AppView {
         import_tasks_popup: None,
         pending_selected_issue_key: None,
         pending_prefetch_since: None,
-        dev_active_issues: Default::default(),
     }
 }
 

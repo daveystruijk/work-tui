@@ -111,8 +111,6 @@ mod tests {
         let mut app = selected_issue_app();
         let issue_key = app.issues[0].key.clone();
         app.github_prs.insert(issue_key.clone(), test_pr());
-        // Mark this issue as the dev's active issue (most recent PR)
-        app.dev_active_issues.insert("acc-1".to_string(), issue_key);
         let rendered = render_to_string(120, 16, |frame| {
             render(&mut app, frame);
         });
@@ -684,8 +682,6 @@ pub struct ListRenderContext<'a> {
     pub check_durations: &'a HashMap<String, u64>,
     pub animation: &'a UiAnimationView,
     pub inline_new: Option<&'a InlineNewView>,
-    /// Maps assignee account ID → issue key for the issue with the most recently updated PR per dev.
-    pub dev_active_issues: &'a HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1764,6 +1760,7 @@ impl ListView {
             Constraint::Min(10),
             Constraint::Length(max_col_width(&row_data, "Status").min(14)),
             Constraint::Length(max_col_width(&row_data, "Dev").min(12)),
+            Constraint::Length(max_col_width(&row_data, "◷").min(4)),
             Constraint::Length(max_col_width(&row_data, "PR").min(8)),
             Constraint::Length(max_col_width(&row_data, "CI").min(14)),
             Constraint::Length(max_col_width(&row_data, "Repo").min(24)),
@@ -2490,11 +2487,6 @@ fn issue_row(
                 .to_string()
         })
         .unwrap_or_default();
-    let is_dev_active_issue = assignee_user
-        .as_ref()
-        .and_then(|u| u.account_id.as_deref())
-        .and_then(|account_id| ctx.dev_active_issues.get(account_id))
-        .is_some_and(|active_key| active_key == &issue.key);
     let is_active = ctx.active_branches.contains_key(&issue.key);
     let repos = repo_labels_for_issue(ctx.repo_entries, issue);
     let summary = issue
@@ -2544,14 +2536,7 @@ fn issue_row(
         ("Status", Line::styled(status_name, status_style)),
         (
             "Dev",
-            if is_dev_active_issue {
-                Line::from(vec![
-                    Span::styled(assignee, Style::default().fg(Theme::Text)),
-                    Span::styled(" ◆", Style::default().fg(Theme::Accent)),
-                ])
-            } else {
-                Line::styled(assignee, Style::default().fg(Theme::Muted))
-            },
+            Line::styled(assignee, Style::default().fg(Theme::Muted)),
         ),
         (
             "Repo",
@@ -2567,6 +2552,16 @@ fn issue_row(
     ]);
 
     if let Some(pr) = ctx.github_prs.get(&issue.key) {
+        // ◷ column: most recent PR activity (commit, comment, review, pipeline)
+        if let Some(timestamp) = pr.most_recent_activity() {
+            if let Some(label) = crate::utils::time::format_relative_time(timestamp) {
+                let color = crate::utils::time::elapsed_since_iso(timestamp)
+                    .map(Theme::recency_color)
+                    .unwrap_or(Theme::Muted);
+                cells.insert("◷", Line::styled(label, Style::default().fg(color)));
+            }
+        }
+
         let pr_color = if pr.is_draft {
             Theme::Muted
         } else if pr.state.eq_ignore_ascii_case("merged") {

@@ -117,8 +117,6 @@ pub struct AppView {
     /// When set, a prefetch of the selected PR detail is scheduled after a short delay.
     /// This avoids firing fetches while the user is scrolling quickly through the list.
     pub pending_prefetch_since: Option<std::time::Instant>,
-    /// Maps assignee account ID → issue key for the issue with the most recently updated PR per dev.
-    pub dev_active_issues: HashMap<String, String>,
 }
 
 impl AppView {
@@ -156,7 +154,6 @@ impl AppView {
             import_tasks_popup: None,
             pending_selected_issue_key: None,
             pending_prefetch_since: None,
-            dev_active_issues: HashMap::new(),
         };
 
         let cached = cache::load();
@@ -502,44 +499,7 @@ impl AppView {
         self.save_cache();
         self.spawn_auto_label();
         self.github_loading = false;
-        self.compute_dev_active_issues();
         self.prefetch_selected_pr_detail();
-    }
-
-    /// For each unique assignee, find which of their issues has the most recently updated PR.
-    fn compute_dev_active_issues(&mut self) {
-        self.dev_active_issues.clear();
-        // Collect (assignee_account_id, issue_key, updated_at) tuples
-        let mut dev_pr_times: HashMap<String, (String, String)> = HashMap::new();
-        let all_issues = self.issues.iter().chain(
-            self.story_children
-                .values()
-                .flat_map(|children| children.iter()),
-        );
-        for issue in all_issues {
-            let Some(pr) = self.github_prs.get(&issue.key) else {
-                continue;
-            };
-            let Some(ref updated_at) = pr.updated_at else {
-                continue;
-            };
-            let Some(assignee) = issue.assignee() else {
-                continue;
-            };
-            let account_id = assignee.account_id.clone().unwrap_or_default();
-            if account_id.is_empty() {
-                continue;
-            }
-            let dominated = dev_pr_times
-                .get(&account_id)
-                .is_some_and(|(_, existing_time)| existing_time >= updated_at);
-            if !dominated {
-                dev_pr_times.insert(account_id, (issue.key.clone(), updated_at.clone()));
-            }
-        }
-        for (account_id, (issue_key, _)) in dev_pr_times {
-            self.dev_active_issues.insert(account_id, issue_key);
-        }
     }
 
     fn handle_inline_created_message(&mut self, result: Result<String>) {

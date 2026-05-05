@@ -62,6 +62,7 @@ pub(crate) fn test_issue() -> crate::apis::jira::Issue {
                     "timeZone": null
                 }),
             ),
+            ("updated".to_string(), json!("2024-01-01T12:00:00.000+0000")),
             (
                 "reporter".to_string(),
                 json!({

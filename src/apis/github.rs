@@ -148,6 +148,28 @@ impl PrInfo {
         self.review_threads = old.review_threads.clone();
     }
 
+    /// Most recent timestamp across PR updated_at, comments, review threads, and check runs.
+    pub fn most_recent_activity(&self) -> Option<&str> {
+        let candidates = self
+            .updated_at
+            .as_deref()
+            .into_iter()
+            .chain(self.comments.iter().map(|c| c.updated_at.as_str()))
+            .chain(self.comments.iter().map(|c| c.created_at.as_str()))
+            .chain(
+                self.review_threads
+                    .iter()
+                    .flat_map(|t| t.comments.iter())
+                    .map(|c| c.created_at.as_str()),
+            )
+            .chain(
+                self.check_runs
+                    .iter()
+                    .flat_map(|r| r.completed_at.as_deref().or(r.started_at.as_deref())),
+            );
+        candidates.max()
+    }
+
     pub fn latest_failed_check(&self) -> Option<&CheckRun> {
         self.check_runs
             .iter()
