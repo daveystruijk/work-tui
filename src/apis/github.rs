@@ -587,15 +587,6 @@ pub async fn fetch_pr_detail(repo_slug: &str, pr_number: u64) -> Result<PrDetail
                                                 startedAt
                                                 completedAt
                                                 detailsUrl
-                                                steps(first: 50) {{
-                                                    nodes {{
-                                                        name
-                                                        status
-                                                        conclusion
-                                                        startedAt
-                                                        completedAt
-                                                    }}
-                                                }}
                                             }}
                                         }}
                                     }}
@@ -869,6 +860,52 @@ pub async fn fetch_check_run_logs(repo_slug: &str, check_runs: &[CheckRun]) -> R
         );
     }
     Ok(logs)
+}
+
+/// Fetch steps for all check runs of a PR via the REST API.
+///
+/// Returns a vec of step-vecs in the same order as the input `check_runs`.
+/// Runs that lack a parseable job ID get an empty steps vec.
+pub async fn fetch_check_run_steps(
+    repo_slug: &str,
+    check_runs: &[CheckRun],
+) -> Result<Vec<Vec<CheckStep>>> {
+    let mut all_steps = Vec::with_capacity(check_runs.len());
+    for run in check_runs {
+        let Some(job_id) = parse_job_id_from_details_url(&run.details_url) else {
+            all_steps.push(Vec::new());
+            continue;
+        };
+
+        let output = Command::new("gh")
+            .args([
+                "api",
+                &format!("repos/{repo_slug}/actions/jobs/{job_id}"),
+                "--jq",
+                ".steps",
+            ])
+            .output()
+            .await;
+
+        let steps = match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                serde_json::from_str::<Vec<GhRestStep>>(&stdout)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|step| CheckStep {
+                        name: step.name,
+                        status: check_step_status(&step.status, step.conclusion.as_deref()),
+                        started_at: step.started_at,
+                        completed_at: step.completed_at,
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        all_steps.push(steps);
+    }
+    Ok(all_steps)
 }
 
 /// Create a pull request using `gh pr create`, enable auto-merge, and return the PR URL.
@@ -1158,6 +1195,19 @@ struct GhCheckStep {
     #[serde(rename = "startedAt")]
     started_at: Option<String>,
     #[serde(rename = "completedAt")]
+    completed_at: Option<String>,
+}
+
+/// Step shape returned by the REST API (`/actions/jobs/{id}`).
+/// Uses snake_case field names unlike the GraphQL camelCase variants.
+#[derive(Deserialize)]
+struct GhRestStep {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: String,
+    conclusion: Option<String>,
+    started_at: Option<String>,
     completed_at: Option<String>,
 }
 

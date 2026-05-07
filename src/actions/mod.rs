@@ -14,6 +14,7 @@ pub mod branch_diff;
 pub mod convert_to_story;
 pub mod create_inline_issue;
 pub mod detect_active_branches;
+pub mod fetch_check_run_steps;
 pub mod fetch_children;
 pub mod fetch_ci_logs;
 pub mod fetch_github_pr_detail;
@@ -34,7 +35,7 @@ use std::fmt;
 use tokio::sync::mpsc;
 
 use crate::apis::{
-    github::{PrDetail, PrInfo},
+    github::{CheckStep, PrDetail, PrInfo},
     jira::Issue,
 };
 
@@ -110,6 +111,9 @@ pub enum Message {
     /// Failed CI log excerpts fetched on demand (from [`fetch_ci_logs`]).
     /// Carries (issue_key, per-check-run log strings in order).
     CiLogsFetched(String, Result<Vec<String>>),
+    /// Check run steps fetched lazily (from [`fetch_check_run_steps`]).
+    /// Carries (issue_key, per-check-run step vecs in order).
+    CheckRunSteps(String, Result<Vec<Vec<CheckStep>>>),
     /// Opencode session opened with CI error context (from [`fix_ci`]).
     /// Carries the branch name.
     FixCiOpened(Result<String>),

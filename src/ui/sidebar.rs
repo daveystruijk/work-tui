@@ -32,6 +32,8 @@ pub struct SidebarView {
     pub detail_loading: HashSet<String>,
     pub detail_loaded: HashSet<String>,
     pub detail_errors: HashMap<String, String>,
+    pub steps_loading: HashSet<String>,
+    pub steps_loaded: HashSet<String>,
 }
 
 impl SidebarView {
@@ -48,11 +50,19 @@ impl SidebarView {
         self.detail_loading.clear();
         self.detail_loaded.clear();
         self.detail_errors.clear();
+        self.steps_loading.clear();
+        self.steps_loaded.clear();
 
         previous_prs
     }
 
-    pub fn handle_message(&mut self, msg: &Message, github_prs: &mut HashMap<String, PrInfo>) {
+    /// Process a background message. Returns an optional issue key that needs
+    /// check-run steps fetched (when detail just loaded with non-passing checks).
+    pub fn handle_message(
+        &mut self,
+        msg: &Message,
+        github_prs: &mut HashMap<String, PrInfo>,
+    ) -> Option<String> {
         match msg {
             Message::GithubPrDetail(issue_key, result) => {
                 self.detail_loading.remove(issue_key);
@@ -62,6 +72,16 @@ impl SidebarView {
                             pr.apply_detail(detail.clone());
                             self.detail_loaded.insert(issue_key.clone());
                             self.detail_errors.remove(issue_key);
+
+                            let needs_steps = pr
+                                .check_runs
+                                .iter()
+                                .any(|run| run.status != CheckStatus::Pass)
+                                && !self.steps_loaded.contains(issue_key)
+                                && !self.steps_loading.contains(issue_key);
+                            if needs_steps {
+                                return Some(issue_key.clone());
+                            }
                         }
                     }
                     Err(err) => {
@@ -70,8 +90,20 @@ impl SidebarView {
                     }
                 }
             }
+            Message::CheckRunSteps(issue_key, result) => {
+                self.steps_loading.remove(issue_key);
+                if let Ok(all_steps) = result {
+                    if let Some(pr) = github_prs.get_mut(issue_key) {
+                        for (run, steps) in pr.check_runs.iter_mut().zip(all_steps.iter()) {
+                            run.steps = steps.clone();
+                        }
+                        self.steps_loaded.insert(issue_key.clone());
+                    }
+                }
+            }
             _ => {}
         }
+        None
     }
 
     pub fn handle_pr_refresh(
@@ -86,6 +118,9 @@ impl SidebarView {
             if !check_runs_changed(&old_pr.check_runs, &new_pr.check_runs) {
                 new_pr.apply_detail_from(old_pr);
                 self.detail_loaded.insert(issue_key.clone());
+                if old_pr.check_runs.iter().any(|r| !r.steps.is_empty()) {
+                    self.steps_loaded.insert(issue_key.clone());
+                }
             }
         }
     }

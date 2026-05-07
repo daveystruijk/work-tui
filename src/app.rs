@@ -342,8 +342,20 @@ impl AppView {
     pub fn handle_message(&mut self, msg: Message) {
         self.list.handle_message(&msg);
         self.status_bar.handle_message(&msg);
-        self.sidebar.handle_message(&msg, &mut self.github_prs);
+        let needs_steps = self.sidebar.handle_message(&msg, &mut self.github_prs);
         self.ci_log_popup.handle_message(&msg, &mut self.github_prs);
+
+        if let Some(issue_key) = needs_steps {
+            if let Some(pr) = self.github_prs.get(&issue_key) {
+                self.sidebar.steps_loading.insert(issue_key.clone());
+                actions::fetch_check_run_steps::spawn(
+                    self.message_tx.clone(),
+                    issue_key,
+                    pr.repo_slug.clone(),
+                    pr.check_runs.clone(),
+                );
+            }
+        }
 
         match msg {
             Message::CurrentBranch(branch) => {
@@ -397,6 +409,7 @@ impl AppView {
                 }
             }
             Message::CiLogsFetched(_, _) => {}
+            Message::CheckRunSteps(_, _) => {}
             Message::FixCiOpened(result) => {
                 if let Ok(branch) = result {
                     self.current_branch = branch;
