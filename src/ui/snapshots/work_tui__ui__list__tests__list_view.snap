@@ -2,8 +2,8 @@
 source: src/ui/list.rs
 expression: rendered
 ---
- Key       Summary                                Status       Dev                                                      
-▌TEST-123  ◦ Snapshot the sidebar render          In Progress  Casey          ◦ Snapshot the sidebar render             
+ Summary                                          Status       Dev                                                      
+▌◦ TEST-123 Snapshot the sidebar render           In Progress  Casey          ◦ Snapshot the sidebar render             
                                                                                                                         
                                                                               ── Jira ──────────────────── TEST-123 ──  
                                                                               Status    In Progress                     

@@ -27,7 +27,7 @@ use crate::{
     app::AppView,
 };
 
-pub const COLUMNS: &[&str] = &["Key", "Summary", "Status", "Dev", "◷", "PR", "CI", "Repo"];
+pub const COLUMNS: &[&str] = &["Issue", "Status", "Dev", "◷", "PR", "CI", "Repo"];
 pub const SIDEBAR_SECTION_MARGIN: u16 = 1;
 
 pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;
@@ -354,7 +354,7 @@ pub fn issue_type_icon(issue_type: &str) -> &'static str {
         return "§";
     }
     if issue_type.contains("sub") {
-        return "↳";
+        return "◦";
     }
     if issue_type.contains("task") {
         return "◦";

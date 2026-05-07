@@ -1756,7 +1756,6 @@ impl ListView {
             .collect();
 
         let constraints = [
-            Constraint::Length(max_col_width(&row_data, "Key").min(16)),
             Constraint::Min(10),
             Constraint::Length(max_col_width(&row_data, "Status").min(14)),
             Constraint::Length(max_col_width(&row_data, "Dev").min(12)),
@@ -2362,34 +2361,33 @@ fn story_header_row(
         .fg(Theme::AccentSoft)
         .add_modifier(Modifier::BOLD);
 
-    let key_line = if has_pending_import {
-        Line::from(vec![
-            Span::styled(format!("{}{} {}", indent, icon, key), header_style),
-            Span::styled(" *", Style::default().fg(Theme::Warning)),
-        ])
-    } else {
-        Line::styled(format!("{}{} {}", indent, icon, key), header_style)
-    };
+    let mut summary_spans = vec![Span::styled(
+        format!("{}{} {}", indent, icon, key),
+        header_style,
+    )];
+    if has_pending_import {
+        summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
+    }
+    summary_spans.push(Span::styled(format!(" § {}", first_line), header_style));
+    let summary_line = Line::from(summary_spans);
 
-    let cells = HashMap::from([
-        ("Key", key_line),
-        (
-            "Summary",
-            Line::styled(format!("§ {}", first_line), header_style),
-        ),
-    ]);
+    let cells = HashMap::from([("Issue", summary_line)]);
     (cells, row_style)
 }
 
 fn section_header_row(label: &str, count: usize, _width: u16) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted).bg(Theme::SidebarBg);
+    let label_color = match label {
+        "BOARD" | "BACKLOG" => Theme::Muted,
+        _ => Theme::AccentSoft,
+    };
     let header_style = Style::default()
-        .fg(Theme::AccentSoft)
+        .fg(label_color)
         .bg(Theme::SidebarBg)
         .add_modifier(Modifier::BOLD);
     let issue_word = if count == 1 { "issue" } else { "issues" };
     let cells = HashMap::from([(
-        "Summary",
+        "Issue",
         Line::from(vec![Span::styled(
             format!("{label} ({count} {issue_word})"),
             header_style,
@@ -2407,35 +2405,30 @@ fn inline_new_row(
 
     let summary_text = state.map(|s| s.summary.as_str()).unwrap_or("");
     let prefix = if depth > 0 {
-        format!("{}↳ ", "  ".repeat(depth as usize))
+        "  ".repeat(depth as usize)
     } else {
         String::new()
     };
 
-    let cells = HashMap::from([
-        (
-            "Key",
-            Line::styled(
+    let cells = HashMap::from([(
+        "Issue",
+        Line::from(vec![
+            Span::styled(
                 format!("{prefix}NEW"),
                 Style::default()
                     .fg(Theme::Warning)
                     .add_modifier(Modifier::BOLD),
             ),
-        ),
-        (
-            "Summary",
-            Line::from(vec![
-                Span::styled("◦ ", Style::default().fg(Theme::Muted)),
-                Span::styled(summary_text.to_string(), Style::default().fg(Theme::Text)),
-                Span::styled(
-                    "▏".to_string(),
-                    Style::default()
-                        .fg(Theme::Accent)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]),
-        ),
-    ]);
+            Span::styled(" ◦ ", Style::default().fg(Theme::Muted)),
+            Span::styled(summary_text.to_string(), Style::default().fg(Theme::Text)),
+            Span::styled(
+                "▏".to_string(),
+                Style::default()
+                    .fg(Theme::Accent)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+        ]),
+    )]);
     (cells, row_style)
 }
 
@@ -2444,7 +2437,7 @@ fn loading_row(spinner_tick: usize, _idx: usize, depth: u8) -> (CellMap<'static>
     let indent = "  ".repeat(depth as usize);
     let spinner = SPINNER_FRAMES[spinner_tick % SPINNER_FRAMES.len()];
     let cells = HashMap::from([(
-        "Summary",
+        "Issue",
         Line::styled(
             format!("{indent}{spinner} Loading..."),
             Style::default().fg(Theme::Muted),
@@ -2457,7 +2450,7 @@ fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted);
     let indent = "  ".repeat(depth as usize);
     let cells = HashMap::from([(
-        "Summary",
+        "Issue",
         Line::styled(
             format!("{indent}No issues"),
             Style::default().fg(Theme::Muted),
@@ -2499,40 +2492,36 @@ fn issue_row(
     let row_style = Style::default().fg(Theme::Text);
 
     let key_prefix = if depth > 0 {
-        format!("{}↳ ", "  ".repeat(depth as usize))
+        "  ".repeat(depth as usize)
     } else {
         String::new()
     };
 
     let has_pending_import = pending_import_keys.contains(&issue.key);
-    let key_line = if has_pending_import {
-        Line::from(vec![
-            Span::styled(
-                format!("{}{}", key_prefix, issue.key),
-                Style::default()
-                    .fg(Theme::Accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" *", Style::default().fg(Theme::Warning)),
-        ])
-    } else {
-        Line::styled(
-            format!("{}{}", key_prefix, issue.key),
+    let icon = issue_type_icon(&issue_type);
+    let mut summary_spans = vec![
+        Span::styled(
+            format!("{}{} ", key_prefix, icon),
+            Style::default().fg(Theme::Muted),
+        ),
+        Span::styled(
+            issue.key.clone(),
             Style::default()
                 .fg(Theme::Accent)
                 .add_modifier(Modifier::BOLD),
-        )
-    };
+        ),
+    ];
+    if has_pending_import {
+        summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
+    }
+    summary_spans.push(Span::styled(
+        format!(" {}", summary),
+        Style::default().fg(Theme::Text),
+    ));
+    let summary_line = Line::from(summary_spans);
 
     let mut cells = HashMap::from([
-        ("Key", key_line),
-        (
-            "Summary",
-            Line::styled(
-                format!("{} {}", issue_type_icon(&issue_type), summary),
-                Style::default().fg(Theme::Text),
-            ),
-        ),
+        ("Issue", summary_line),
         ("Status", Line::styled(status_name, status_style)),
         (
             "Dev",
