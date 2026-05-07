@@ -192,37 +192,40 @@ impl AppView {
             .find_map(|slug| slug.split_once('/').map(|(org, _)| org.to_string()))
     }
 
-    /// Collect issue keys that have at least one matching repo with a GitHub slug.
-    fn issue_keys_with_repos(&self) -> Vec<String> {
+    /// Extract the Jira project key prefix (e.g. "INI-") from the JQL or issues.
+    fn project_key_prefix(&self) -> Option<String> {
+        // Try extracting from JQL: "project = INI"
+        let jql_words: Vec<_> = self.config.jira.jira_jql.split_whitespace().collect();
+        if let Some(cap) = jql_words
+            .windows(3)
+            .find(|w| w[0].eq_ignore_ascii_case("project") && w[1] == "=")
+        {
+            let key = cap[2].trim_matches('"');
+            return Some(format!("{key}-"));
+        }
+
+        // Fallback: derive from first issue key
         self.issues
-            .iter()
-            .filter(|issue| {
-                self.repo_matches(issue)
-                    .iter()
-                    .any(|entry| entry.github_slug.is_some())
-            })
-            .map(|issue| issue.key.clone())
-            .collect()
+            .first()
+            .and_then(|issue| issue.key.split_once('-'))
+            .map(|(prefix, _)| format!("{prefix}-"))
     }
 
-    /// Spawn GitHub PR search for issue keys matching current issues.
+    /// Spawn GitHub PR search for branches matching the project key prefix.
     pub fn spawn_github_prs(&mut self) {
         let Some(org) = self.github_org() else {
             return;
         };
-        let issue_keys = self.issue_keys_with_repos();
-        actions::fetch_github_prs::spawn(self.message_tx.clone(), org, issue_keys);
+        let Some(head_prefix) = self.project_key_prefix() else {
+            return;
+        };
+        actions::fetch_github_prs::spawn(self.message_tx.clone(), org, head_prefix);
         self.last_ci_refresh = std::time::Instant::now();
     }
 
-    /// Spawn GitHub PR search only for issue keys that currently have linked PRs.
+    /// Spawn GitHub PR refresh (same query as initial fetch).
     pub fn spawn_github_prs_active(&mut self) {
-        let Some(org) = self.github_org() else {
-            return;
-        };
-        let active_keys: Vec<String> = self.github_prs.keys().cloned().collect();
-        actions::fetch_github_prs::spawn(self.message_tx.clone(), org, active_keys);
-        self.last_ci_refresh = std::time::Instant::now();
+        self.spawn_github_prs();
     }
 
     /// Schedule a debounced prefetch of the selected PR detail.

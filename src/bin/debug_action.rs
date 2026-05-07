@@ -66,12 +66,12 @@ fn print_usage() {
 
 async fn fetch_prs(args: &[String]) -> Result<()> {
     if args.len() < 2 {
-        return Err(eyre!("fetch-prs requires <org> <issue-key>..."));
+        return Err(eyre!("fetch-prs requires <org> <head-prefix>"));
     }
 
     let org = &args[0];
-    let issue_keys = args[1..].to_vec();
-    let (prs, errors) = github::search_prs_by_issue_keys(org, &issue_keys).await;
+    let head_prefix = &args[1];
+    let (prs, errors) = github::search_org_prs(org, head_prefix).await;
     for error in errors {
         println!("ERROR: {error}");
     }

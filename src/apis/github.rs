@@ -288,28 +288,20 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
         .collect())
 }
 
-/// Search for open PRs matching the given issue keys within an org.
+/// Search for open PRs whose branch starts with `head_prefix` within an org.
 ///
-/// Uses one GraphQL request with aliased `search()` calls — one per issue key.
-/// Each search uses `head:<key>` which prefix-matches branch names, so
-/// `head:TEST-123` finds branches like `TEST-123-add-feature`.
-/// This is dramatically cheaper than fetching all open PRs per repo.
-pub async fn search_prs_by_issue_keys(
-    org: &str,
-    issue_keys: &[String],
-) -> (Vec<PrInfo>, Vec<String>) {
+/// Uses a single GitHub search query: `type:pr state:open org:<org> head:<prefix>`.
+/// GitHub's `head:` qualifier does prefix matching, so `head:INI-` finds all
+/// branches like `INI-4984-update-kanel`, `INI-4979-auto-detect`, etc.
+///
+/// Returns up to 100 PRs — enough for any active project.
+pub async fn search_org_prs(org: &str, head_prefix: &str) -> (Vec<PrInfo>, Vec<String>) {
     let mut errors = Vec::new();
 
-    if issue_keys.is_empty() {
-        return (Vec::new(), errors);
-    }
-
-    let mut query = String::from("{");
-    for (idx, key) in issue_keys.iter().enumerate() {
-        let search_query = format!("type:pr state:open org:{org} head:{key}");
-        query.push_str(&format!(
-            r#"
-            key_{idx}: search(query: "{search_query}", type: ISSUE, first: 5) {{
+    let search_query = format!("type:pr state:open org:{org} head:{head_prefix}");
+    let query = format!(
+        r#"{{
+            search(query: "{search_query}", type: ISSUE, first: 100) {{
                 nodes {{
                     ... on PullRequest {{
                         number
@@ -344,10 +336,8 @@ pub async fn search_prs_by_issue_keys(
                     }}
                 }}
             }}
-            "#,
-        ));
-    }
-    query.push_str("\n}");
+        }}"#,
+    );
 
     let output = match Command::new("gh")
         .args(["api", "graphql", "-f", &format!("query={query}")])
@@ -393,114 +383,106 @@ pub async fn search_prs_by_issue_keys(
         }
     }
 
-    let Some(data_obj) = response.get("data").and_then(|d| d.as_object()) else {
+    let Some(nodes) = response
+        .pointer("/data/search/nodes")
+        .and_then(|n| n.as_array())
+    else {
         return (Vec::new(), errors);
     };
 
     let mut all_prs = Vec::new();
 
-    for (idx, _key) in issue_keys.iter().enumerate() {
-        let alias = format!("key_{idx}");
-        let Some(search_result) = data_obj.get(&alias) else {
+    for pr in nodes {
+        // Skip empty nodes (search can return non-PR results)
+        if pr.as_object().map_or(true, |o| o.is_empty()) {
             continue;
-        };
-
-        let Some(nodes) = search_result.get("nodes").and_then(|n| n.as_array()) else {
-            continue;
-        };
-
-        for pr in nodes {
-            // Skip empty nodes (search can return non-PR results)
-            if pr.as_object().map_or(true, |o| o.is_empty()) {
-                continue;
-            }
-
-            let Some(number) = pr.get("number").and_then(|n| n.as_u64()) else {
-                continue;
-            };
-
-            let repo_slug = pr
-                .pointer("/repository/nameWithOwner")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
-            let title = pr
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let state = pr
-                .get("state")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let url = pr
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let head_branch = pr
-                .get("headRefName")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let is_draft = pr.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
-            let mergeable = parse_mergeable_state(pr);
-            let review_decision = parse_review_decision(pr);
-            let updated_at = pr
-                .get("updatedAt")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let mut rollup_option = {
-                let rollups = extract_check_rollups(pr);
-                if rollups.is_empty() {
-                    None
-                } else {
-                    Some(rollups)
-                }
-            };
-
-            let checks = aggregate_check_status(&rollup_option);
-            let check_rollup_vec = rollup_option.take().unwrap_or_default();
-            let check_runs = check_rollup_vec
-                .iter()
-                .filter(|c| !c.name.is_empty())
-                .map(|c| CheckRun {
-                    name: c.name.clone(),
-                    status: check_run_status(c),
-                    started_at: c.started_at.clone(),
-                    completed_at: c.completed_at.clone(),
-                    details_url: c.details_url.clone(),
-                    summary: String::new(),
-                    text: String::new(),
-                    log_excerpt: String::new(),
-                    steps: Vec::new(),
-                    annotations: Vec::new(),
-                })
-                .collect();
-
-            all_prs.push(PrInfo {
-                number,
-                title,
-                state,
-                is_draft,
-                checks,
-                check_runs,
-                url,
-                head_branch,
-                repo_slug,
-                comments: Vec::new(),
-                review_threads: Vec::new(),
-                changed_files: None,
-                additions: None,
-                deletions: None,
-                mergeable,
-                review_decision,
-                auto_merge_enabled: false,
-                updated_at,
-            });
         }
+
+        let Some(number) = pr.get("number").and_then(|n| n.as_u64()) else {
+            continue;
+        };
+
+        let repo_slug = pr
+            .pointer("/repository/nameWithOwner")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let title = pr
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let state = pr
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let url = pr
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let head_branch = pr
+            .get("headRefName")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let is_draft = pr.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
+        let mergeable = parse_mergeable_state(pr);
+        let review_decision = parse_review_decision(pr);
+        let updated_at = pr
+            .get("updatedAt")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut rollup_option = {
+            let rollups = extract_check_rollups(pr);
+            if rollups.is_empty() {
+                None
+            } else {
+                Some(rollups)
+            }
+        };
+
+        let checks = aggregate_check_status(&rollup_option);
+        let check_rollup_vec = rollup_option.take().unwrap_or_default();
+        let check_runs = check_rollup_vec
+            .iter()
+            .filter(|c| !c.name.is_empty())
+            .map(|c| CheckRun {
+                name: c.name.clone(),
+                status: check_run_status(c),
+                started_at: c.started_at.clone(),
+                completed_at: c.completed_at.clone(),
+                details_url: c.details_url.clone(),
+                summary: String::new(),
+                text: String::new(),
+                log_excerpt: String::new(),
+                steps: Vec::new(),
+                annotations: Vec::new(),
+            })
+            .collect();
+
+        all_prs.push(PrInfo {
+            number,
+            title,
+            state,
+            is_draft,
+            checks,
+            check_runs,
+            url,
+            head_branch,
+            repo_slug,
+            comments: Vec::new(),
+            review_threads: Vec::new(),
+            changed_files: None,
+            additions: None,
+            deletions: None,
+            mergeable,
+            review_decision,
+            auto_merge_enabled: false,
+            updated_at,
+        });
     }
 
     (all_prs, errors)
