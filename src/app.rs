@@ -184,35 +184,44 @@ impl AppView {
         self.last_ci_refresh = std::time::Instant::now();
     }
 
-    /// Collect unique GitHub slugs from repos that match current issue labels.
-    fn matched_repo_slugs(&self) -> Vec<String> {
-        let mut seen = HashSet::new();
-        for issue in &self.issues {
-            for entry in self.repo_matches(issue) {
-                if let Some(slug) = &entry.github_slug {
-                    seen.insert(slug.clone());
-                }
-            }
-        }
-        seen.into_iter().collect()
+    /// Extract the GitHub org from the first repo entry that has a slug.
+    fn github_org(&self) -> Option<String> {
+        self.repo_entries
+            .iter()
+            .filter_map(|entry| entry.github_slug.as_deref())
+            .find_map(|slug| slug.split_once('/').map(|(org, _)| org.to_string()))
     }
 
-    /// Spawn GitHub PR fetch for repos matching current issue labels.
+    /// Collect issue keys that have at least one matching repo with a GitHub slug.
+    fn issue_keys_with_repos(&self) -> Vec<String> {
+        self.issues
+            .iter()
+            .filter(|issue| {
+                self.repo_matches(issue)
+                    .iter()
+                    .any(|entry| entry.github_slug.is_some())
+            })
+            .map(|issue| issue.key.clone())
+            .collect()
+    }
+
+    /// Spawn GitHub PR search for issue keys matching current issues.
     pub fn spawn_github_prs(&mut self) {
-        actions::fetch_github_prs::spawn(self.message_tx.clone(), self.matched_repo_slugs());
+        let Some(org) = self.github_org() else {
+            return;
+        };
+        let issue_keys = self.issue_keys_with_repos();
+        actions::fetch_github_prs::spawn(self.message_tx.clone(), org, issue_keys);
         self.last_ci_refresh = std::time::Instant::now();
     }
 
-    /// Spawn GitHub PR fetch only for repos that currently have linked PRs.
+    /// Spawn GitHub PR search only for issue keys that currently have linked PRs.
     pub fn spawn_github_prs_active(&mut self) {
-        let active_repos: Vec<String> = self
-            .github_prs
-            .values()
-            .map(|pr| pr.repo_slug.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        actions::fetch_github_prs::spawn(self.message_tx.clone(), active_repos);
+        let Some(org) = self.github_org() else {
+            return;
+        };
+        let active_keys: Vec<String> = self.github_prs.keys().cloned().collect();
+        actions::fetch_github_prs::spawn(self.message_tx.clone(), org, active_keys);
         self.last_ci_refresh = std::time::Instant::now();
     }
 

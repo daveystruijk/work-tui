@@ -288,35 +288,30 @@ pub async fn list_repo_prs(repo_slug: &str) -> Result<Vec<PrInfo>> {
         .collect())
 }
 
-pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<String>) {
+/// Search for open PRs matching the given issue keys within an org.
+///
+/// Uses one GraphQL request with aliased `search()` calls — one per issue key.
+/// Each search uses `head:<key>` which prefix-matches branch names, so
+/// `head:TEST-123` finds branches like `TEST-123-add-feature`.
+/// This is dramatically cheaper than fetching all open PRs per repo.
+pub async fn search_prs_by_issue_keys(
+    org: &str,
+    issue_keys: &[String],
+) -> (Vec<PrInfo>, Vec<String>) {
     let mut errors = Vec::new();
-    let mut repo_queries: Vec<(String, String, String, String)> = Vec::new();
 
-    for (idx, slug) in repo_slugs.iter().enumerate() {
-        let Some((owner, name)) = slug.split_once('/') else {
-            errors.push(format!("{slug}: invalid repo slug"));
-            continue;
-        };
-        repo_queries.push((
-            format!("repo_{idx}"),
-            owner.to_string(),
-            name.to_string(),
-            slug.clone(),
-        ));
-    }
-
-    if repo_queries.is_empty() {
+    if issue_keys.is_empty() {
         return (Vec::new(), errors);
     }
 
     let mut query = String::from("{");
-    for (alias, owner, name, _) in &repo_queries {
+    for (idx, key) in issue_keys.iter().enumerate() {
+        let search_query = format!("type:pr state:open org:{org} head:{key}");
         query.push_str(&format!(
             r#"
-            {alias}: repository(owner: "{owner}", name: "{name}") {{
-                nameWithOwner
-                pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
-                    nodes {{
+            key_{idx}: search(query: "{search_query}", type: ISSUE, first: 5) {{
+                nodes {{
+                    ... on PullRequest {{
                         number
                         title
                         state
@@ -325,16 +320,13 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                         isDraft
                         mergeable
                         reviewDecision
-                        autoMergeRequest {{ enabledAt }}
-                        changedFiles
-                        additions
-                        deletions
                         updatedAt
+                        repository {{ nameWithOwner }}
                         statusCheckRollup: commits(last: 1) {{
                             nodes {{
                                 commit {{
                                     statusCheckRollup {{
-                                        contexts(first: 100) {{
+                                        contexts(first: 25) {{
                                             nodes {{
                                                 __typename
                                                 ... on CheckRun {{
@@ -342,8 +334,6 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                                                     status
                                                     conclusion
                                                     startedAt
-                                                    completedAt
-                                                    detailsUrl
                                                 }}
                                             }}
                                         }}
@@ -355,9 +345,6 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 }}
             }}
             "#,
-            alias = alias,
-            owner = owner,
-            name = name,
         ));
     }
     query.push_str("\n}");
@@ -412,36 +399,31 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
 
     let mut all_prs = Vec::new();
 
-    for (alias, _owner, _name, slug) in repo_queries {
-        let Some(repo_value) = data_obj.get(&alias) else {
-            errors.push(format!("{slug}: missing repository data"));
+    for (idx, _key) in issue_keys.iter().enumerate() {
+        let alias = format!("key_{idx}");
+        let Some(search_result) = data_obj.get(&alias) else {
             continue;
         };
 
-        if repo_value.is_null() {
-            errors.push(format!("{slug}: repository not found"));
-            continue;
-        }
-
-        let repo_slug = repo_value
-            .get("nameWithOwner")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&slug)
-            .to_string();
-
-        let Some(pr_nodes) = repo_value
-            .get("pullRequests")
-            .and_then(|prs| prs.get("nodes"))
-            .and_then(|nodes| nodes.as_array())
-        else {
+        let Some(nodes) = search_result.get("nodes").and_then(|n| n.as_array()) else {
             continue;
         };
 
-        for pr in pr_nodes {
+        for pr in nodes {
+            // Skip empty nodes (search can return non-PR results)
+            if pr.as_object().map_or(true, |o| o.is_empty()) {
+                continue;
+            }
+
             let Some(number) = pr.get("number").and_then(|n| n.as_u64()) else {
-                errors.push(format!("{repo_slug}: missing PR number"));
                 continue;
             };
+
+            let repo_slug = pr
+                .pointer("/repository/nameWithOwner")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
 
             let title = pr
                 .get("title")
@@ -464,12 +446,8 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 .unwrap_or_default()
                 .to_string();
             let is_draft = pr.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
-            let changed_files = pr.get("changedFiles").and_then(|v| v.as_u64());
-            let additions = pr.get("additions").and_then(|v| v.as_u64());
-            let deletions = pr.get("deletions").and_then(|v| v.as_u64());
             let mergeable = parse_mergeable_state(pr);
             let review_decision = parse_review_decision(pr);
-            let auto_merge_enabled = pr.get("autoMergeRequest").is_some_and(|v| !v.is_null());
             let updated_at = pr
                 .get("updatedAt")
                 .and_then(|v| v.as_str())
@@ -511,15 +489,15 @@ pub async fn list_all_repo_prs(repo_slugs: &[String]) -> (Vec<PrInfo>, Vec<Strin
                 check_runs,
                 url,
                 head_branch,
-                repo_slug: repo_slug.clone(),
+                repo_slug,
                 comments: Vec::new(),
                 review_threads: Vec::new(),
-                changed_files,
-                additions,
-                deletions,
+                changed_files: None,
+                additions: None,
+                deletions: None,
                 mergeable,
                 review_decision,
-                auto_merge_enabled,
+                auto_merge_enabled: false,
                 updated_at,
             });
         }

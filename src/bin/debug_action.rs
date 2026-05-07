@@ -65,12 +65,13 @@ fn print_usage() {
 }
 
 async fn fetch_prs(args: &[String]) -> Result<()> {
-    if args.is_empty() {
-        return Err(eyre!("fetch-prs requires at least one repo slug"));
+    if args.len() < 2 {
+        return Err(eyre!("fetch-prs requires <org> <issue-key>..."));
     }
 
-    let repo_slugs = args.to_vec();
-    let (prs, errors) = github::list_all_repo_prs(&repo_slugs).await;
+    let org = &args[0];
+    let issue_keys = args[1..].to_vec();
+    let (prs, errors) = github::search_prs_by_issue_keys(org, &issue_keys).await;
     for error in errors {
         println!("ERROR: {error}");
     }
