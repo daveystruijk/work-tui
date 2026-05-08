@@ -14,8 +14,8 @@ use crate::{
     config::AppConfig,
     repos::{self, RepoEntry},
     ui::{
-        CiLogsView, ImportTasksView, LabelPickerView, ListView, SidebarView, StatusBarView,
-        UiAnimationView,
+        CiLogsView, ConfirmDialogView, ImportTasksView, LabelPickerView, ListView, SidebarView,
+        StatusBarView, UiAnimationView,
     },
     utils::time::parse_duration_secs,
 };
@@ -72,6 +72,7 @@ pub enum InputFocus {
     ImportTasksPopup,
     CiLogPopup,
     LabelPicker,
+    ConfirmDialog,
 }
 
 pub struct AppView {
@@ -113,6 +114,7 @@ pub struct AppView {
     pub ci_log_popup: CiLogsView,
     pub previous_key: Option<KeyCode>,
     pub import_tasks_popup: Option<ImportTasksView>,
+    pub confirm_dialog: Option<ConfirmDialogView>,
     pub pending_selected_issue_key: Option<String>,
     /// When set, a prefetch of the selected PR detail is scheduled after a short delay.
     /// This avoids firing fetches while the user is scrolling quickly through the list.
@@ -152,6 +154,7 @@ impl AppView {
             ci_log_popup: CiLogsView::default(),
             previous_key: None,
             import_tasks_popup: None,
+            confirm_dialog: None,
             pending_selected_issue_key: None,
             pending_prefetch_since: None,
         };

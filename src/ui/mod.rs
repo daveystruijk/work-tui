@@ -1,4 +1,5 @@
 pub mod ci_logs;
+pub mod confirm_dialog;
 pub mod import_tasks;
 pub mod label_picker;
 pub mod list;
@@ -6,6 +7,7 @@ mod sidebar;
 mod status_bar;
 
 pub use ci_logs::CiLogsView;
+pub use confirm_dialog::ConfirmDialogView;
 pub use import_tasks::ImportTasksView;
 pub use label_picker::LabelPickerView;
 pub use list::ListView;
@@ -134,6 +136,11 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
         InputFocus::LabelPicker => {
             if let Some(picker) = &app.label_picker {
                 picker.render(frame, &app.repo_entries);
+            }
+        }
+        InputFocus::ConfirmDialog => {
+            if let Some(dialog) = &app.confirm_dialog {
+                dialog.render(frame);
             }
         }
         _ => {}

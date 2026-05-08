@@ -1,0 +1,19 @@
+---
+source: src/ui/confirm_dialog.rs
+assertion_line: 298
+expression: output
+---
+                                                                      
+                                                                      
+     ┌ Finish ──────────────────────────────────────────────────┐     
+     │                                                          │     
+     │  Action    Finish issue                                  │     
+     │  Issue     TEST-42 Implement feature X                   │     
+     │  Repo      my-project                                    │     
+     │                                                          │     
+     │  Will commit changes, push branch,                       │     
+     │  create PR, transition to Review                         │     
+     │                                                          │     
+     │                                                          │     
+     │Enter:Confirm  Esc:Cancel                                 │     
+     └──────────────────────────────────────────────────────────┘

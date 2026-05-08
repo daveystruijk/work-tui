@@ -1,0 +1,17 @@
+---
+source: src/ui/confirm_dialog.rs
+assertion_line: 328
+expression: output
+---
+                                                                      
+     ┌ Pick Up ─────────────────────────────────────────────────┐     
+     │                                                          │     
+     │  Action    Pick up issue                                 │     
+     │  Issue     TEST-99 No repo task                          │     
+     │                                                          │     
+     │  Will assign issue and transition                        │     
+     │  to In Progress (no repo linked)                         │     
+     │                                                          │     
+     │                                                          │     
+     │Enter:Confirm  Esc:Cancel                                 │     
+     └──────────────────────────────────────────────────────────┘

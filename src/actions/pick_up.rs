@@ -1,10 +1,13 @@
 //! **Pick Up** — claims an issue and optionally creates a feature branch.
 //!
 //! Performs the full "pick up" workflow:
-//! 1. If a repo is linked, inspect the working tree and create/reuse a branch
-//! 2. Assign the issue to the current user
-//! 3. Transition the issue to "In Progress" (if available)
-//! 4. Open a tmux pane with an opencode session
+//! 1. If a repo is linked, require a clean working tree, then checkout/create branch
+//! 2. Open a tmux pane with an opencode session
+//! 3. Assign the issue to the current user
+//! 4. Transition the issue to "In Progress" (if available)
+//!
+//! Jira mutations (assign, transition, board move) only happen after all git
+//! operations succeed. A dirty working tree aborts the entire action.
 //!
 //! # Channel messages produced
 //! - [`Message::Progress`] (per-step progress)
@@ -36,14 +39,18 @@ pub fn spawn(
         let result: color_eyre::Result<PickUpResult> = async {
             let has_linked_repo = repo_path.is_some();
             let total_steps = if has_linked_repo { 6 } else { 3 };
-            let branch_setup = if let Some(repo_path) = repo_path.as_ref() {
+            let branch_name = if let Some(repo_path) = repo_path.as_ref() {
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
                     message: "Inspecting working tree...".into(),
                     current: 1,
                     total: total_steps,
                 }));
-                let has_uncommitted_changes = !git::is_clean(repo_path).await?;
+                if !git::is_clean(repo_path).await? {
+                    return Err(eyre!(
+                        "Working tree has uncommitted changes — commit or stash first"
+                    ));
+                }
 
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
@@ -63,15 +70,47 @@ pub fn spawn(
                     git::create_branch_from_origin_main(repo_path, &issue_key, &issue_summary)
                         .await?;
 
-                Some((branch_setup, has_uncommitted_changes))
+                Some(branch_setup.branch_name)
             } else {
                 None
             };
 
             let _ = tx.send(Message::Progress(Progress {
                 task_id: "pick_up".into(),
-                message: "Assigning issue...".into(),
+                message: "Opening opencode session...".into(),
                 current: if has_linked_repo { 4 } else { 1 },
+                total: total_steps,
+            }));
+            let prompt = crate::issue::format_pick_up_prompt(
+                &issue_key,
+                &issue_summary,
+                &issue_description,
+                &ancestors,
+            );
+            let escaped_prompt = prompt.replace('\'', "'\\''");
+            let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
+            let repo_dir = repo_path.as_ref().cloned().map(Ok).unwrap_or_else(|| {
+                dirs::home_dir()
+                    .map(|dir| dir.join("momo"))
+                    .ok_or_else(|| eyre!("HOME is not set; cannot resolve ~/momo"))
+            })?;
+            let repo_dir = repo_dir.display().to_string();
+
+            tokio::spawn(async move {
+                let _ = Command::new("tmux")
+                    .args(["new-window", "-c", &repo_dir])
+                    .output()
+                    .await;
+                let _ = Command::new("tmux")
+                    .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
+                    .output()
+                    .await;
+            });
+
+            let _ = tx.send(Message::Progress(Progress {
+                task_id: "pick_up".into(),
+                message: "Assigning issue...".into(),
+                current: if has_linked_repo { 5 } else { 2 },
                 total: total_steps,
             }));
             client.assign_issue(&issue_key, &my_account_id).await?;
@@ -79,7 +118,7 @@ pub fn spawn(
             let _ = tx.send(Message::Progress(Progress {
                 task_id: "pick_up".into(),
                 message: "Transitioning to In Progress and moving issue to board...".into(),
-                current: if has_linked_repo { 5 } else { 2 },
+                current: if has_linked_repo { 6 } else { 3 },
                 total: total_steps,
             }));
             let transitions = client.get_transitions(&issue_key).await?;
@@ -98,56 +137,8 @@ pub fn spawn(
             }
             client.move_issue_to_active_board(&issue_key).await?;
 
-            if branch_setup
-                .as_ref()
-                .map(|(_, dirty)| !dirty)
-                .unwrap_or(true)
-            {
-                let _ = tx.send(Message::Progress(Progress {
-                    task_id: "pick_up".into(),
-                    message: "Opening opencode session...".into(),
-                    current: if has_linked_repo { 6 } else { 3 },
-                    total: total_steps,
-                }));
-                let prompt = crate::issue::format_pick_up_prompt(
-                    &issue_key,
-                    &issue_summary,
-                    &issue_description,
-                    &ancestors,
-                );
-                let escaped_prompt = prompt.replace('\'', "'\\''");
-                let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
-                let repo_dir = branch_setup
-                    .as_ref()
-                    .and_then(|_| repo_path.as_ref())
-                    .cloned()
-                    .map(Ok)
-                    .unwrap_or_else(|| {
-                        dirs::home_dir()
-                            .map(|dir| dir.join("momo"))
-                            .ok_or_else(|| eyre!("HOME is not set; cannot resolve ~/momo"))
-                    })?;
-                let repo_dir = repo_dir.display().to_string();
-
-                let _ = Command::new("tmux")
-                    .args(["new-window", "-c", &repo_dir])
-                    .output()
-                    .await;
-                let _ = Command::new("tmux")
-                    .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
-                    .output()
-                    .await;
-            } else {
-                let _ = tx.send(Message::Progress(Progress {
-                    task_id: "pick_up".into(),
-                    message: "Skipping opencode (uncommitted changes)...".into(),
-                    current: 6,
-                    total: total_steps,
-                }));
-            }
-
             Ok(PickUpResult {
-                branch: branch_setup.map(|(setup, _)| setup.branch_name),
+                branch: branch_name,
             })
         }
         .await;

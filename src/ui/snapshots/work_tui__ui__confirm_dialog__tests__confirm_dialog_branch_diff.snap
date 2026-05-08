@@ -1,0 +1,19 @@
+---
+source: src/ui/confirm_dialog.rs
+assertion_line: 311
+expression: output
+---
+                                                                      
+                                                                      
+     ┌ Branch Diff ─────────────────────────────────────────────┐     
+     │                                                          │     
+     │  Action    Open branch diff                              │     
+     │  Issue     TEST-42                                       │     
+     │  Repo      my-project                                    │     
+     │                                                          │     
+     │  Will checkout branch and open diff                      │     
+     │  against origin/main in tmux                             │     
+     │                                                          │     
+     │                                                          │     
+     │Enter:Confirm  Esc:Cancel                                 │     
+     └──────────────────────────────────────────────────────────┘

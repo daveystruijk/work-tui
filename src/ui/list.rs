@@ -19,6 +19,7 @@ use crate::apis::{
 use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus};
 use crate::repos::RepoEntry;
 use crate::theme::Theme;
+use crate::ui::confirm_dialog::{ConfirmAction, ConfirmDialogView};
 use crate::ui::{ImportTasksView, LabelPickerView};
 use tokio::process::Command;
 
@@ -1837,7 +1838,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                     }
 
                     match c {
-                        'b' => spawn_branch_diff(app),
+                        'b' => show_branch_diff_dialog(app),
                         'j' => {
                             app.list.move_selection_down();
                             app.schedule_prefetch();
@@ -1850,7 +1851,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                             app.list.move_selection_to_end();
                             app.schedule_prefetch();
                         }
-                        'p' => spawn_pick_up(app),
+                        'p' => show_pick_up_dialog(app),
                         'o' => match open_selected_pr_in_browser(app).await {
                             Ok(_) => {}
                             Err(err) => app.status_bar.set_error(format!("{err}")),
@@ -1872,7 +1873,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                             app.spawn_refresh();
                         }
                         'S' => spawn_toggle_story_type(app),
-                        'f' => spawn_finish(app),
+                        'f' => show_finish_dialog(app),
                         '/' => {
                             app.list.start_search();
                             app.input_focus = crate::app::InputFocus::Search;
@@ -1986,8 +1987,8 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
     }
 }
 
-/// Spawn pick-up issue in background.
-fn spawn_pick_up(app: &mut AppView) {
+/// Show confirmation dialog before picking up an issue.
+fn show_pick_up_dialog(app: &mut AppView) {
     let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
         return;
     };
@@ -1998,23 +1999,23 @@ fn spawn_pick_up(app: &mut AppView) {
         .repo_matches(issue)
         .first()
         .map(|entry| entry.path.clone());
-
     let ancestors = crate::issue::ancestors_from_sources(issue, &app.issues, &app.story_children);
 
-    actions::pick_up::spawn(
-        app.message_tx.clone(),
-        app.client.clone(),
-        issue_key,
-        issue_summary,
-        issue_description,
-        repo_path,
-        app.my_account_id.clone(),
-        ancestors,
-    );
+    app.confirm_dialog = Some(ConfirmDialogView {
+        action: ConfirmAction::PickUp {
+            issue_key,
+            issue_summary,
+            issue_description,
+            repo_path,
+            my_account_id: app.my_account_id.clone(),
+            ancestors,
+        },
+    });
+    app.input_focus = InputFocus::ConfirmDialog;
 }
 
-/// Spawn branch diff in background.
-fn spawn_branch_diff(app: &mut AppView) {
+/// Show confirmation dialog before opening branch diff.
+fn show_branch_diff_dialog(app: &mut AppView) {
     let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
         return;
     };
@@ -2028,7 +2029,13 @@ fn spawn_branch_diff(app: &mut AppView) {
         }
     };
 
-    actions::branch_diff::spawn(app.message_tx.clone(), issue_key, repo_path);
+    app.confirm_dialog = Some(ConfirmDialogView {
+        action: ConfirmAction::BranchDiff {
+            issue_key,
+            repo_path,
+        },
+    });
+    app.input_focus = InputFocus::ConfirmDialog;
 }
 
 /// Spawn approve + auto-merge for the selected issue's PR.
@@ -2046,8 +2053,8 @@ fn spawn_approve_merge(app: &mut AppView) {
     actions::approve_merge::spawn(app.message_tx.clone(), pr.repo_slug.clone(), pr.number);
 }
 
-/// Spawn finish workflow in background.
-fn spawn_finish(app: &mut AppView) {
+/// Show confirmation dialog before finishing an issue.
+fn show_finish_dialog(app: &mut AppView) {
     let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
         return;
     };
@@ -2062,13 +2069,14 @@ fn spawn_finish(app: &mut AppView) {
         }
     };
 
-    actions::finish::spawn(
-        app.message_tx.clone(),
-        app.client.clone(),
-        issue_key,
-        issue_summary,
-        repo_path,
-    );
+    app.confirm_dialog = Some(ConfirmDialogView {
+        action: ConfirmAction::Finish {
+            issue_key,
+            issue_summary,
+            repo_path,
+        },
+    });
+    app.input_focus = InputFocus::ConfirmDialog;
 }
 
 /// Spawn issue type toggle: Task → Story, or Story → Task if it has no children.

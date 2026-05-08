@@ -1,0 +1,18 @@
+---
+source: src/ui/confirm_dialog.rs
+expression: output
+---
+                                                                      
+                                                                      
+     ┌ Pick Up ─────────────────────────────────────────────────┐     
+     │                                                          │     
+     │  Action    Pick up issue                                 │     
+     │  Issue     TEST-42 Implement feature X                   │     
+     │  Repo      my-project                                    │     
+     │                                                          │     
+     │  Will checkout branch, then assign issue,                │     
+     │  transition to In Progress, open editor                  │     
+     │                                                          │     
+     │                                                          │     
+     │Enter:Confirm  Esc:Cancel                                 │     
+     └──────────────────────────────────────────────────────────┘
