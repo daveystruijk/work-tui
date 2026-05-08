@@ -664,6 +664,66 @@ mod tests {
         );
     }
 
+    /// Searching for an epic by name surfaces it even without matching children.
+    #[test]
+    fn snapshots_search_matches_epic() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Platform migration"),
+            task_issue_with_parent("TASK-1", "Update config", "EPIC-1", "Platform migration"),
+            task_issue_with_parent("TASK-2", "Write tests", "EPIC-1", "Platform migration"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        list.search_filter = "platform".to_string();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "search_matches_epic",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Searching for a story by name surfaces it even without matching children.
+    #[test]
+    fn snapshots_search_matches_story() {
+        let issues = vec![
+            story_issue("STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-1", "Update OAuth", "STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-2", "Add tests", "STORY-1", "Auth migration"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        list.search_filter = "auth".to_string();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "search_matches_story",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Searching for a child still surfaces it under its parent group.
+    #[test]
+    fn snapshots_search_matches_child_under_story() {
+        let issues = vec![
+            story_issue("STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-1", "Update OAuth", "STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-2", "Add tests", "STORY-1", "Auth migration"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        list.search_filter = "oauth".to_string();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "search_matches_child_under_story",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
     fn story_header_count(rows: &[DisplayRow], key: &str) -> usize {
         rows.iter()
             .filter(
@@ -1066,29 +1126,43 @@ impl ListView {
     ) {
         use std::collections::HashMap as StdMap;
 
-        let matching_indices: Option<HashSet<usize>> = if self.search_filter.is_empty() {
+        let is_searching = !self.search_filter.is_empty();
+        let query = self.search_filter.to_lowercase();
+
+        let issue_matches_query = |issue: &Issue| -> bool {
+            issue.key.to_lowercase().contains(&query)
+                || issue
+                    .summary()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&query)
+                || issue
+                    .assignee()
+                    .map(|u| u.display_name.to_lowercase().contains(&query))
+                    .unwrap_or(false)
+                || issue
+                    .status()
+                    .map(|s| s.name.to_lowercase().contains(&query))
+                    .unwrap_or(false)
+        };
+
+        let matching_indices: Option<HashSet<usize>> = if !is_searching {
             None
         } else {
-            let query = self.search_filter.to_lowercase();
+            // Also include story_children matches: when a lazily-loaded
+            // child matches, surface its parent from the issues list.
+            let matching_parent_keys: HashSet<String> = story_children
+                .iter()
+                .filter(|(_, children)| children.iter().any(|c| issue_matches_query(c)))
+                .map(|(key, _)| key.clone())
+                .collect();
+
             Some(
                 issues
                     .iter()
                     .enumerate()
                     .filter(|(_, issue)| {
-                        issue.key.to_lowercase().contains(&query)
-                            || issue
-                                .summary()
-                                .unwrap_or_default()
-                                .to_lowercase()
-                                .contains(&query)
-                            || issue
-                                .assignee()
-                                .map(|u| u.display_name.to_lowercase().contains(&query))
-                                .unwrap_or(false)
-                            || issue
-                                .status()
-                                .map(|s| s.name.to_lowercase().contains(&query))
-                                .unwrap_or(false)
+                        issue_matches_query(issue) || matching_parent_keys.contains(&issue.key)
                     })
                     .map(|(idx, _)| idx)
                     .collect(),
@@ -1252,7 +1326,21 @@ impl ListView {
                             || story_children.contains_key(&issue.key)
                             || parent_groups.contains_key(&issue.key);
                         if expandable {
-                            // Section placement is inferred entirely from children.
+                            // When searching and the parent itself matched, use
+                            // its own status for section placement instead of
+                            // requiring matching children.
+                            if is_searching
+                                && matching_indices
+                                    .as_ref()
+                                    .map(|m| m.contains(idx))
+                                    .unwrap_or(false)
+                            {
+                                return match section_filter {
+                                    Some(true) => !backlog,
+                                    Some(false) => backlog,
+                                    None => true,
+                                };
+                            }
                             return has_children_in_section(
                                 &issue.key,
                                 issues,
@@ -1267,13 +1355,39 @@ impl ListView {
                             None => true,
                         }
                     }
-                    TopLevel::StoryGroup { key, .. } => has_children_in_section(
-                        key,
-                        issues,
-                        &parent_groups,
-                        story_children,
-                        section_filter,
-                    ),
+                    TopLevel::StoryGroup { key, .. } => {
+                        // When searching, a StoryGroup exists because a child
+                        // matched — place it based on those children.  But also
+                        // check if the parent key itself is in the issues list
+                        // and matched the query; if so, fall back to its own
+                        // status.
+                        if has_children_in_section(
+                            key,
+                            issues,
+                            &parent_groups,
+                            story_children,
+                            section_filter,
+                        ) {
+                            return true;
+                        }
+                        if is_searching {
+                            if let Some(parent_idx) = issues.iter().position(|i| i.key == *key) {
+                                if matching_indices
+                                    .as_ref()
+                                    .map(|m| m.contains(&parent_idx))
+                                    .unwrap_or(false)
+                                {
+                                    let backlog = is_backlog_status(&issues[parent_idx]);
+                                    return match section_filter {
+                                        Some(true) => !backlog,
+                                        Some(false) => backlog,
+                                        None => true,
+                                    };
+                                }
+                            }
+                        }
+                        false
+                    }
                 })
                 .collect();
 

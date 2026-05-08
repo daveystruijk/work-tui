@@ -1,10 +1,9 @@
 ---
 source: src/ui/list.rs
-assertion_line: 118
 expression: rendered
 ---
  Issue                                 Status       Dev    ◷     PR   CI                                                
-▌◦ TEST-123 Snapshot the sidebar rend  In Progress  Casey  857d  #42  ✓● ⠋    ◦ Snapshot the sidebar render             
+▌◦ TEST-123 Snapshot the sidebar rend  In Progress  Casey  858d  #42  ✓● ⠋    ◦ Snapshot the sidebar render             
                                                                                                                         
                                                                               ── Jira ──────────────────── TEST-123 ──  
                                                                                                                         
