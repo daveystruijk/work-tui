@@ -298,7 +298,6 @@ async fn pick_up(args: &[String]) -> Result<()> {
             work_tui::git::create_branch_from_origin_main(repo_path, issue_key, issue_summary)
                 .await?;
         println!("branch_name: {}", branch_setup.branch_name);
-        println!("reused_existing: {}", branch_setup.reused_existing);
     }
     client.assign_issue(issue_key, &account_id).await?;
     println!("assign_issue: ok");

@@ -6,7 +6,6 @@ use tokio::process::Command;
 #[derive(Debug)]
 pub struct BranchCheckoutResult {
     pub branch_name: String,
-    pub reused_existing: bool,
 }
 
 pub fn slugify(summary: &str) -> String {
@@ -189,7 +188,6 @@ pub async fn create_branch_from_origin_main(
         if checkout.status.success() {
             return Ok(BranchCheckoutResult {
                 branch_name: existing,
-                reused_existing: true,
             });
         }
 
@@ -214,10 +212,7 @@ pub async fn create_branch_from_origin_main(
         .await?;
 
     if output.status.success() {
-        return Ok(BranchCheckoutResult {
-            branch_name,
-            reused_existing: false,
-        });
+        return Ok(BranchCheckoutResult { branch_name });
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
