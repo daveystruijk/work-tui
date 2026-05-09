@@ -23,10 +23,6 @@ pub struct LabelPickerView {
 }
 
 impl LabelPickerView {
-    pub fn open() -> Self {
-        Self::default()
-    }
-
     pub fn filtered_repo_entries<'a>(&self, repo_entries: &'a [RepoEntry]) -> Vec<&'a RepoEntry> {
         if self.filter.is_empty() {
             return repo_entries.iter().collect();
@@ -228,4 +224,36 @@ fn add_label_from_picker(app: &mut AppView) -> bool {
         labels,
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use insta::assert_snapshot;
+
+    use crate::{fixtures::render_to_string, repos::RepoEntry};
+
+    use super::*;
+
+    #[test]
+    fn label_picker_with_entries() {
+        let picker = LabelPickerView::default();
+        let entries = vec![
+            RepoEntry {
+                label: "frontend-app".to_string(),
+                normalized: "frontend-app".to_string(),
+                path: PathBuf::from("/home/user/repos/frontend-app"),
+                github_slug: Some("org/frontend-app".to_string()),
+            },
+            RepoEntry {
+                label: "backend-api".to_string(),
+                normalized: "backend-api".to_string(),
+                path: PathBuf::from("/home/user/repos/backend-api"),
+                github_slug: Some("org/backend-api".to_string()),
+            },
+        ];
+        let output = render_to_string(60, 20, |frame| picker.render(frame, &entries));
+        assert_snapshot!(output);
+    }
 }

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     actions::{self, Message},
     apis::{
-        github::{CheckStatus, GithubStatus, PrInfo},
+        github::{CheckStatus, GithubStatus, PrInfo, ReviewDecision},
         jira::{Issue, JiraClient},
     },
     cache::{self, Cache},
@@ -399,20 +399,21 @@ impl AppView {
             }
             Message::BranchDiffOpened(_) => {}
             Message::ApproveAutoMerged(result) => {
-                if result.is_ok() {
-                    self.spawn_github_prs_active();
+                if let Ok(pr_number) = result {
+                    self.apply_approve_auto_merged(pr_number);
                 }
+                self.spawn_github_prs_active();
             }
-            Message::Finished(result) => {
+            Message::Finished(issue_key, result) => {
                 if result.is_ok() {
-                    self.spawn_refresh();
+                    self.apply_finished(&issue_key);
                 }
             }
             Message::InlineCreated(result) => self.handle_inline_created_message(result),
             Message::AutoLabeled(_key, _result) => {}
             Message::LabelAdded(result) => {
-                if result.is_ok() {
-                    self.spawn_refresh();
+                if let Ok((issue_key, label)) = result {
+                    self.apply_label_added(&issue_key, &label);
                 }
             }
             Message::ChildrenLoaded(parent_key, result) => {
@@ -542,6 +543,8 @@ impl AppView {
                 });
                 if let Some(index) = found_index {
                     self.list.selected_index = index;
+                } else {
+                    self.pending_selected_issue_key = Some(key);
                 }
             }
             Err(err) => {
@@ -549,6 +552,66 @@ impl AppView {
                 self.input_focus = InputFocus::List;
                 self.list.cancel_inline_new();
             }
+        }
+    }
+
+    /// Optimistically update issue status to "Review" after finishing.
+    fn apply_finished(&mut self, issue_key: &str) {
+        let issue = self
+            .issues
+            .iter_mut()
+            .chain(self.story_children.values_mut().flatten())
+            .find(|issue| issue.key == issue_key);
+        if let Some(issue) = issue {
+            if let Some(status) = issue.fields.get("status").cloned() {
+                let mut status_obj = status;
+                if let Some(obj) = status_obj.as_object_mut() {
+                    obj.insert("name".to_string(), serde_json::json!("Review"));
+                    issue
+                        .fields
+                        .insert("status".to_string(), status_obj.clone());
+                }
+            }
+        }
+        // Also refresh PRs since a new PR was created.
+        self.spawn_github_prs_active();
+    }
+
+    /// Optimistically mark a PR as approved with auto-merge enabled.
+    fn apply_approve_auto_merged(&mut self, pr_number: u64) {
+        for pr in self.github_prs.values_mut() {
+            if pr.number == pr_number {
+                pr.auto_merge_enabled = true;
+                pr.review_decision = Some(ReviewDecision::Approved);
+                break;
+            }
+        }
+        for status in self.github_statuses.values_mut() {
+            if let GithubStatus::Found(pr) = status {
+                if pr.number == pr_number {
+                    pr.auto_merge_enabled = true;
+                    pr.review_decision = Some(ReviewDecision::Approved);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Optimistically update the labels field on a local issue after a label was added.
+    fn apply_label_added(&mut self, issue_key: &str, label: &str) {
+        let issue = self
+            .issues
+            .iter_mut()
+            .chain(self.story_children.values_mut().flatten())
+            .find(|issue| issue.key == issue_key);
+        if let Some(issue) = issue {
+            let mut labels = issue.labels();
+            if !labels.contains(&label.to_string()) {
+                labels.push(label.to_string());
+            }
+            issue
+                .fields
+                .insert("labels".to_string(), serde_json::json!(labels));
         }
     }
 
@@ -912,6 +975,108 @@ mod tests {
             Some("TEST-2")
         );
         assert_eq!(app.pending_selected_issue_key, None);
+    }
+
+    #[test]
+    fn label_added_updates_issue_labels_in_place() {
+        let mut app = test_app();
+        let mut issue = test_issue();
+        issue.key = "TEST-1".to_string();
+        issue
+            .fields
+            .insert("labels".to_string(), json!(["existing-label"]));
+        app.issues = vec![issue];
+        app.list.display_rows.push(DisplayRow::Issue {
+            index: 0,
+            depth: 0,
+            child_of: None,
+        });
+
+        app.handle_message(Message::LabelAdded(Ok((
+            "TEST-1".to_string(),
+            "new-label".to_string(),
+        ))));
+
+        let labels = app.issues[0].labels();
+        assert_eq!(labels, vec!["existing-label", "new-label"]);
+    }
+
+    #[test]
+    fn label_added_updates_story_child_labels() {
+        let mut app = test_app();
+        let mut child = test_issue();
+        child.key = "TEST-2".to_string();
+        child
+            .fields
+            .insert("labels".to_string(), json!(["old-label"]));
+        app.story_children.insert("TEST-1".to_string(), vec![child]);
+
+        app.handle_message(Message::LabelAdded(Ok((
+            "TEST-2".to_string(),
+            "repo-label".to_string(),
+        ))));
+
+        let labels = app.story_children["TEST-1"][0].labels();
+        assert_eq!(labels, vec!["old-label", "repo-label"]);
+    }
+
+    #[test]
+    fn approve_auto_merged_sets_pr_flags() {
+        let mut app = test_app();
+        let mut pr = crate::fixtures::pr::test_pr();
+        pr.number = 99;
+        pr.auto_merge_enabled = false;
+        pr.review_decision = Some(crate::apis::github::ReviewDecision::ReviewRequired);
+        app.github_prs.insert("TEST-1".to_string(), pr.clone());
+        app.github_statuses.insert(
+            "TEST-1".to_string(),
+            crate::apis::github::GithubStatus::Found(pr),
+        );
+
+        app.handle_message(Message::ApproveAutoMerged(Ok(99)));
+
+        let pr = &app.github_prs["TEST-1"];
+        assert!(pr.auto_merge_enabled);
+        assert_eq!(
+            pr.review_decision,
+            Some(crate::apis::github::ReviewDecision::Approved)
+        );
+        if let crate::apis::github::GithubStatus::Found(status_pr) = &app.github_statuses["TEST-1"]
+        {
+            assert!(status_pr.auto_merge_enabled);
+            assert_eq!(
+                status_pr.review_decision,
+                Some(crate::apis::github::ReviewDecision::Approved)
+            );
+        } else {
+            panic!("Expected GithubStatus::Found");
+        }
+    }
+
+    #[test]
+    fn finished_updates_issue_status_to_review() {
+        let mut app = test_app();
+        let mut issue = test_issue();
+        issue.key = "TEST-1".to_string();
+        app.issues = vec![issue];
+
+        app.handle_message(Message::Finished(
+            "TEST-1".to_string(),
+            Ok("https://github.com/example/repo/pull/1".to_string()),
+        ));
+
+        let status = app.issues[0].status().expect("status should exist");
+        assert_eq!(status.name, "Review");
+    }
+
+    #[test]
+    fn inline_created_sets_pending_key_when_not_found() {
+        let mut app = test_app();
+        // No issues in display_rows, so the created key won't be found.
+
+        app.handle_message(Message::InlineCreated(Ok("NEW-1".to_string())));
+
+        assert_eq!(app.pending_selected_issue_key, Some("NEW-1".to_string()));
     }
 
     fn story_issue(key: &str, summary: &str) -> Issue {

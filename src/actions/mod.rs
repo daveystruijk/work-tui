@@ -97,7 +97,8 @@ pub enum Message {
     /// PR approved and auto-merge enabled (from [`approve_merge`]).
     ApproveAutoMerged(Result<u64>),
     /// Finish completed — PR created (from [`finish`]).
-    Finished(Result<String>),
+    /// Carries (issue_key, pr_url).
+    Finished(String, Result<String>),
     /// Inline new issue created (from [`create_inline_issue`]).
     InlineCreated(Result<String>),
     /// Labels updated for auto-labeling (from [`auto_label`]).

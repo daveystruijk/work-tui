@@ -2286,15 +2286,12 @@ fn derive_project_key(app: &AppView) -> String {
 }
 
 fn open_label_picker(app: &mut AppView) {
-    app.reload_repo_entries();
     if app.repo_entries.is_empty() {
-        if app.repo_error.is_none() {
-            app.status_bar
-                .set_warning("No repositories found in REPOS_DIR");
-        }
+        app.status_bar
+            .set_warning("No repositories found in REPOS_DIR");
         return;
     }
-    app.label_picker = Some(LabelPickerView::open());
+    app.label_picker = Some(LabelPickerView::default());
     app.input_focus = InputFocus::LabelPicker;
 }
 
@@ -2535,13 +2532,14 @@ fn inline_new_row(
     let cells = HashMap::from([(
         "Issue",
         Line::from(vec![
+            Span::styled(format!("{prefix}◦ "), Style::default().fg(Theme::Muted)),
             Span::styled(
-                format!("{prefix}NEW"),
+                "NEW",
                 Style::default()
                     .fg(Theme::Warning)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" ◦ ", Style::default().fg(Theme::Muted)),
+            Span::styled(" ", Style::default()),
             Span::styled(summary_text.to_string(), Style::default().fg(Theme::Text)),
             Span::styled(
                 "▏".to_string(),

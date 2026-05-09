@@ -104,7 +104,7 @@ impl StatusBarView {
             Message::ApproveAutoMerged(Err(err)) => {
                 self.set_error(format!("Approve/merge failed: {err}"));
             }
-            Message::Finished(Err(err)) => self.set_error(format!("Finish failed: {err}")),
+            Message::Finished(_, Err(err)) => self.set_error(format!("Finish failed: {err}")),
             Message::ChildrenLoaded(parent_key, Err(err)) => {
                 self.set_error(format!("Failed to load children for {parent_key}: {err}"));
             }

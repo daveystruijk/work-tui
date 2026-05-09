@@ -1,0 +1,22 @@
+---
+source: src/ui/label_picker.rs
+assertion_line: 311
+expression: output
+---
+                                                            
+                                                            
+                                                            
+            ┌ Add repo label ──────────────────┐            
+            │/  Type to filter...              │            
+            │                                  │            
+            │                                  │            
+            │frontend-app                      │            
+            │/home/user/repos/frontend-app     │            
+            │backend-api                       │            
+            │/home/user/repos/backend-api      │            
+            │                                  │            
+            │                                  │            
+            │                                  │            
+            │                                  │            
+            │                                  │            
+            └──────────────────────────────────┘

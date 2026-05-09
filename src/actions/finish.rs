@@ -106,6 +106,6 @@ pub fn spawn(
             Ok(pr_url)
         }
         .await;
-        let _ = tx.send(Message::Finished(result));
+        let _ = tx.send(Message::Finished(issue_key, result));
     });
 }
