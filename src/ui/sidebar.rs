@@ -14,8 +14,8 @@ use crate::actions::Message;
 use crate::apis::github::{
     CheckRun, CheckStatus, CheckStep, MergeableState, PrInfo, ReviewDecision,
 };
-use crate::app::AppView;
 use crate::theme::Theme;
+use crate::ticket::Ticket;
 
 use super::{
     humanize_timestamp, issue_author, issue_field_string, issue_type_icon, labeled_text_line,
@@ -24,7 +24,9 @@ use super::{
 
 /// Read-only shared state passed to SidebarView for rendering.
 pub struct SidebarRenderContext<'a> {
-    pub app: &'a AppView,
+    pub selected_ticket: Option<&'a Ticket>,
+    pub animation_tick: usize,
+    pub check_durations: &'a HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -131,14 +133,13 @@ impl SidebarView {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, ctx: &SidebarRenderContext) {
-        let app = ctx.app;
         let sidebar = Block::default()
             .padding(Padding::new(2, 2, 1, 0))
             .style(Style::default().bg(Theme::SidebarBg));
         let inner = sidebar.inner(area);
         frame.render_widget(sidebar, area);
 
-        let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        let Some(ticket) = ctx.selected_ticket else {
             frame.render_widget(
                 Paragraph::new(vec![Line::from(Span::styled(
                     "No issue selected",
@@ -150,6 +151,7 @@ impl SidebarView {
             return;
         };
 
+        let issue = &ticket.issue;
         let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
         let icon = issue_type_icon(&issue_type);
         let summary = issue.summary().unwrap_or_default();
@@ -243,12 +245,12 @@ impl SidebarView {
         let mut ci_lines = Vec::new();
         let mut ci_status: Option<(String, ratatui::style::Color)> = None;
 
-        match app.github_prs.get(&issue.key) {
+        match ticket.pr.as_ref() {
             Some(pr) => {
                 let detail_loading = self.detail_loading.contains(&issue.key);
                 let detail_error = self.detail_errors.get(&issue.key);
                 let detail_loaded = self.detail_loaded.contains(&issue.key);
-                let spinner = SPINNER_FRAMES[app.animation.spinner_tick % SPINNER_FRAMES.len()];
+                let spinner = SPINNER_FRAMES[ctx.animation_tick % SPINNER_FRAMES.len()];
 
                 github_id = Some(format!("#{}", pr.number));
 
@@ -359,7 +361,8 @@ impl SidebarView {
                             CheckStatus::Fail => ("✗", Theme::Error),
                             CheckStatus::Pending => ("●", Theme::Warning),
                         };
-                        let timing = check_run_timing(app, pr, run).unwrap_or_default();
+                        let timing =
+                            check_run_timing(ctx.check_durations, pr, run).unwrap_or_default();
                         let mut spans = vec![
                             Span::styled(format!(" {icon} "), Style::default().fg(color)),
                             Span::styled(&run.name, Style::default().fg(Theme::Text)),
@@ -382,7 +385,8 @@ impl SidebarView {
                                     CheckStatus::Pending => ("●", Theme::Warning),
                                 };
                                 let step_timing =
-                                    check_step_timing(app, pr, run, step).unwrap_or_default();
+                                    check_step_timing(ctx.check_durations, pr, run, step)
+                                        .unwrap_or_default();
                                 let mut step_spans = vec![
                                     Span::styled(
                                         format!("   {step_icon} "),
@@ -498,7 +502,12 @@ mod tests {
     #[test]
     fn snapshots_empty_sidebar() {
         let app = test_app();
-        let ctx = SidebarRenderContext { app: &app };
+        let ctx = SidebarRenderContext {
+            selected_ticket: app.selected_ticket(),
+
+            animation_tick: app.animation.spinner_tick,
+            check_durations: &app.check_durations,
+        };
         let rendered = render_to_string(44, 22, |frame| {
             app.sidebar.render(frame, Rect::new(0, 0, 44, 22), &ctx);
         });
@@ -509,7 +518,12 @@ mod tests {
     #[test]
     fn snapshots_sidebar_with_pr() {
         let app = sidebar_app();
-        let ctx = SidebarRenderContext { app: &app };
+        let ctx = SidebarRenderContext {
+            selected_ticket: app.selected_ticket(),
+
+            animation_tick: app.animation.spinner_tick,
+            check_durations: &app.check_durations,
+        };
         let rendered = render_to_string(44, 26, |frame| {
             app.sidebar.render(frame, Rect::new(0, 0, 44, 26), &ctx);
         });
@@ -524,7 +538,12 @@ mod tests {
             "description".to_string(),
             json!("Open [release notes](https://example.com/releases/very/long/link) before merging the change."),
         );
-        let ctx = SidebarRenderContext { app: &app };
+        let ctx = SidebarRenderContext {
+            selected_ticket: app.selected_ticket(),
+
+            animation_tick: app.animation.spinner_tick,
+            check_durations: &app.check_durations,
+        };
         let rendered = render_to_string(44, 26, |frame| {
             app.sidebar.render(frame, Rect::new(0, 0, 44, 26), &ctx);
         });
@@ -626,7 +645,11 @@ fn check_runs_changed(old_runs: &[CheckRun], new_runs: &[CheckRun]) -> bool {
 }
 
 /// Compute a timing string for a single check run.
-fn check_run_timing(app: &AppView, pr: &PrInfo, run: &CheckRun) -> Option<String> {
+fn check_run_timing(
+    check_durations: &HashMap<String, u64>,
+    pr: &PrInfo,
+    run: &CheckRun,
+) -> Option<String> {
     match run.status {
         CheckStatus::Pass | CheckStatus::Fail => run.completed_at.as_deref().map(|completed| {
             let elapsed = crate::utils::time::parse_duration_secs(
@@ -644,7 +667,7 @@ fn check_run_timing(app: &AppView, pr: &PrInfo, run: &CheckRun) -> Option<String
                 .as_deref()
                 .and_then(crate::utils::time::elapsed_since_iso)?;
             let cache_key = format!("{}/{}", pr.repo_slug, run.name);
-            let eta = app.check_durations.get(&cache_key).map(|&historical| {
+            let eta = check_durations.get(&cache_key).map(|&historical| {
                 let remaining = historical.saturating_sub(elapsed);
                 format!(" (~{})", crate::utils::time::format_duration(remaining))
             });
@@ -659,7 +682,7 @@ fn check_run_timing(app: &AppView, pr: &PrInfo, run: &CheckRun) -> Option<String
 
 /// Compute a timing string for a single check step.
 fn check_step_timing(
-    app: &AppView,
+    check_durations: &HashMap<String, u64>,
     pr: &PrInfo,
     run: &CheckRun,
     step: &CheckStep,
@@ -681,7 +704,7 @@ fn check_step_timing(
                 .as_deref()
                 .and_then(crate::utils::time::elapsed_since_iso)?;
             let cache_key = format!("{}/{}/{}", pr.repo_slug, run.name, step.name);
-            let eta = app.check_durations.get(&cache_key).map(|&historical| {
+            let eta = check_durations.get(&cache_key).map(|&historical| {
                 let remaining = historical.saturating_sub(elapsed);
                 format!(" (~{})", crate::utils::time::format_duration(remaining))
             });

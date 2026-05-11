@@ -8,6 +8,7 @@ use crate::{
 };
 
 use super::{issue::test_issue, pr::test_pr};
+use crate::ticket::TicketStore;
 
 pub fn test_app() -> AppView {
     let config = JiraConfig {
@@ -55,17 +56,18 @@ pub fn test_app() -> AppView {
         confirm_dialog: None,
         pending_selected_issue_key: None,
         pending_prefetch_since: None,
+        ticket_store: TicketStore::default(),
     }
 }
 
 pub fn selected_issue_app() -> AppView {
     let mut app = test_app();
     app.issues.push(test_issue());
-    app.list.display_rows.push(DisplayRow::Issue {
-        index: 0,
+    app.list.display_rows.push(DisplayRow::Ticket {
+        key: app.issues[0].key.clone(),
         depth: 0,
-        child_of: None,
     });
+    app.rebuild_tickets();
     app
 }
 
@@ -75,5 +77,6 @@ pub fn sidebar_app() -> AppView {
     app.animation.spinner_tick = 2;
     app.github_prs.insert(issue_key.clone(), test_pr());
     app.sidebar.detail_loading.insert(issue_key);
+    app.rebuild_tickets();
     app
 }

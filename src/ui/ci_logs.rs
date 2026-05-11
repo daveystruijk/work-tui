@@ -100,10 +100,10 @@ impl CiLogsView {
             return;
         };
 
-        let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+        let Some(issue) = app.selected_ticket() else {
             return;
         };
-        let issue_key = issue.key.clone();
+        let issue_key = issue.issue.key.clone();
 
         let Some(pr) = app.github_prs.get(&issue_key) else {
             return;

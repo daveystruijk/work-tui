@@ -90,9 +90,9 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
     let list_ctx = list::ListRenderContext {
         issues: &app.issues,
         story_children: &app.story_children,
+        ticket_store: &app.ticket_store,
         github_prs: &app.github_prs,
         active_branches: &app.active_branches,
-        repo_entries: &app.repo_entries,
         check_durations: &app.check_durations,
         animation: &app.animation,
         inline_new: inline_new_clone.as_ref(),
@@ -114,7 +114,11 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
     }
 
     // Sidebar
-    let sidebar_ctx = sidebar::SidebarRenderContext { app };
+    let sidebar_ctx = sidebar::SidebarRenderContext {
+        selected_ticket: app.selected_ticket(),
+        animation_tick: app.animation.spinner_tick,
+        check_durations: &app.check_durations,
+    };
     app.sidebar.render(frame, columns[1], &sidebar_ctx);
 
     // Popup overlays

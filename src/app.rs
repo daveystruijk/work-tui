@@ -13,6 +13,7 @@ use crate::{
     cache::{self, Cache},
     config::AppConfig,
     repos::{self, RepoEntry},
+    ticket::{TicketSources, TicketStore},
     ui::{
         CiLogsView, ConfirmDialogView, ImportTasksView, LabelPickerView, ListView, SidebarView,
         StatusBarView, UiAnimationView,
@@ -27,25 +28,20 @@ pub struct RunningAction {
     pub progress: Option<actions::Progress>,
 }
 
-/// A row in the display list — either a story header, an issue, or an inline-new placeholder.
+/// Which visual section a ticket group belongs to in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ListSection {
+    Board,
+    Backlog,
+}
+
+/// A row in the display list.
 #[derive(Debug, Clone)]
 pub enum DisplayRow {
-    /// Visual section divider (e.g. "BOARD", "BACKLOG").
-    SectionHeader { label: String, count: usize },
-    /// A parent story header (not necessarily in the fetched issues list).
-    StoryHeader {
-        key: String,
-        summary: String,
-        depth: u8,
-        /// Which section this header belongs to (`Some(true)` = board, `Some(false)` = backlog, `None` = unsectioned).
-        section: Option<bool>,
-    },
-    /// An actual issue row.
-    Issue {
-        index: usize,
-        depth: u8,
-        child_of: Option<String>,
-    },
+    /// Visual section divider.
+    SectionHeader { section: ListSection, count: usize },
+    /// A ticket row identified by its issue key.
+    Ticket { key: String, depth: u8 },
     /// Inline new-issue placeholder being edited in the list view.
     InlineNew { depth: u8 },
     /// Spinner row shown while children are being fetched.
@@ -119,6 +115,8 @@ pub struct AppView {
     /// When set, a prefetch of the selected PR detail is scheduled after a short delay.
     /// This avoids firing fetches while the user is scrolling quickly through the list.
     pub pending_prefetch_since: Option<std::time::Instant>,
+    /// Enriched ticket data combining issues, PRs, repos, and active branches.
+    pub ticket_store: TicketStore,
 }
 
 impl AppView {
@@ -157,6 +155,7 @@ impl AppView {
             confirm_dialog: None,
             pending_selected_issue_key: None,
             pending_prefetch_since: None,
+            ticket_store: TicketStore::default(),
         };
 
         let cached = cache::load();
@@ -388,6 +387,7 @@ impl AppView {
             Message::GithubPrDetail(_, _) => {}
             Message::ActiveBranches(active) => {
                 self.active_branches = active;
+                self.rebuild_tickets();
             }
             Message::PickedUp(result) => {
                 if let Ok(pickup) = result {
@@ -493,6 +493,7 @@ impl AppView {
                 } else {
                     selection_restore_keys.first().cloned()
                 };
+                self.rebuild_tickets();
                 self.refetch_story_children(&expanded_story_keys);
                 self.spawn_active_branches();
                 self.spawn_github_prs();
@@ -526,6 +527,7 @@ impl AppView {
             .handle_pr_refresh(&mut self.github_prs, &previous_prs);
         self.record_check_durations();
         self.save_cache();
+        self.rebuild_tickets();
         self.spawn_auto_label();
         self.github_loading = false;
         self.prefetch_selected_pr_detail();
@@ -624,13 +626,14 @@ impl AppView {
             if crate::issue::is_expandable(child) {
                 self.list
                     .collapsed_stories
-                    .insert((child.key.clone(), Some(true)));
+                    .insert((child.key.clone(), ListSection::Board));
                 self.list
                     .collapsed_stories
-                    .insert((child.key.clone(), Some(false)));
+                    .insert((child.key.clone(), ListSection::Backlog));
             }
         }
         self.story_children.insert(parent_key, children);
+        self.rebuild_tickets();
         self.list
             .rebuild_display_rows(&self.issues, &self.story_children);
         self.restore_pending_selection();
@@ -644,11 +647,11 @@ impl AppView {
                 !self
                     .list
                     .collapsed_stories
-                    .contains(&((*key).clone(), Some(true)))
+                    .contains(&((*key).clone(), ListSection::Board))
                     || !self
                         .list
                         .collapsed_stories
-                        .contains(&((*key).clone(), Some(false)))
+                        .contains(&((*key).clone(), ListSection::Backlog))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -660,10 +663,10 @@ impl AppView {
         for key in story_keys {
             self.list
                 .collapsed_stories
-                .remove(&(key.clone(), Some(true)));
+                .remove(&(key.clone(), ListSection::Board));
             self.list
                 .collapsed_stories
-                .remove(&(key.clone(), Some(false)));
+                .remove(&(key.clone(), ListSection::Backlog));
             self.list.start_loading_children(key);
         }
     }
@@ -795,6 +798,25 @@ impl AppView {
             .collect()
     }
 
+    /// Returns the Ticket for the currently selected display row, if any.
+    pub fn selected_ticket(&self) -> Option<&crate::ticket::Ticket> {
+        let issue = self
+            .list
+            .selected_issue(&self.issues, &self.story_children)?;
+        self.ticket_store.get(&issue.key)
+    }
+
+    /// Rebuild the ticket store from current app state.
+    pub fn rebuild_tickets(&mut self) {
+        self.ticket_store = TicketStore::from_sources(&TicketSources {
+            issues: &self.issues,
+            story_children: &self.story_children,
+            github_prs: &self.github_prs,
+            active_branches: &self.active_branches,
+            repo_entries: &self.repo_entries,
+        });
+    }
+
     pub fn tick_spinner(&mut self) {
         self.animation.tick_spinner();
     }
@@ -846,7 +868,7 @@ mod tests {
         fixtures::{test_app, test_issue},
     };
 
-    use super::DisplayRow;
+    use super::{DisplayRow, ListSection};
 
     #[test]
     fn expanded_loaded_story_keys_only_keeps_open_story_rows() {
@@ -857,10 +879,10 @@ mod tests {
             .insert("TEST-3".to_string(), vec![ticket_issue("TEST-4", None)]);
         app.list
             .collapsed_stories
-            .insert(("TEST-3".to_string(), Some(true)));
+            .insert(("TEST-3".to_string(), ListSection::Board));
         app.list
             .collapsed_stories
-            .insert(("TEST-3".to_string(), Some(false)));
+            .insert(("TEST-3".to_string(), ListSection::Backlog));
 
         assert_eq!(app.expanded_loaded_story_keys(), vec!["TEST-1".to_string()]);
     }
@@ -876,10 +898,10 @@ mod tests {
             .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
         app.list
             .collapsed_stories
-            .remove(&("TEST-1".to_string(), Some(true)));
+            .remove(&("TEST-1".to_string(), ListSection::Board));
         app.list
             .collapsed_stories
-            .remove(&("TEST-1".to_string(), Some(false)));
+            .remove(&("TEST-1".to_string(), ListSection::Backlog));
 
         let expanded_story_keys = app.expanded_loaded_story_keys();
 
@@ -893,15 +915,10 @@ mod tests {
         assert!(matches!(
             app.list.display_rows.as_slice(),
             [
-                DisplayRow::SectionHeader { label, .. },
-                DisplayRow::StoryHeader {
-                    key,
-                    summary,
-                    depth: 0,
-                    section,
-                },
-                DisplayRow::Issue { index: 1, depth: 1, .. },
-            ] if label == "BOARD" && key == "TEST-1" && summary == "Story parent" && section == &Some(true)
+                DisplayRow::SectionHeader { section: ListSection::Board, .. },
+                DisplayRow::Ticket { key, depth: 0 },
+                DisplayRow::Ticket { key: child_key, depth: 1 },
+            ] if key == "TEST-1" && child_key == "TEST-3"
         ));
     }
 
@@ -929,10 +946,10 @@ mod tests {
         );
         app.list
             .collapsed_stories
-            .remove(&("TEST-1".to_string(), Some(true)));
+            .remove(&("TEST-1".to_string(), ListSection::Board));
         app.list
             .collapsed_stories
-            .remove(&("TEST-1".to_string(), Some(false)));
+            .remove(&("TEST-1".to_string(), ListSection::Backlog));
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
         app.list.selected_index = 1;
@@ -986,10 +1003,9 @@ mod tests {
             .fields
             .insert("labels".to_string(), json!(["existing-label"]));
         app.issues = vec![issue];
-        app.list.display_rows.push(DisplayRow::Issue {
-            index: 0,
+        app.list.display_rows.push(DisplayRow::Ticket {
+            key: "TEST-1".to_string(),
             depth: 0,
-            child_of: None,
         });
 
         app.handle_message(Message::LabelAdded(Ok((

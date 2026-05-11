@@ -13,7 +13,7 @@ pub struct Cache {
     pub check_durations: HashMap<String, u64>,
     /// Collapsed story keys with their section context.
     #[serde(default)]
-    pub collapsed_stories: HashSet<(String, Option<bool>)>,
+    pub collapsed_stories: HashSet<(String, crate::app::ListSection)>,
 }
 
 fn cache_path() -> Option<PathBuf> {

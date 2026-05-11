@@ -20,9 +20,9 @@ use crate::apis::{
     github::{CheckStatus, MergeableState, PrInfo, ReviewDecision},
     jira::Issue,
 };
-use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus};
-use crate::repos::RepoEntry;
+use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus, ListSection};
 use crate::theme::Theme;
+use crate::ticket::Ticket;
 use crate::ui::confirm_dialog::{ConfirmAction, ConfirmDialogView};
 use crate::ui::{ImportTasksView, LabelPickerView};
 use tokio::process::Command;
@@ -49,7 +49,7 @@ fn has_children_in_section(
     issues: &[Issue],
     parent_groups: &HashMap<String, (String, Vec<usize>)>,
     story_children: &HashMap<String, Vec<Issue>>,
-    section_filter: Option<bool>,
+    section: ListSection,
 ) -> bool {
     let child_in_section = |issue: &Issue| {
         let expandable = crate::issue::is_expandable(issue)
@@ -61,13 +61,12 @@ fn has_children_in_section(
                 issues,
                 parent_groups,
                 story_children,
-                section_filter,
+                section,
             );
         }
-        match section_filter {
-            Some(true) => !is_backlog_status(issue),
-            Some(false) => is_backlog_status(issue),
-            None => true,
+        match section {
+            ListSection::Board => !is_backlog_status(issue),
+            ListSection::Backlog => is_backlog_status(issue),
         }
     };
 
@@ -95,7 +94,7 @@ mod tests {
     use crate::ui::render;
     use crate::{
         apis::jira::Issue,
-        app::DisplayRow,
+        app::{DisplayRow, ListSection},
         fixtures::{render_to_string, selected_issue_app, test_issue},
     };
 
@@ -138,14 +137,14 @@ mod tests {
         // Board stories with children default to expanded
         assert!(!list
             .collapsed_stories
-            .contains(&("TEST-1".to_string(), Some(true))));
+            .contains(&("TEST-1".to_string(), ListSection::Board)));
         assert!(matches!(
             list.display_rows.as_slice(),
             [
-                DisplayRow::SectionHeader { label, .. },
-                DisplayRow::StoryHeader { key, depth: 0, section, .. },
-                DisplayRow::Issue { index: 1, depth: 1, .. },
-            ] if label == "BOARD" && key == "TEST-1" && section == &Some(true)
+                DisplayRow::SectionHeader { section: ListSection::Board, .. },
+                DisplayRow::Ticket { key, depth: 0 },
+                DisplayRow::Ticket { key: child_key, depth: 1 },
+            ] if key == "TEST-1" && child_key == "TASK-1"
         ));
     }
 
@@ -162,14 +161,14 @@ mod tests {
         // Story with known children in parent_groups starts expanded in BACKLOG.
         assert!(!list
             .collapsed_stories
-            .contains(&("TEST-1".to_string(), Some(false))));
+            .contains(&("TEST-1".to_string(), ListSection::Backlog)));
         assert!(matches!(
             list.display_rows.as_slice(),
             [
-                DisplayRow::SectionHeader { label, .. },
-                DisplayRow::StoryHeader { key, depth: 0, section, .. },
-                DisplayRow::Issue { index: 1, depth: 1, .. },
-            ] if label == "BACKLOG" && key == "TEST-1" && section == &Some(false)
+                DisplayRow::SectionHeader { section: ListSection::Backlog, .. },
+                DisplayRow::Ticket { key, depth: 0 },
+                DisplayRow::Ticket { key: child_key, depth: 1 },
+            ] if key == "TEST-1" && child_key == "TASK-1"
         ));
     }
 
@@ -195,11 +194,11 @@ mod tests {
         assert!(matches!(
             &list.display_rows[..4],
             [
-                DisplayRow::SectionHeader { label, .. },
-                DisplayRow::StoryHeader { key: epic_key, depth: 0, section: epic_section, .. },
-                DisplayRow::StoryHeader { key: story_key, depth: 1, section: story_section, .. },
-                DisplayRow::Issue { index: 2, depth: 2, child_of: None },
-            ] if label == "BOARD" && epic_key == "EPIC-1" && story_key == "STORY-1" && epic_section == &Some(true) && story_section == &Some(true)
+                DisplayRow::SectionHeader { section: ListSection::Board, .. },
+                DisplayRow::Ticket { key: epic_key, depth: 0 },
+                DisplayRow::Ticket { key: story_key, depth: 1 },
+                DisplayRow::Ticket { key: task_key, depth: 2 },
+            ] if epic_key == "EPIC-1" && story_key == "STORY-1" && task_key == "TASK-1"
         ));
     }
 
@@ -351,40 +350,47 @@ mod tests {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> String {
+        let next_row_depth = |i: usize| -> Option<u8> {
+            rows.get(i + 1).and_then(|r| match r {
+                DisplayRow::Ticket { depth, .. }
+                | DisplayRow::Loading { depth }
+                | DisplayRow::Empty { depth } => Some(*depth),
+                _ => None,
+            })
+        };
+
         let mut lines = Vec::new();
-        for row in rows {
+        let mut current_section = None;
+        for (i, row) in rows.iter().enumerate() {
             match row {
-                DisplayRow::SectionHeader { label, count } => {
+                DisplayRow::SectionHeader { section, count } => {
+                    current_section = Some(*section);
+                    let label = match section {
+                        ListSection::Board => "BOARD",
+                        ListSection::Backlog => "BACKLOG",
+                    };
                     lines.push(format!("── {label} ({count}) ──"));
                 }
-                DisplayRow::StoryHeader {
-                    key,
-                    summary,
-                    depth,
-                    section,
-                } => {
+                DisplayRow::Ticket { key, depth } => {
                     let indent = "  ".repeat(*depth as usize);
-                    let section_label = match section {
-                        Some(true) => "board",
-                        Some(false) => "backlog",
-                        None => "none",
-                    };
-                    lines.push(format!("{indent}▸ {key} {summary} [{section_label}]"));
-                }
-                DisplayRow::Issue {
-                    index,
-                    depth,
-                    child_of,
-                } => {
-                    let indent = "  ".repeat(*depth as usize);
-                    let issue = match child_of {
-                        Some(parent_key) => &story_children[parent_key][*index],
-                        None => &issues[*index],
-                    };
-                    let key = &issue.key;
-                    let summary = issue.summary().unwrap_or_default();
-                    let status = issue.status().map(|s| s.name).unwrap_or_default();
-                    lines.push(format!("{indent}• {key} {summary} [{status}]"));
+                    let issue = super::find_issue_by_key(issues, story_children, key);
+                    let is_group_header = next_row_depth(i).map(|d| d > *depth).unwrap_or(false);
+                    if is_group_header {
+                        let summary = issue
+                            .map(|i| i.summary().unwrap_or_default())
+                            .unwrap_or_default();
+                        let section_label = match current_section {
+                            Some(ListSection::Board) => "board",
+                            Some(ListSection::Backlog) => "backlog",
+                            None => "none",
+                        };
+                        lines.push(format!("{indent}▸ {key} {summary} [{section_label}]"));
+                    } else {
+                        let issue = issue.unwrap_or_else(|| panic!("missing issue for key {key}"));
+                        let summary = issue.summary().unwrap_or_default();
+                        let status = issue.status().map(|s| s.name).unwrap_or_default();
+                        lines.push(format!("{indent}• {key} {summary} [{status}]"));
+                    }
                 }
                 DisplayRow::Loading { depth } => {
                     let indent = "  ".repeat(*depth as usize);
@@ -707,7 +713,7 @@ mod tests {
         let issue_rows: Vec<_> = list
             .display_rows
             .iter()
-            .filter(|r| matches!(r, DisplayRow::Issue { .. }))
+            .filter(|r| matches!(r, DisplayRow::Ticket { .. }))
             .collect();
         assert!(
             issue_rows.is_empty(),
@@ -830,9 +836,7 @@ mod tests {
 
     fn story_header_count(rows: &[DisplayRow], key: &str) -> usize {
         rows.iter()
-            .filter(
-                |row| matches!(row, DisplayRow::StoryHeader { key: row_key, .. } if row_key == key),
-            )
+            .filter(|row| matches!(row, DisplayRow::Ticket { key: row_key, .. } if row_key == key))
             .count()
     }
 }
@@ -841,9 +845,9 @@ mod tests {
 pub struct ListRenderContext<'a> {
     pub issues: &'a [Issue],
     pub story_children: &'a HashMap<String, Vec<Issue>>,
+    pub ticket_store: &'a crate::ticket::TicketStore,
     pub github_prs: &'a HashMap<String, PrInfo>,
     pub active_branches: &'a HashMap<String, String>,
-    pub repo_entries: &'a [RepoEntry],
     pub check_durations: &'a HashMap<String, u64>,
     pub animation: &'a UiAnimationView,
     pub inline_new: Option<&'a InlineNewView>,
@@ -858,16 +862,16 @@ pub struct ListView {
     pub selected_index: usize,
     pub display_rows: Vec<DisplayRow>,
     pub search_filter: String,
-    pub collapsed_stories: HashSet<(String, Option<bool>)>,
+    pub collapsed_stories: HashSet<(String, ListSection)>,
     pub inline_new: Option<InlineNewView>,
     pub pending_import_keys: HashSet<String>,
 }
 
 impl ListView {
-    fn has_story_header(&self, key: &str) -> bool {
-        self.display_rows.iter().any(
-            |row| matches!(row, DisplayRow::StoryHeader { key: row_key, .. } if row_key == key),
-        )
+    fn has_ticket_row(&self, key: &str) -> bool {
+        self.display_rows
+            .iter()
+            .any(|row| matches!(row, DisplayRow::Ticket { key: row_key, .. } if row_key == key))
     }
 
     pub fn handle_message(&mut self, msg: &Message) {
@@ -917,17 +921,7 @@ impl ListView {
         story_children: &'a HashMap<String, Vec<Issue>>,
     ) -> Option<&'a Issue> {
         match row {
-            DisplayRow::Issue {
-                index,
-                child_of: None,
-                ..
-            } => issues.get(*index),
-            DisplayRow::Issue {
-                index,
-                child_of: Some(parent_key),
-                ..
-            } => story_children.get(parent_key)?.get(*index),
-            DisplayRow::StoryHeader { key, .. } => find_issue_by_key(issues, story_children, key),
+            DisplayRow::Ticket { key, .. } => find_issue_by_key(issues, story_children, key),
             DisplayRow::InlineNew { .. }
             | DisplayRow::SectionHeader { .. }
             | DisplayRow::Loading { .. }
@@ -942,9 +936,12 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> Option<String> {
-        let (key, section) = match self.display_rows.get(self.selected_index) {
-            Some(DisplayRow::StoryHeader { key, section, .. }) => (key.clone(), *section),
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return None,
+        };
+        let Some(section) = self.section_for_row(self.selected_index) else {
+            return None;
         };
         let needs_fetch = if self.collapsed_stories.remove(&(key.clone(), section)) {
             self.maybe_needs_fetch(&key, story_children)
@@ -963,9 +960,12 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> Option<String> {
-        let (key, section) = match self.display_rows.get(self.selected_index) {
-            Some(DisplayRow::StoryHeader { key, section, .. }) => (key.clone(), *section),
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return None,
+        };
+        let Some(section) = self.section_for_row(self.selected_index) else {
+            return None;
         };
         if !self.collapsed_stories.remove(&(key.clone(), section)) {
             return None;
@@ -981,9 +981,12 @@ impl ListView {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> bool {
-        let (key, section) = match self.display_rows.get(self.selected_index) {
-            Some(DisplayRow::StoryHeader { key, section, .. }) => (key.clone(), *section),
+        let key = match self.display_rows.get(self.selected_index) {
+            Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return false,
+        };
+        let Some(section) = self.section_for_row(self.selected_index) else {
+            return false;
         };
         if self.collapsed_stories.contains(&(key.clone(), section)) {
             return false;
@@ -1004,26 +1007,36 @@ impl ListView {
         Some(key.to_string())
     }
 
+    /// Derive the section a row belongs to from the nearest preceding SectionHeader.
+    fn section_for_row(&self, row_index: usize) -> Option<ListSection> {
+        self.display_rows[..=row_index]
+            .iter()
+            .rev()
+            .find_map(|row| match row {
+                DisplayRow::SectionHeader { section, .. } => Some(*section),
+                _ => None,
+            })
+    }
+
     /// Returns the story key and depth if the current selection is inside a
     /// story group.
     fn enclosing_story_key_and_depth(&self) -> Option<(String, u8)> {
         let current_depth = match &self.display_rows.get(self.selected_index)? {
-            DisplayRow::Issue { depth, .. }
+            DisplayRow::Ticket { depth, .. }
             | DisplayRow::InlineNew { depth }
             | DisplayRow::Loading { depth }
             | DisplayRow::Empty { depth } => *depth,
             DisplayRow::SectionHeader { .. } => return None,
-            DisplayRow::StoryHeader { .. } => return None,
         };
         if current_depth == 0 {
             return None;
         }
         for i in (0..self.selected_index).rev() {
             match &self.display_rows[i] {
-                DisplayRow::StoryHeader { key, depth, .. } if *depth < current_depth => {
+                DisplayRow::Ticket { key, depth, .. } if *depth < current_depth => {
                     return Some((key.clone(), *depth));
                 }
-                DisplayRow::Issue { depth: 0, .. } => return None,
+                DisplayRow::Ticket { depth: 0, .. } => return None,
                 _ => continue,
             }
         }
@@ -1032,7 +1045,7 @@ impl ListView {
 
     /// Returns the story key and its depth for inline creation.
     fn selected_story_or_enclosing(&self) -> Option<(String, u8)> {
-        if let Some(DisplayRow::StoryHeader { key, depth, .. }) =
+        if let Some(DisplayRow::Ticket { key, depth, .. }) =
             self.display_rows.get(self.selected_index)
         {
             return Some((key.clone(), *depth));
@@ -1099,8 +1112,7 @@ impl ListView {
     /// Find the last row index belonging to the story group that contains `from`.
     fn find_story_group_end(&self, from: usize) -> usize {
         let base_depth = match &self.display_rows[from] {
-            DisplayRow::StoryHeader { depth, .. }
-            | DisplayRow::Issue { depth, .. }
+            DisplayRow::Ticket { depth, .. }
             | DisplayRow::InlineNew { depth }
             | DisplayRow::Loading { depth }
             | DisplayRow::Empty { depth } => *depth,
@@ -1109,8 +1121,7 @@ impl ListView {
         let mut end = from;
         for i in (from + 1)..self.display_rows.len() {
             let row_depth = match &self.display_rows[i] {
-                DisplayRow::StoryHeader { depth, .. }
-                | DisplayRow::Issue { depth, .. }
+                DisplayRow::Ticket { depth, .. }
                 | DisplayRow::InlineNew { depth }
                 | DisplayRow::Loading { depth }
                 | DisplayRow::Empty { depth } => *depth,
@@ -1133,12 +1144,12 @@ impl ListView {
                     && row_index > 0
                     && matches!(
                         self.display_rows.get(row_index - 1),
-                        Some(DisplayRow::StoryHeader { .. })
+                        Some(DisplayRow::Ticket { .. })
                     )
                     && !matches!(
                         self.display_rows.get(row_index + 1),
                         Some(
-                            DisplayRow::Issue { depth: d, .. }
+                            DisplayRow::Ticket { depth: d, .. }
                             | DisplayRow::Loading { depth: d }
                             | DisplayRow::Empty { depth: d }
                         ) if *d > 0
@@ -1177,23 +1188,7 @@ impl ListView {
         self.rebuild_display_rows(issues, story_children);
         if let Some(key) = selected_key {
             if let Some(position) = self.display_rows.iter().position(|row| match row {
-                DisplayRow::Issue {
-                    index,
-                    child_of: None,
-                    ..
-                } => issues.get(*index).map(|i| &i.key) == Some(&key),
-                DisplayRow::Issue {
-                    index,
-                    child_of: Some(parent_key),
-                    ..
-                } => {
-                    story_children
-                        .get(parent_key)
-                        .and_then(|children| children.get(*index))
-                        .map(|i| &i.key)
-                        == Some(&key)
-                }
-                DisplayRow::StoryHeader { key: k, .. } => *k == key,
+                DisplayRow::Ticket { key: k, .. } => *k == key,
                 _ => false,
             }) {
                 self.selected_index = position;
@@ -1339,7 +1334,6 @@ impl ListView {
             Standalone(usize),
             StoryGroup {
                 key: String,
-                summary: String,
                 parent_issue_idx: Option<usize>,
             },
         }
@@ -1353,7 +1347,6 @@ impl ListView {
                 emitted_parents.insert(issue_key.clone());
                 top_levels.push(TopLevel::StoryGroup {
                     key: issue_key.clone(),
-                    summary: issues[idx].summary().unwrap_or_default(),
                     parent_issue_idx: Some(idx),
                 });
             } else {
@@ -1361,13 +1354,12 @@ impl ListView {
             }
         }
 
-        for (parent_key, (summary, _)) in &parent_groups {
+        for (parent_key, _) in &parent_groups {
             if !root_group_keys.contains(parent_key) || emitted_parents.contains(parent_key) {
                 continue;
             }
             top_levels.push(TopLevel::StoryGroup {
                 key: parent_key.clone(),
-                summary: summary.clone(),
                 parent_issue_idx: None,
             });
         }
@@ -1443,7 +1435,7 @@ impl ListView {
         let mut rows = Vec::new();
         let mut rendered_keys = HashSet::new();
 
-        for (label, section_filter) in [("BOARD", Some(true)), ("BACKLOG", Some(false))] {
+        for section in [ListSection::Board, ListSection::Backlog] {
             let section_top_levels: Vec<&TopLevel> = top_levels
                 .iter()
                 .filter(|entry| match entry {
@@ -1463,10 +1455,9 @@ impl ListView {
                                     .map(|m| m.contains(idx))
                                     .unwrap_or(false)
                             {
-                                return match section_filter {
-                                    Some(true) => !backlog,
-                                    Some(false) => backlog,
-                                    None => true,
+                                return match section {
+                                    ListSection::Board => !backlog,
+                                    ListSection::Backlog => backlog,
                                 };
                             }
                             return has_children_in_section(
@@ -1474,13 +1465,12 @@ impl ListView {
                                 issues,
                                 &parent_groups,
                                 story_children,
-                                section_filter,
+                                section,
                             );
                         }
-                        match section_filter {
-                            Some(true) => !backlog,
-                            Some(false) => backlog,
-                            None => true,
+                        match section {
+                            ListSection::Board => !backlog,
+                            ListSection::Backlog => backlog,
                         }
                     }
                     TopLevel::StoryGroup { key, .. } => {
@@ -1494,7 +1484,7 @@ impl ListView {
                             issues,
                             &parent_groups,
                             story_children,
-                            section_filter,
+                            section,
                         ) {
                             return true;
                         }
@@ -1506,10 +1496,9 @@ impl ListView {
                                     .unwrap_or(false)
                                 {
                                     let backlog = is_backlog_status(&issues[parent_idx]);
-                                    return match section_filter {
-                                        Some(true) => !backlog,
-                                        Some(false) => backlog,
-                                        None => true,
+                                    return match section {
+                                        ListSection::Board => !backlog,
+                                        ListSection::Backlog => backlog,
                                     };
                                 }
                             }
@@ -1524,10 +1513,7 @@ impl ListView {
             }
 
             let section_header_index = rows.len();
-            rows.push(DisplayRow::SectionHeader {
-                label: label.to_string(),
-                count: 0,
-            });
+            rows.push(DisplayRow::SectionHeader { section, count: 0 });
             rendered_keys.clear();
 
             for entry in section_top_levels {
@@ -1539,32 +1525,28 @@ impl ListView {
                             continue;
                         }
                         let backlog = is_backlog_status(issue);
-                        let belongs = match section_filter {
-                            Some(true) => !backlog,
-                            Some(false) => backlog,
-                            None => true,
+                        let belongs = match section {
+                            ListSection::Board => !backlog,
+                            ListSection::Backlog => backlog,
                         };
                         let expandable = crate::issue::is_expandable(issue)
                             || story_children.contains_key(&issue_key)
                             || parent_groups.contains_key(&issue_key);
                         if expandable {
-                            if section_filter != Some(true)
+                            if section != ListSection::Board
                                 && !story_children.contains_key(&issue_key)
                                 && !self.loading_children.contains(&issue_key)
-                                && !self.has_story_header(&issue_key)
+                                && !self.has_ticket_row(&issue_key)
                             {
-                                self.collapsed_stories
-                                    .insert((issue_key.clone(), section_filter));
+                                self.collapsed_stories.insert((issue_key.clone(), section));
                             }
-                            rows.push(DisplayRow::StoryHeader {
+                            rows.push(DisplayRow::Ticket {
                                 key: issue_key.clone(),
-                                summary: issue.summary().unwrap_or_default(),
                                 depth: 0,
-                                section: section_filter,
                             });
                             if !self
                                 .collapsed_stories
-                                .contains(&(issue_key.clone(), section_filter))
+                                .contains(&(issue_key.clone(), section))
                             {
                                 self.append_nested_children(
                                     &issue_key,
@@ -1574,48 +1556,41 @@ impl ListView {
                                     &parent_groups,
                                     story_children,
                                     &mut rendered_keys,
-                                    section_filter,
+                                    section,
                                 );
                             }
                         } else if belongs {
-                            rows.push(DisplayRow::Issue {
-                                index: *idx,
+                            rows.push(DisplayRow::Ticket {
+                                key: issue.key.clone(),
                                 depth: 0,
-                                child_of: None,
                             });
                         }
                     }
                     TopLevel::StoryGroup {
                         key,
-                        summary,
                         parent_issue_idx,
                     } => {
                         if !rendered_keys.insert(key.clone()) {
                             continue;
                         }
-                        if section_filter != Some(true)
+                        if section != ListSection::Board
                             && !has_children_in_section(
                                 key,
                                 issues,
                                 &parent_groups,
                                 story_children,
-                                section_filter,
+                                section,
                             )
                             && !self.loading_children.contains(key.as_str())
-                            && !self.has_story_header(key)
+                            && !self.has_ticket_row(key)
                         {
-                            self.collapsed_stories.insert((key.clone(), section_filter));
+                            self.collapsed_stories.insert((key.clone(), section));
                         }
-                        rows.push(DisplayRow::StoryHeader {
+                        rows.push(DisplayRow::Ticket {
                             key: key.clone(),
-                            summary: summary.clone(),
                             depth: 0,
-                            section: section_filter,
                         });
-                        if !self
-                            .collapsed_stories
-                            .contains(&(key.clone(), section_filter))
-                        {
+                        if !self.collapsed_stories.contains(&(key.clone(), section)) {
                             let _ = parent_issue_idx;
                             self.append_nested_children(
                                 &key,
@@ -1625,17 +1600,31 @@ impl ListView {
                                 &parent_groups,
                                 story_children,
                                 &mut rendered_keys,
-                                section_filter,
+                                section,
                             );
                         }
                     }
                 }
             }
 
-            // Count issue rows in this section and update the header.
-            let section_issue_count = rows[section_header_index + 1..]
+            // Count leaf ticket rows in this section (exclude group headers).
+            let section_rows = &rows[section_header_index + 1..];
+            let section_issue_count = section_rows
                 .iter()
-                .filter(|row| matches!(row, DisplayRow::Issue { .. }))
+                .enumerate()
+                .filter(|(i, row)| {
+                    let DisplayRow::Ticket { depth, .. } = row else {
+                        return false;
+                    };
+                    // A ticket is a leaf if the next row is NOT deeper.
+                    let next_deeper = section_rows.get(i + 1).map_or(false, |next| match next {
+                        DisplayRow::Ticket { depth: d, .. }
+                        | DisplayRow::Loading { depth: d }
+                        | DisplayRow::Empty { depth: d } => *d > *depth,
+                        _ => false,
+                    });
+                    !next_deeper
+                })
                 .count();
             if let DisplayRow::SectionHeader { count, .. } = &mut rows[section_header_index] {
                 *count = section_issue_count;
@@ -1659,7 +1648,7 @@ impl ListView {
         parent_groups: &HashMap<String, (String, Vec<usize>)>,
         story_children: &HashMap<String, Vec<Issue>>,
         rendered_keys: &mut HashSet<String>,
-        section_filter: Option<bool>,
+        section: ListSection,
     ) {
         let mut rendered_child = false;
 
@@ -1677,17 +1666,17 @@ impl ListView {
                         issues,
                         parent_groups,
                         story_children,
-                        section_filter,
+                        section,
                     ) {
                         rendered_keys.remove(&child_key);
                         continue;
                     }
-                } else if let Some(filter) = section_filter {
-                    if filter && is_backlog_status(child) {
-                        rendered_keys.remove(&child.key);
-                        continue;
-                    }
-                    if !filter && !is_backlog_status(child) {
+                } else {
+                    let wrong_section = match section {
+                        ListSection::Board => is_backlog_status(child),
+                        ListSection::Backlog => !is_backlog_status(child),
+                    };
+                    if wrong_section {
                         rendered_keys.remove(&child.key);
                         continue;
                     }
@@ -1697,29 +1686,26 @@ impl ListView {
                 }
                 rendered_child = true;
                 if expandable {
-                    if section_filter != Some(true)
+                    if section != ListSection::Board
                         && !has_children_in_section(
                             &child_key,
                             issues,
                             parent_groups,
                             story_children,
-                            section_filter,
+                            section,
                         )
                         && !self.loading_children.contains(&child_key)
-                        && !self.has_story_header(&child_key)
+                        && !self.has_ticket_row(&child_key)
                     {
-                        self.collapsed_stories
-                            .insert((child_key.clone(), section_filter));
+                        self.collapsed_stories.insert((child_key.clone(), section));
                     }
-                    rows.push(DisplayRow::StoryHeader {
+                    rows.push(DisplayRow::Ticket {
                         key: child_key.clone(),
-                        summary: child.summary().unwrap_or_default(),
                         depth,
-                        section: section_filter,
                     });
                     if !self
                         .collapsed_stories
-                        .contains(&(child_key.clone(), section_filter))
+                        .contains(&(child_key.clone(), section))
                     {
                         self.append_nested_children(
                             &child_key,
@@ -1729,21 +1715,20 @@ impl ListView {
                             parent_groups,
                             story_children,
                             rendered_keys,
-                            section_filter,
+                            section,
                         );
                     }
                 } else {
-                    rows.push(DisplayRow::Issue {
-                        index: idx,
+                    rows.push(DisplayRow::Ticket {
+                        key: child.key.clone(),
                         depth,
-                        child_of: None,
                     });
                 }
             }
         }
 
         if let Some(children) = story_children.get(parent_key) {
-            for (idx, child) in children.iter().enumerate() {
+            for child in children.iter() {
                 let child_key = child.key.clone();
                 let expandable = crate::issue::is_expandable(child)
                     || story_children.contains_key(&child_key)
@@ -1754,17 +1739,17 @@ impl ListView {
                         issues,
                         parent_groups,
                         story_children,
-                        section_filter,
+                        section,
                     ) {
                         rendered_keys.remove(&child_key);
                         continue;
                     }
-                } else if let Some(filter) = section_filter {
-                    if filter && is_backlog_status(child) {
-                        rendered_keys.remove(&child.key);
-                        continue;
-                    }
-                    if !filter && !is_backlog_status(child) {
+                } else {
+                    let wrong_section = match section {
+                        ListSection::Board => is_backlog_status(child),
+                        ListSection::Backlog => !is_backlog_status(child),
+                    };
+                    if wrong_section {
                         rendered_keys.remove(&child.key);
                         continue;
                     }
@@ -1774,29 +1759,26 @@ impl ListView {
                 }
                 rendered_child = true;
                 if expandable {
-                    if section_filter != Some(true)
+                    if section != ListSection::Board
                         && !has_children_in_section(
                             &child_key,
                             issues,
                             parent_groups,
                             story_children,
-                            section_filter,
+                            section,
                         )
                         && !self.loading_children.contains(&child_key)
-                        && !self.has_story_header(&child_key)
+                        && !self.has_ticket_row(&child_key)
                     {
-                        self.collapsed_stories
-                            .insert((child_key.clone(), section_filter));
+                        self.collapsed_stories.insert((child_key.clone(), section));
                     }
-                    rows.push(DisplayRow::StoryHeader {
+                    rows.push(DisplayRow::Ticket {
                         key: child_key.clone(),
-                        summary: child.summary().unwrap_or_default(),
                         depth,
-                        section: section_filter,
                     });
                     if !self
                         .collapsed_stories
-                        .contains(&(child_key.clone(), section_filter))
+                        .contains(&(child_key.clone(), section))
                     {
                         self.append_nested_children(
                             &child_key,
@@ -1806,14 +1788,13 @@ impl ListView {
                             parent_groups,
                             story_children,
                             rendered_keys,
-                            section_filter,
+                            section,
                         );
                     }
                 } else {
-                    rows.push(DisplayRow::Issue {
-                        index: idx,
+                    rows.push(DisplayRow::Ticket {
+                        key: child.key.clone(),
                         depth,
-                        child_of: Some(parent_key.to_string()),
                     });
                 }
             }
@@ -1827,7 +1808,7 @@ impl ListView {
         // Only suppress placeholders when children data has actually been loaded.
         let children_data_exists =
             parent_groups.contains_key(parent_key) || story_children.contains_key(parent_key);
-        if section_filter.is_some() && children_data_exists {
+        if matches!(section, ListSection::Backlog) && children_data_exists {
             return;
         }
 
@@ -1961,42 +1942,63 @@ impl ListView {
     ) {
         self.area_height = area.height.saturating_sub(1);
 
-        let row_data: Vec<(CellMap, Style)> = self
-            .display_rows
-            .iter()
-            .enumerate()
-            .map(|(row_idx, display_row)| match display_row {
-                DisplayRow::StoryHeader {
-                    key,
-                    summary,
-                    depth,
-                    section,
-                } => {
-                    let collapsed = self.collapsed_stories.contains(&(key.clone(), *section));
-                    let has_pending_import = self.pending_import_keys.contains(key);
-                    story_header_row(key, summary, row_idx, collapsed, *depth, has_pending_import)
+        let mut current_section: Option<ListSection> = None;
+        let mut row_data: Vec<(CellMap, Style)> = Vec::with_capacity(self.display_rows.len());
+        for (row_idx, display_row) in self.display_rows.iter().enumerate() {
+            let cells = match display_row {
+                DisplayRow::SectionHeader { section, count } => {
+                    current_section = Some(*section);
+                    section_header_row(section, *count, area.width)
                 }
-                DisplayRow::Issue {
-                    index,
-                    depth,
-                    child_of,
-                } => {
-                    let issue = match child_of {
-                        Some(parent_key) => &ctx.story_children[parent_key][*index],
-                        None => &ctx.issues[*index],
-                    };
-                    issue_row(ctx, &self.pending_import_keys, issue, row_idx, *depth)
-                }
-                DisplayRow::SectionHeader { label, count } => {
-                    section_header_row(label, *count, area.width)
+                DisplayRow::Ticket { key, depth } => {
+                    let is_group_header = self
+                        .display_rows
+                        .get(row_idx + 1)
+                        .map(|next| match next {
+                            DisplayRow::Ticket { depth: d, .. }
+                            | DisplayRow::Loading { depth: d }
+                            | DisplayRow::Empty { depth: d } => *d > *depth,
+                            _ => false,
+                        })
+                        .unwrap_or(false);
+                    if is_group_header {
+                        let collapsed = current_section
+                            .map(|s| self.collapsed_stories.contains(&(key.clone(), s)))
+                            .unwrap_or(false);
+                        let has_pending_import = self.pending_import_keys.contains(key);
+                        let summary = find_issue_by_key(&ctx.issues, &ctx.story_children, key)
+                            .map(|i| i.summary().unwrap_or_default())
+                            .unwrap_or_default();
+                        story_header_row(
+                            key,
+                            &summary,
+                            row_idx,
+                            collapsed,
+                            *depth,
+                            has_pending_import,
+                        )
+                    } else if let Some(ticket) = ctx.ticket_store.get(key) {
+                        issue_row(ctx, &self.pending_import_keys, ticket, row_idx, *depth)
+                    } else {
+                        let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key)
+                            .unwrap_or_else(|| panic!("missing issue for key {key}"));
+                        let fallback = Ticket {
+                            issue: issue.clone(),
+                            pr: ctx.github_prs.get(key).cloned(),
+                            repos: vec![],
+                            active_branch: ctx.active_branches.get(key).cloned(),
+                        };
+                        issue_row(ctx, &self.pending_import_keys, &fallback, row_idx, *depth)
+                    }
                 }
                 DisplayRow::InlineNew { depth } => inline_new_row(ctx.inline_new, row_idx, *depth),
                 DisplayRow::Loading { depth } => {
                     loading_row(ctx.animation.spinner_tick, row_idx, *depth)
                 }
                 DisplayRow::Empty { depth } => empty_row(row_idx, *depth),
-            })
-            .collect();
+            };
+            row_data.push(cells);
+        }
 
         let constraints = [
             Constraint::Min(10),
@@ -2622,8 +2624,16 @@ fn story_header_row(
     (cells, row_style)
 }
 
-fn section_header_row(label: &str, count: usize, _width: u16) -> (CellMap<'static>, Style) {
+fn section_header_row(
+    section: &ListSection,
+    count: usize,
+    _width: u16,
+) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted).bg(Theme::SidebarBg);
+    let label = match section {
+        ListSection::Board => "BOARD",
+        ListSection::Backlog => "BACKLOG",
+    };
     let label_color = match label {
         "BOARD" | "BACKLOG" => Theme::Muted,
         _ => Theme::AccentSoft,
@@ -2768,10 +2778,11 @@ fn search_match_indices(text: &str, atoms: &[Atom], matcher: &mut Matcher) -> Ve
 fn issue_row(
     ctx: &ListRenderContext,
     pending_import_keys: &HashSet<String>,
-    issue: &Issue,
+    ticket: &Ticket,
     _idx: usize,
     depth: u8,
 ) -> (CellMap<'static>, Style) {
+    let issue = &ticket.issue;
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
     let status_name = issue.status().map(|s| s.name).unwrap_or_default();
     let status_style = status_color(&status_name);
@@ -2786,8 +2797,13 @@ fn issue_row(
                 .to_string()
         })
         .unwrap_or_default();
-    let is_active = ctx.active_branches.contains_key(&issue.key);
-    let repos = repo_labels_for_issue(ctx.repo_entries, issue);
+    let is_active = ticket.active_branch.is_some();
+    let repos = ticket
+        .repos
+        .iter()
+        .map(|repo| repo.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     let summary = issue
         .summary()
         .unwrap_or_default()
@@ -2914,7 +2930,7 @@ fn issue_row(
         ),
     ]);
 
-    if let Some(pr) = ctx.github_prs.get(&issue.key) {
+    if let Some(pr) = ticket.pr.as_ref() {
         // ◷ column: most recent PR activity (commit, comment, review, pipeline)
         if let Some(timestamp) = pr.most_recent_activity() {
             if let Some(label) = crate::utils::time::format_relative_time(timestamp) {
@@ -2971,26 +2987,6 @@ fn issue_row(
     }
 
     (cells, row_style)
-}
-
-fn repo_labels_for_issue(repo_entries: &[RepoEntry], issue: &Issue) -> String {
-    if repo_entries.is_empty() {
-        return String::new();
-    }
-    let labels = issue.labels();
-    if labels.is_empty() {
-        return String::new();
-    }
-    let normalized: HashSet<String> = labels
-        .iter()
-        .map(|label| crate::repos::normalize_label(label))
-        .collect();
-    repo_entries
-        .iter()
-        .filter(|entry| normalized.contains(&entry.normalized))
-        .map(|entry| entry.label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Compute the ETA string for a PR's pending checks.

@@ -9,6 +9,7 @@ mod git;
 mod issue;
 mod repos;
 mod theme;
+mod ticket;
 mod ui;
 mod utils;
 

@@ -221,12 +221,12 @@ fn add_label_from_picker(app: &mut AppView) -> bool {
         app.status_bar.set_warning("No repository selected");
         return false;
     };
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(issue) = app.selected_ticket() else {
         app.status_bar.set_warning("No issue selected");
         return false;
     };
-    let issue_key = issue.key.clone();
-    let labels = issue.labels();
+    let issue_key = issue.issue.key.clone();
+    let labels = issue.issue.labels();
     let target_normalized = repos::normalize_label(&entry.label);
     let already_has = labels
         .iter()
