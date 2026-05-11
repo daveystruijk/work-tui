@@ -17,6 +17,7 @@ impl Theme {
     pub const Warning: Color = Color::Yellow;
     pub const Error: Color = Color::Red;
     pub const Info: Color = Color::LightBlue;
+    pub const SearchMatch: Color = Color::Yellow;
 
     /// Quartic rolloff color between White and DarkGray based on elapsed seconds.
     /// Stays bright for recent activity, drops off quickly approaching the 1-day cutoff.

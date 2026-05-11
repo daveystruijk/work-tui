@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use color_eyre::{eyre::eyre, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nucleo_matcher::{
-    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+    pattern::{Atom, AtomKind, CaseMatching, Normalization},
     Config, Matcher, Utf32Str,
 };
 use ratatui::{
@@ -89,6 +89,8 @@ mod tests {
 
     use insta::assert_snapshot;
     use serde_json::json;
+
+    use ratatui::style::{Modifier, Style};
 
     use crate::ui::render;
     use crate::{
@@ -668,9 +670,9 @@ mod tests {
         );
     }
 
-    /// Fuzzy search matches non-contiguous characters across issue fields.
+    /// Substring search matches contiguous characters case-insensitively.
     #[test]
-    fn snapshots_search_fuzzy_matches() {
+    fn snapshots_search_substring_matches() {
         let issues = vec![
             epic_issue("EPIC-1", "Platform migration"),
             task_issue_with_parent("TASK-1", "Update config", "EPIC-1", "Platform migration"),
@@ -680,14 +682,36 @@ mod tests {
         ];
         let story_children = HashMap::new();
         let mut list = ListView::default();
-        // "pltfrm" fuzzy-matches "Platform" but would not substring-match
-        list.search_filter = "pltfrm".to_string();
+        // "platf" substring-matches "Platform" (contiguous, case-insensitive)
+        list.search_filter = "platf".to_string();
 
         list.rebuild_display_rows(&issues, &story_children);
 
         assert_snapshot!(
-            "search_fuzzy_matches",
+            "search_substring_matches",
             format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// Non-contiguous characters do NOT match with substring strategy.
+    #[test]
+    fn search_substring_rejects_non_contiguous() {
+        let issues = vec![epic_issue("EPIC-1", "Platform migration")];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        // "pltfrm" has gaps — should NOT match with substring
+        list.search_filter = "pltfrm".to_string();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        let issue_rows: Vec<_> = list
+            .display_rows
+            .iter()
+            .filter(|r| matches!(r, DisplayRow::Issue { .. }))
+            .collect();
+        assert!(
+            issue_rows.is_empty(),
+            "non-contiguous query should not match any issues"
         );
     }
 
@@ -751,6 +775,59 @@ mod tests {
         );
     }
 
+    /// Render-level test: searching highlights matched characters in the list.
+    #[test]
+    fn snapshots_search_highlight_render() {
+        let mut app = selected_issue_app();
+        // "snap" fuzzy-matches "Snapshot" in the issue summary
+        app.list.search_filter = "snap".to_string();
+        app.list
+            .rebuild_display_rows(&app.issues.clone(), &app.story_children.clone());
+        let rendered = render_to_string(120, 6, |frame| {
+            render(&mut app, frame);
+        });
+
+        assert_snapshot!("search_highlight_render", rendered);
+    }
+
+    /// Unit test: highlight_spans splits text correctly at matched indices.
+    #[test]
+    fn highlight_spans_splits_at_match_indices() {
+        let base = Style::default().fg(crate::theme::Theme::Text);
+        let highlight = Style::default()
+            .fg(crate::theme::Theme::SearchMatch)
+            .add_modifier(Modifier::BOLD);
+
+        // "Platform" with indices 0,4,5 matching "P", "f", "o"
+        let spans = super::highlight_spans("Platform", &[0, 4, 5], base, highlight);
+        let texts: Vec<(&str, Style)> = spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style))
+            .collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                ("P", highlight),
+                ("lat", base),
+                ("fo", highlight),
+                ("rm", base),
+            ]
+        );
+    }
+
+    /// Unit test: highlight_spans returns single span when no indices.
+    #[test]
+    fn highlight_spans_no_matches() {
+        let base = Style::default().fg(crate::theme::Theme::Text);
+        let highlight = Style::default().fg(crate::theme::Theme::SearchMatch);
+
+        let spans = super::highlight_spans("Hello", &[], base, highlight);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "Hello");
+        assert_eq!(spans[0].style, base);
+    }
+
     fn story_header_count(rows: &[DisplayRow], key: &str) -> usize {
         rows.iter()
             .filter(
@@ -770,6 +847,7 @@ pub struct ListRenderContext<'a> {
     pub check_durations: &'a HashMap<String, u64>,
     pub animation: &'a UiAnimationView,
     pub inline_new: Option<&'a InlineNewView>,
+    pub search_filter: &'a str,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1156,30 +1234,40 @@ impl ListView {
         let is_searching = !self.search_filter.is_empty();
 
         let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            &self.search_filter,
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
+        let atoms: Vec<Atom> = self
+            .search_filter
+            .split_whitespace()
+            .map(|word| {
+                Atom::new(
+                    word,
+                    CaseMatching::Ignore,
+                    Normalization::Smart,
+                    AtomKind::Substring,
+                    false,
+                )
+            })
+            .collect();
 
-        let fuzzy_matches_issue =
-            |issue: &Issue, pattern: &Pattern, matcher: &mut Matcher| -> bool {
-                let fields = [
-                    issue.key.as_str().to_owned(),
-                    issue.summary().unwrap_or_default().to_owned(),
-                    issue
-                        .assignee()
-                        .map(|u| u.display_name.clone())
-                        .unwrap_or_default(),
-                    issue.status().map(|s| s.name.clone()).unwrap_or_default(),
-                ];
+        let issue_matches_search = |issue: &Issue, atoms: &[Atom], matcher: &mut Matcher| -> bool {
+            let fields = [
+                issue.key.as_str().to_owned(),
+                issue.summary().unwrap_or_default().to_owned(),
+                issue
+                    .assignee()
+                    .map(|u| u.display_name.clone())
+                    .unwrap_or_default(),
+                issue.status().map(|s| s.name.clone()).unwrap_or_default(),
+            ];
+            // Every word must match at least one field (but different words
+            // can match different fields).
+            atoms.iter().all(|atom| {
                 fields.iter().any(|field| {
                     let mut buffer = Vec::new();
                     let haystack = Utf32Str::new(field, &mut buffer);
-                    pattern.score(haystack, matcher).is_some()
+                    atom.score(haystack, matcher).is_some()
                 })
-            };
+            })
+        };
 
         let matching_indices: Option<HashSet<usize>> = if !is_searching {
             None
@@ -1191,7 +1279,7 @@ impl ListView {
                 .filter(|(_, children)| {
                     children
                         .iter()
-                        .any(|c| fuzzy_matches_issue(c, &pattern, &mut matcher))
+                        .any(|c| issue_matches_search(c, &atoms, &mut matcher))
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
@@ -1201,7 +1289,7 @@ impl ListView {
                     .iter()
                     .enumerate()
                     .filter(|(_, issue)| {
-                        fuzzy_matches_issue(issue, &pattern, &mut matcher)
+                        issue_matches_search(issue, &atoms, &mut matcher)
                             || matching_parent_keys.contains(&issue.key)
                     })
                     .map(|(idx, _)| idx)
@@ -2619,6 +2707,64 @@ fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
     (cells, row_style)
 }
 
+/// Split text into spans, highlighting characters at the given indices with `highlight_style`.
+fn highlight_spans(
+    text: &str,
+    indices: &[u32],
+    base_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    if indices.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    let match_set: HashSet<u32> = indices.iter().copied().collect();
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    let mut current_is_match = false;
+
+    for (char_idx, ch) in text.chars().enumerate() {
+        let is_match = match_set.contains(&(char_idx as u32));
+        if is_match != current_is_match && !current.is_empty() {
+            let style = if current_is_match {
+                highlight_style
+            } else {
+                base_style
+            };
+            spans.push(Span::styled(std::mem::take(&mut current), style));
+        }
+        current_is_match = is_match;
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        let style = if current_is_match {
+            highlight_style
+        } else {
+            base_style
+        };
+        spans.push(Span::styled(current, style));
+    }
+
+    spans
+}
+
+/// Compute match indices for `text` against all search atoms.
+/// Returns the union of matched char positions across all atoms.
+fn search_match_indices(text: &str, atoms: &[Atom], matcher: &mut Matcher) -> Vec<u32> {
+    let mut all_indices = Vec::new();
+    for atom in atoms {
+        let mut buffer = Vec::new();
+        let haystack = Utf32Str::new(text, &mut buffer);
+        let mut indices = Vec::new();
+        if atom.indices(haystack, matcher, &mut indices).is_some() {
+            all_indices.extend(indices);
+        }
+    }
+    all_indices.sort_unstable();
+    all_indices.dedup();
+    all_indices
+}
+
 fn issue_row(
     ctx: &ListRenderContext,
     pending_import_keys: &HashSet<String>,
@@ -2657,36 +2803,104 @@ fn issue_row(
         String::new()
     };
 
+    let is_searching = !ctx.search_filter.is_empty();
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let search_atoms: Vec<Atom> = ctx
+        .search_filter
+        .split_whitespace()
+        .map(|word| {
+            Atom::new(
+                word,
+                CaseMatching::Ignore,
+                Normalization::Smart,
+                AtomKind::Substring,
+                false,
+            )
+        })
+        .collect();
+    let highlight_style = Style::default()
+        .fg(Theme::SearchMatch)
+        .add_modifier(Modifier::BOLD);
+
     let has_pending_import = pending_import_keys.contains(&issue.key);
     let icon = issue_type_icon(&issue_type);
-    let mut summary_spans = vec![
-        Span::styled(
-            format!("{}{} ", key_prefix, icon),
-            Style::default().fg(Theme::Muted),
-        ),
-        Span::styled(
-            issue.key.clone(),
-            Style::default()
-                .fg(Theme::Accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
+
+    // Key field — highlight search matches
+    let key_base_style = Style::default()
+        .fg(Theme::Accent)
+        .add_modifier(Modifier::BOLD);
+    let key_highlight_style = Style::default()
+        .fg(Theme::SearchMatch)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let key_indices = if is_searching {
+        search_match_indices(&issue.key, &search_atoms, &mut matcher)
+    } else {
+        Vec::new()
+    };
+    let key_spans = highlight_spans(
+        &issue.key,
+        &key_indices,
+        key_base_style,
+        key_highlight_style,
+    );
+
+    let mut summary_spans = vec![Span::styled(
+        format!("{}{} ", key_prefix, icon),
+        Style::default().fg(Theme::Muted),
+    )];
+    summary_spans.extend(key_spans);
     if has_pending_import {
         summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
     }
-    summary_spans.push(Span::styled(
-        format!(" {}", summary),
-        Style::default().fg(Theme::Text),
-    ));
+
+    // Summary field — highlight search matches
+    let summary_base_style = Style::default().fg(Theme::Text);
+    let summary_indices = if is_searching {
+        search_match_indices(&summary, &search_atoms, &mut matcher)
+    } else {
+        Vec::new()
+    };
+    let summary_highlighted = highlight_spans(
+        &summary,
+        &summary_indices,
+        summary_base_style,
+        highlight_style,
+    );
+    summary_spans.push(Span::styled(" ", summary_base_style));
+    summary_spans.extend(summary_highlighted);
     let summary_line = Line::from(summary_spans);
+
+    // Status field — highlight search matches
+    let status_indices = if is_searching {
+        search_match_indices(&status_name, &search_atoms, &mut matcher)
+    } else {
+        Vec::new()
+    };
+    let status_line = Line::from(highlight_spans(
+        &status_name,
+        &status_indices,
+        status_style,
+        highlight_style,
+    ));
+
+    // Dev field — highlight search matches
+    let dev_base_style = Style::default().fg(Theme::Muted);
+    let dev_indices = if is_searching {
+        search_match_indices(&assignee, &search_atoms, &mut matcher)
+    } else {
+        Vec::new()
+    };
+    let dev_line = Line::from(highlight_spans(
+        &assignee,
+        &dev_indices,
+        dev_base_style,
+        highlight_style,
+    ));
 
     let mut cells = HashMap::from([
         ("Issue", summary_line),
-        ("Status", Line::styled(status_name, status_style)),
-        (
-            "Dev",
-            Line::styled(assignee, Style::default().fg(Theme::Muted)),
-        ),
+        ("Status", status_line),
+        ("Dev", dev_line),
         (
             "Repo",
             Line::from(if is_active {
