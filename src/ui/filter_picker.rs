@@ -19,7 +19,7 @@ use crate::{
     theme::Theme,
 };
 
-use super::centered_rect;
+use super::{adjust_scroll_offset, centered_rect, move_selected_index};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum FilterPane {
@@ -33,9 +33,15 @@ pub struct FilterPickerView {
     active_pane: FilterPane,
     project_selected: usize,
     status_selected: usize,
+    project_area_height: u16,
+    status_area_height: u16,
+    project_scroll_offset: usize,
+    status_scroll_offset: usize,
     project_filter: String,
+    project_search_active: bool,
     draft_project_key: Option<String>,
     draft_status_names: HashSet<String>,
+    draft_auto_tag_enabled_project_keys: HashSet<String>,
 }
 
 impl FilterPickerView {
@@ -72,13 +78,16 @@ impl FilterPickerView {
         let filtered = self.filtered_projects(filter_state);
         if filtered.is_empty() {
             self.project_selected = 0;
+            self.project_scroll_offset = 0;
             self.status_selected = 0;
+            self.status_scroll_offset = 0;
             self.draft_project_key = None;
             self.draft_status_names.clear();
             return;
         }
 
         self.project_selected = self.project_selected.min(filtered.len() - 1);
+        self.adjust_project_scroll_offset(filtered.len());
         let project_key = filtered[self.project_selected].key.clone();
         if self.draft_project_key.as_deref() == Some(project_key.as_str()) {
             return;
@@ -86,6 +95,7 @@ impl FilterPickerView {
 
         self.draft_project_key = Some(project_key.clone());
         self.status_selected = 0;
+        self.status_scroll_offset = 0;
         self.draft_status_names =
             if filter_state.selected_project_key.as_deref() == Some(project_key.as_str()) {
                 filter_state.selected_status_names.iter().cloned().collect()
@@ -123,31 +133,33 @@ impl FilterPickerView {
             self.sync_project_selection(filter_state);
             return;
         }
-        if down {
-            self.project_selected = (self.project_selected + 1).min(count - 1);
-        } else if self.project_selected > 0 {
-            self.project_selected -= 1;
-        }
+        move_selected_index(
+            &mut self.project_selected,
+            count,
+            if down { 1 } else { -1 },
+        );
+        self.adjust_project_scroll_offset(count);
         self.sync_project_selection(filter_state);
     }
 
     fn move_status_selection(&mut self, filter_state: &JiraFilterState, down: bool) {
         let Some(project_key) = self.draft_project_key.as_deref() else {
             self.status_selected = 0;
+            self.status_scroll_offset = 0;
             return;
         };
         let count = available_statuses_for_project(filter_state, project_key).len();
         if count == 0 {
             self.status_selected = 0;
+            self.status_scroll_offset = 0;
             return;
         }
-        if down {
-            self.status_selected = (self.status_selected + 1).min(count - 1);
-            return;
-        }
-        if self.status_selected > 0 {
-            self.status_selected -= 1;
-        }
+        move_selected_index(
+            &mut self.status_selected,
+            count,
+            if down { 1 } else { -1 },
+        );
+        self.adjust_status_scroll_offset(count);
     }
 
     fn toggle_selected_status(&mut self, filter_state: &JiraFilterState) {
@@ -186,16 +198,52 @@ impl FilterPickerView {
     fn type_project_filter(&mut self, filter_state: &JiraFilterState, character: char) {
         self.project_filter.push(character);
         self.project_selected = 0;
+        self.project_scroll_offset = 0;
         self.sync_project_selection(filter_state);
+    }
+
+    fn is_auto_tagging_enabled_for_draft_project(&self) -> bool {
+        let Some(project_key) = self.draft_project_key.as_deref() else {
+            return false;
+        };
+        self.draft_auto_tag_enabled_project_keys.contains(project_key)
+    }
+
+    fn toggle_auto_tagging_for_draft_project(&mut self) {
+        let Some(project_key) = self.draft_project_key.clone() else {
+            return;
+        };
+        if !self.draft_auto_tag_enabled_project_keys.remove(&project_key) {
+            self.draft_auto_tag_enabled_project_keys.insert(project_key);
+        }
     }
 
     fn backspace_project_filter(&mut self, filter_state: &JiraFilterState) {
         self.project_filter.pop();
         self.project_selected = 0;
+        self.project_scroll_offset = 0;
         self.sync_project_selection(filter_state);
     }
 
-    pub fn render(&self, frame: &mut Frame, filter_state: &JiraFilterState) {
+    fn adjust_project_scroll_offset(&mut self, item_count: usize) {
+        adjust_scroll_offset(
+            &mut self.project_scroll_offset,
+            self.project_selected,
+            self.project_area_height,
+            item_count,
+        );
+    }
+
+    fn adjust_status_scroll_offset(&mut self, item_count: usize) {
+        adjust_scroll_offset(
+            &mut self.status_scroll_offset,
+            self.status_selected,
+            self.status_area_height,
+            item_count,
+        );
+    }
+
+    pub fn render(&mut self, frame: &mut Frame, filter_state: &JiraFilterState) {
         let area = centered_rect(84, 80, frame.area());
         frame.render_widget(Clear, area);
 
@@ -213,36 +261,13 @@ impl FilterPickerView {
 
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(8),
-                Constraint::Length(2),
-            ])
+            .constraints([Constraint::Min(8), Constraint::Length(3)])
             .split(inner);
-
-        let filter_display = if self.project_filter.is_empty() {
-            "Type to filter projects...".to_string()
-        } else {
-            self.project_filter.clone()
-        };
-        let filter_style = if self.project_filter.is_empty() {
-            Style::default().fg(Theme::Muted)
-        } else {
-            Style::default().fg(Theme::Text)
-        };
-
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("/ ", Style::default().fg(Theme::Accent)),
-                Span::styled(filter_display, filter_style),
-            ])),
-            layout[0],
-        );
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
-            .split(layout[1]);
+            .split(layout[0]);
 
         let projects = self.filtered_projects(filter_state);
         let project_items: Vec<ListItem> = if projects.is_empty() {
@@ -267,16 +292,6 @@ impl FilterPickerView {
                 .collect()
         };
 
-        let mut project_state = ListState::default();
-        if !projects.is_empty() {
-            project_state.select(Some(self.project_selected));
-        }
-        let project_list = List::new(project_items).highlight_style(
-            Style::default()
-                .fg(Theme::Panel)
-                .bg(Theme::AccentSoft)
-                .add_modifier(Modifier::BOLD),
-        );
         let project_block = Block::bordered()
             .title(Span::styled(
                 " Projects ",
@@ -284,10 +299,53 @@ impl FilterPickerView {
             ))
             .border_style(pane_border_style(self.active_pane == FilterPane::Projects))
             .style(Style::default().bg(Theme::Surface));
-        frame.render_stateful_widget(
-            project_list.block(project_block),
-            columns[0],
-            &mut project_state,
+        let project_inner = project_block.inner(columns[0]);
+        frame.render_widget(project_block, columns[0]);
+
+        let project_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(project_inner);
+        self.project_area_height = project_layout[0].height;
+
+        let mut project_state = ListState::default();
+        if !projects.is_empty() {
+            self.adjust_project_scroll_offset(projects.len());
+            project_state = project_state
+                .with_offset(self.project_scroll_offset)
+                .with_selected(Some(self.project_selected));
+        }
+        let project_list = List::new(project_items).highlight_style(
+            Style::default()
+                .fg(Theme::Panel)
+                .bg(Theme::AccentSoft)
+                .add_modifier(Modifier::BOLD),
+        );
+        frame.render_stateful_widget(project_list, project_layout[0], &mut project_state);
+        self.project_scroll_offset = project_state.offset();
+
+        let project_filter_display = if self.project_filter.is_empty() {
+            "search projects".to_string()
+        } else {
+            self.project_filter.clone()
+        };
+        let project_filter_style = if self.project_filter.is_empty() {
+            Style::default().fg(Theme::Muted)
+        } else {
+            Style::default().fg(Theme::Text)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("/ ", Style::default().fg(Theme::Accent)),
+                Span::styled(project_filter_display, project_filter_style),
+                Span::styled(
+                    if self.project_search_active { "▏" } else { "" },
+                    Style::default()
+                        .fg(Theme::Accent)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
+            ])),
+            project_layout[1],
         );
 
         let statuses = self
@@ -326,17 +384,8 @@ impl FilterPickerView {
                 )))]
             };
 
-        let mut status_state = ListState::default();
-        if !statuses.is_empty() {
-            status_state.select(Some(self.status_selected.min(statuses.len() - 1)));
-        }
-        let status_list = List::new(status_items).highlight_style(
-            Style::default()
-                .fg(Theme::Panel)
-                .bg(Theme::AccentSoft)
-                .add_modifier(Modifier::BOLD),
-        );
         let status_count = self.selected_status_names(filter_state).len();
+        let mut status_state = ListState::default();
         let status_block = Block::bordered()
             .title(Span::styled(
                 format!(" Statuses ({status_count}) "),
@@ -344,15 +393,36 @@ impl FilterPickerView {
             ))
             .border_style(pane_border_style(self.active_pane == FilterPane::Statuses))
             .style(Style::default().bg(Theme::Surface));
-        frame.render_stateful_widget(
-            status_list.block(status_block),
-            columns[1],
-            &mut status_state,
+        let status_inner = status_block.inner(columns[1]);
+        frame.render_widget(status_block, columns[1]);
+        self.status_area_height = status_inner.height;
+        if !statuses.is_empty() {
+            self.status_selected = self.status_selected.min(statuses.len() - 1);
+            self.adjust_status_scroll_offset(statuses.len());
+            status_state = status_state
+                .with_offset(self.status_scroll_offset)
+                .with_selected(Some(self.status_selected));
+        }
+        let status_list = List::new(status_items).highlight_style(
+            Style::default()
+                .fg(Theme::Panel)
+                .bg(Theme::AccentSoft)
+                .add_modifier(Modifier::BOLD),
         );
+        frame.render_stateful_widget(status_list, status_inner, &mut status_state);
+        self.status_scroll_offset = status_state.offset();
+
+        let auto_tag_label = if self.is_auto_tagging_enabled_for_draft_project() {
+            "[x] Auto-tag repo labels"
+        } else {
+            "[ ] Auto-tag repo labels"
+        };
 
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
+                    Span::styled("/", Style::default().fg(Theme::Accent)),
+                    Span::styled(" search  ", Style::default().fg(Theme::Muted)),
                     Span::styled("Tab", Style::default().fg(Theme::Accent)),
                     Span::styled(" switch pane  ", Style::default().fg(Theme::Muted)),
                     Span::styled("Enter", Style::default().fg(Theme::Accent)),
@@ -364,10 +434,16 @@ impl FilterPickerView {
                     Span::styled("Space", Style::default().fg(Theme::Accent)),
                     Span::styled(" toggle status  ", Style::default().fg(Theme::Muted)),
                     Span::styled("a", Style::default().fg(Theme::Accent)),
-                    Span::styled(" toggle all", Style::default().fg(Theme::Muted)),
+                    Span::styled(" toggle all  ", Style::default().fg(Theme::Muted)),
+                    Span::styled("T", Style::default().fg(Theme::Accent)),
+                    Span::styled(" auto-tag", Style::default().fg(Theme::Muted)),
                 ]),
+                Line::from(vec![Span::styled(
+                    auto_tag_label,
+                    Style::default().fg(Theme::Text),
+                )]),
             ]),
-            layout[2],
+            layout[1],
         );
     }
 }
@@ -439,6 +515,7 @@ pub fn open(app: &mut AppView) {
     }
 
     let mut picker = FilterPickerView::default();
+    picker.draft_auto_tag_enabled_project_keys = app.jira_filter.auto_tag_enabled_project_keys.clone();
     if let Some(current_project_key) = app.current_project_key() {
         picker.project_selected = app
             .jira_filter
@@ -458,9 +535,23 @@ pub fn open(app: &mut AppView) {
 }
 
 pub async fn update(app: &mut AppView, key_event: KeyEvent) {
+    let project_search_active = app
+        .filter_picker
+        .as_ref()
+        .map(|picker| picker.project_search_active)
+        .unwrap_or(false);
+
+    if project_search_active {
+        update_project_search(app, key_event);
+        return;
+    }
+
     match key_event.code {
         KeyCode::Esc => close(app),
+        KeyCode::Char('/') => start_project_search(app),
         KeyCode::Tab | KeyCode::Right => switch_pane(app, true),
+        KeyCode::Char('h') => switch_pane(app, false),
+        KeyCode::Char('l') => switch_pane(app, true),
         KeyCode::Left => switch_pane(app, false),
         KeyCode::Char('j') => move_selection(app, true),
         KeyCode::Char('k') => move_selection(app, false),
@@ -496,6 +587,7 @@ pub async fn update(app: &mut AppView, key_event: KeyEvent) {
                 }
             }
         }
+        KeyCode::Char('T') => toggle_auto_tagging(app),
         KeyCode::Char('a') => {
             let filter_state = app.jira_filter.clone();
             if let Some(picker) = app.filter_picker.as_mut() {
@@ -504,9 +596,17 @@ pub async fn update(app: &mut AppView, key_event: KeyEvent) {
                     return;
                 }
             }
-            type_project_filter(app, key_event);
         }
-        KeyCode::Char(_) => type_project_filter(app, key_event),
+        _ => {}
+    }
+}
+
+fn update_project_search(app: &mut AppView, key_event: KeyEvent) {
+    match key_event.code {
+        KeyCode::Esc => stop_project_search(app, false),
+        KeyCode::Enter => stop_project_search(app, true),
+        KeyCode::Backspace => backspace_project_filter(app),
+        KeyCode::Char(character) => type_project_filter(app, character, key_event.modifiers),
         _ => {}
     }
 }
@@ -515,9 +615,10 @@ fn switch_pane(app: &mut AppView, forward: bool) {
     let Some(picker) = app.filter_picker.as_mut() else {
         return;
     };
-    picker.active_pane = match (picker.active_pane, forward) {
-        (FilterPane::Projects, true) | (FilterPane::Statuses, false) => FilterPane::Statuses,
-        _ => FilterPane::Projects,
+    picker.active_pane = match picker.active_pane {
+        FilterPane::Projects if forward => FilterPane::Statuses,
+        FilterPane::Statuses if !forward => FilterPane::Projects,
+        active_pane => active_pane,
     };
 }
 
@@ -538,23 +639,50 @@ fn move_selection(app: &mut AppView, down: bool) {
     picker.move_status_selection(&filter_state, down);
 }
 
-fn type_project_filter(app: &mut AppView, key_event: KeyEvent) {
+fn start_project_search(app: &mut AppView) {
+    let Some(picker) = app.filter_picker.as_mut() else {
+        return;
+    };
+    picker.project_search_active = true;
+    picker.active_pane = FilterPane::Projects;
+}
+
+fn stop_project_search(app: &mut AppView, keep_filter: bool) {
+    let Some(picker) = app.filter_picker.as_mut() else {
+        return;
+    };
+    picker.project_search_active = false;
+    if keep_filter {
+        return;
+    }
+    if picker.project_filter.is_empty() {
+        return;
+    }
+    picker.project_filter.clear();
+    let filter_state = app.jira_filter.clone();
+    picker.project_selected = 0;
+    picker.sync_project_selection(&filter_state);
+    ensure_draft_statuses_loaded(app);
+}
+
+fn backspace_project_filter(app: &mut AppView) {
     let filter_state = app.jira_filter.clone();
     let Some(picker) = app.filter_picker.as_mut() else {
         return;
     };
-    if picker.active_pane != FilterPane::Projects {
+    picker.backspace_project_filter(&filter_state);
+    ensure_draft_statuses_loaded(app);
+}
+
+fn type_project_filter(app: &mut AppView, character: char, modifiers: KeyModifiers) {
+    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
         return;
     }
-    let KeyCode::Char(character) = key_event.code else {
+
+    let filter_state = app.jira_filter.clone();
+    let Some(picker) = app.filter_picker.as_mut() else {
         return;
     };
-    if key_event
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-    {
-        return;
-    }
     picker.type_project_filter(&filter_state, character);
     ensure_draft_statuses_loaded(app);
 }
@@ -584,9 +712,18 @@ fn apply(app: &mut AppView) {
         return;
     }
 
+    app.jira_filter.auto_tag_enabled_project_keys =
+        picker.draft_auto_tag_enabled_project_keys.clone();
     app.filter_picker = None;
     app.input_focus = InputFocus::List;
     app.apply_jira_filter(project_key, selected_status_names);
+}
+
+fn toggle_auto_tagging(app: &mut AppView) {
+    let Some(picker) = app.filter_picker.as_mut() else {
+        return;
+    };
+    picker.toggle_auto_tagging_for_draft_project();
 }
 
 fn close(app: &mut AppView) {
@@ -656,7 +793,7 @@ mod tests {
         open(&mut app);
         let output = render_to_string(100, 28, |frame| {
             app.filter_picker
-                .as_ref()
+                .as_mut()
                 .unwrap()
                 .render(frame, &app.jira_filter)
         });
@@ -673,7 +810,7 @@ mod tests {
         picker.type_project_filter(&filter_state, 'e');
         let output = render_to_string(100, 28, |frame| {
             app.filter_picker
-                .as_ref()
+                .as_mut()
                 .unwrap()
                 .render(frame, &app.jira_filter)
         });

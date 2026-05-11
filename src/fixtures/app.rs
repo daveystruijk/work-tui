@@ -62,6 +62,7 @@ pub fn test_app() -> AppView {
             selected_status_names: Vec::new(),
             available_projects: Vec::new(),
             available_statuses: Default::default(),
+            auto_tag_enabled_project_keys: Default::default(),
             should_auto_open_picker: false,
             loading_status_projects: Default::default(),
         },

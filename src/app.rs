@@ -78,6 +78,7 @@ pub struct JiraFilterState {
     pub selected_status_names: Vec<String>,
     pub available_projects: Vec<JiraProject>,
     pub available_statuses: HashMap<String, Vec<JiraStatus>>,
+    pub auto_tag_enabled_project_keys: HashSet<String>,
     pub should_auto_open_picker: bool,
     pub loading_status_projects: HashSet<String>,
 }
@@ -179,6 +180,10 @@ impl AppView {
                 selected_status_names: cached.jira_status_names.clone(),
                 available_projects: Vec::new(),
                 available_statuses: HashMap::new(),
+                auto_tag_enabled_project_keys: cached
+                    .jira_auto_tag_enabled_project_keys
+                    .into_iter()
+                    .collect(),
                 should_auto_open_picker,
                 loading_status_projects: HashSet::new(),
             },
@@ -324,6 +329,19 @@ impl AppView {
         self.spawn_refresh();
     }
 
+    pub fn is_auto_tagging_enabled_for_project(&self, project_key: &str) -> bool {
+        self.jira_filter
+            .auto_tag_enabled_project_keys
+            .contains(project_key)
+    }
+
+    pub fn is_current_project_auto_tagging_enabled(&self) -> bool {
+        let Some(project_key) = self.current_project_key() else {
+            return false;
+        };
+        self.is_auto_tagging_enabled_for_project(project_key)
+    }
+
     /// Schedule a debounced prefetch of the selected PR detail.
     /// The actual fetch fires after the cursor has been idle for 150ms.
     pub fn schedule_prefetch(&mut self) {
@@ -386,6 +404,9 @@ impl AppView {
 
     /// Spawn repo tagging for issues that have no repo label match.
     fn spawn_tag_jira_repos(&self) {
+        if !self.is_current_project_auto_tagging_enabled() {
+            return;
+        }
         let untagged: Vec<_> = self
             .issues
             .iter()
@@ -423,6 +444,9 @@ impl AppView {
 
     /// Spawn auto-labeling for issues with matched PRs but missing repo labels.
     fn spawn_auto_label(&self) {
+        if !self.is_current_project_auto_tagging_enabled() {
+            return;
+        }
         let to_label: Vec<_> = self
             .issues
             .iter()
@@ -945,6 +969,17 @@ impl AppView {
         {
             return;
         }
+        let Some(issue) = self
+            .issues
+            .iter()
+            .chain(self.story_children.values().flatten())
+            .find(|issue| issue.key == parent_key)
+        else {
+            return;
+        };
+        if !crate::issue::is_expandable(issue) {
+            return;
+        }
         self.list.start_loading_children(parent_key);
         let Some(jql) = self.current_issue_jql() else {
             self.list.loading_children.remove(parent_key);
@@ -1038,6 +1073,12 @@ impl AppView {
             collapsed_stories: self.list.collapsed_stories.clone(),
             jira_project_key: self.jira_filter.selected_project_key.clone(),
             jira_status_names: self.jira_filter.selected_status_names.clone(),
+            jira_auto_tag_enabled_project_keys: self
+                .jira_filter
+                .auto_tag_enabled_project_keys
+                .iter()
+                .cloned()
+                .collect(),
         });
     }
 

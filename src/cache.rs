@@ -18,6 +18,8 @@ pub struct Cache {
     pub jira_project_key: Option<String>,
     #[serde(default)]
     pub jira_status_names: Vec<String>,
+    #[serde(default)]
+    pub jira_auto_tag_enabled_project_keys: Vec<String>,
 }
 
 fn cache_path() -> Option<PathBuf> {

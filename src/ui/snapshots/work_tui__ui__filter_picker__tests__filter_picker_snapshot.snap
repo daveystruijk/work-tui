@@ -1,15 +1,12 @@
 ---
 source: src/ui/filter_picker.rs
-assertion_line: 640
+assertion_line: 761
 expression: output
 ---
                                                                                                     
                                                                                                     
                                                                                                     
         ┌ Jira filters ────────────────────────────────────────────────────────────────────┐        
-        │/ Type to filter projects...                                                      │        
-        │                                                                                  │        
-        │                                                                                  │        
         │┌ Projects ────────────────────────┐┌ Statuses (2) ──────────────────────────────┐│        
         ││INI       Internal Initiative     ││[ ] Backlog                                 ││        
         ││OPS       Operations              ││[x] In Progress                             ││        
@@ -24,7 +21,10 @@ expression: output
         ││                                  ││                                            ││        
         ││                                  ││                                            ││        
         ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││/ search projects                 ││                                            ││        
         │└──────────────────────────────────┘└────────────────────────────────────────────┘│        
-        │Tab switch pane  Enter apply  Esc cancel                                          │        
-        │Space toggle status  a toggle all                                                 │        
+        │/ search  Tab switch pane  Enter apply  Esc cancel                                │        
+        │Space toggle status  a toggle all  T auto-tag                                     │        
+        │[ ] Auto-tag repo labels                                                          │        
         └──────────────────────────────────────────────────────────────────────────────────┘

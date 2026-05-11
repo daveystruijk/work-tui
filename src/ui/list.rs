@@ -28,7 +28,8 @@ use crate::ui::{ImportTasksView, LabelPickerView};
 use tokio::process::Command;
 
 use super::{
-    issue_type_icon, max_col_width, status_color, CellMap, UiAnimationView, COLUMNS, SPINNER_FRAMES,
+    adjust_scroll_offset, issue_type_icon, max_col_width, move_selected_index, status_color,
+    CellMap, UiAnimationView, COLUMNS, SPINNER_FRAMES,
 };
 
 /// Returns true if the issue's status indicates it belongs in the backlog section.
@@ -940,6 +941,10 @@ impl ListView {
             Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return None,
         };
+        let issue = find_issue_by_key(issues, story_children, &key)?;
+        if !crate::issue::is_expandable(issue) {
+            return None;
+        }
         let Some(section) = self.section_for_row(self.selected_index) else {
             return None;
         };
@@ -964,6 +969,10 @@ impl ListView {
             Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return None,
         };
+        let issue = find_issue_by_key(issues, story_children, &key)?;
+        if !crate::issue::is_expandable(issue) {
+            return None;
+        }
         let Some(section) = self.section_for_row(self.selected_index) else {
             return None;
         };
@@ -985,6 +994,12 @@ impl ListView {
             Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return false,
         };
+        let Some(issue) = find_issue_by_key(issues, story_children, &key) else {
+            return false;
+        };
+        if !crate::issue::is_expandable(issue) {
+            return false;
+        }
         let Some(section) = self.section_for_row(self.selected_index) else {
             return false;
         };
@@ -1856,19 +1871,13 @@ impl ListView {
             self.skip_section_headers(1);
             return;
         }
-        let last = self.display_rows.len() - 1;
-        if self.selected_index < last {
-            self.selected_index += 1;
-        }
+        move_selected_index(&mut self.selected_index, self.display_rows.len(), 1);
         self.skip_section_headers(1);
         self.adjust_scroll_offset();
     }
 
     pub fn move_selection_up(&mut self) {
-        if self.selected_index == 0 {
-            return;
-        }
-        self.selected_index -= 1;
+        move_selected_index(&mut self.selected_index, self.display_rows.len(), -1);
         self.skip_section_headers(-1);
         self.adjust_scroll_offset();
     }
@@ -1886,9 +1895,7 @@ impl ListView {
         if self.display_rows.is_empty() {
             return;
         }
-        let last = self.display_rows.len() - 1;
-        let new_index = (self.selected_index as isize + delta).clamp(0, last as isize) as usize;
-        self.selected_index = new_index;
+        move_selected_index(&mut self.selected_index, self.display_rows.len(), delta);
         self.skip_section_headers(delta.signum());
         self.adjust_scroll_offset();
     }
@@ -1913,25 +1920,12 @@ impl ListView {
     }
 
     pub fn adjust_scroll_offset(&mut self) {
-        let height = self.area_height as usize;
-        if height == 0 || self.display_rows.is_empty() {
-            return;
-        }
-
-        let margin = SCROLL_OFF.min(height / 2);
-        let selected = self.selected_index;
-        let offset = self.scroll_offset;
-
-        if selected < offset + margin {
-            self.scroll_offset = selected.saturating_sub(margin);
-        }
-
-        if selected + margin >= offset + height {
-            self.scroll_offset = (selected + margin + 1).saturating_sub(height);
-        }
-
-        let max_offset = self.display_rows.len().saturating_sub(height);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        adjust_scroll_offset(
+            &mut self.scroll_offset,
+            self.selected_index,
+            self.area_height,
+            self.display_rows.len(),
+        );
     }
 
     pub fn render(
@@ -1951,7 +1945,11 @@ impl ListView {
                     section_header_row(section, *count, area.width)
                 }
                 DisplayRow::Ticket { key, depth } => {
-                    let is_group_header = self
+                    let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key);
+                    let is_group_header = issue
+                        .map(crate::issue::is_expandable)
+                        .unwrap_or(false)
+                        || self
                         .display_rows
                         .get(row_idx + 1)
                         .map(|next| match next {
@@ -1966,7 +1964,7 @@ impl ListView {
                             .map(|s| self.collapsed_stories.contains(&(key.clone(), s)))
                             .unwrap_or(false);
                         let has_pending_import = self.pending_import_keys.contains(key);
-                        let summary = find_issue_by_key(&ctx.issues, &ctx.story_children, key)
+                        let summary = issue
                             .map(|i| i.summary().unwrap_or_default())
                             .unwrap_or_default();
                         story_header_row(
@@ -2592,8 +2590,6 @@ async fn open_url_in_browser(url: &str) -> Result<()> {
     Err(eyre!(stderr))
 }
 
-pub const SCROLL_OFF: usize = 3;
-
 fn story_header_row(
     key: &str,
     summary: &str,
@@ -2618,7 +2614,7 @@ fn story_header_row(
     if has_pending_import {
         summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
     }
-    summary_spans.push(Span::styled(format!(" § {}", first_line), header_style));
+    summary_spans.push(Span::styled(format!(" {first_line}"), header_style));
     let summary_line = Line::from(summary_spans);
 
     let cells = HashMap::from([("Issue", summary_line)]);

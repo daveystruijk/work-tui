@@ -33,6 +33,7 @@ use crate::{
 
 pub const COLUMNS: &[&str] = &["Issue", "Status", "Dev", "◷", "PR", "CI", "Repo"];
 pub const SIDEBAR_SECTION_MARGIN: u16 = 1;
+pub const SCROLL_OFF: usize = 3;
 
 pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;
 
@@ -56,6 +57,43 @@ pub fn max_col_width(row_data: &[(CellMap, Style)], name: &str) -> u16 {
         .map(|(cells, _)| cells.get(name).map_or(0, |l| l.width() as u16))
         .max()
         .unwrap_or(0)
+}
+
+pub fn move_selected_index(selected_index: &mut usize, item_count: usize, delta: isize) {
+    if item_count == 0 {
+        *selected_index = 0;
+        return;
+    }
+
+    let last_index = item_count - 1;
+    let next_index = (*selected_index as isize + delta).clamp(0, last_index as isize) as usize;
+    *selected_index = next_index;
+}
+
+pub fn adjust_scroll_offset(
+    scroll_offset: &mut usize,
+    selected_index: usize,
+    area_height: u16,
+    item_count: usize,
+) {
+    let height = area_height as usize;
+    if height == 0 || item_count == 0 {
+        return;
+    }
+
+    let margin = SCROLL_OFF.min(height / 2);
+    let offset = *scroll_offset;
+
+    if selected_index < offset + margin {
+        *scroll_offset = selected_index.saturating_sub(margin);
+    }
+
+    if selected_index + margin >= offset + height {
+        *scroll_offset = (selected_index + margin + 1).saturating_sub(height);
+    }
+
+    let max_offset = item_count.saturating_sub(height);
+    *scroll_offset = (*scroll_offset).min(max_offset);
 }
 
 pub fn render(app: &mut AppView, frame: &mut Frame) {
@@ -142,8 +180,9 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
             }
         }
         InputFocus::JiraFilterPicker => {
-            if let Some(picker) = &app.filter_picker {
-                picker.render(frame, &app.jira_filter);
+            let filter_state = app.jira_filter.clone();
+            if let Some(picker) = app.filter_picker.as_mut() {
+                picker.render(frame, &filter_state);
             }
         }
         InputFocus::ConfirmDialog => {
@@ -380,7 +419,7 @@ pub fn issue_type_icon(issue_type: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_text;
+    use super::{adjust_scroll_offset, move_selected_index, wrap_text};
 
     #[test]
     fn wrap_text_truncates_long_word_after_line_break() {
@@ -388,5 +427,25 @@ mod tests {
             wrap_text("Short https://example.com/really/long/link", 12, usize::MAX),
             vec!["Short".to_string(), "https://exa…".to_string()],
         );
+    }
+
+    #[test]
+    fn move_selected_index_clamps_to_bounds() {
+        let mut selected_index = 1;
+        move_selected_index(&mut selected_index, 3, 10);
+        assert_eq!(selected_index, 2);
+
+        move_selected_index(&mut selected_index, 3, -10);
+        assert_eq!(selected_index, 0);
+    }
+
+    #[test]
+    fn adjust_scroll_offset_keeps_selection_visible_with_margin() {
+        let mut scroll_offset = 0;
+        adjust_scroll_offset(&mut scroll_offset, 6, 5, 10);
+        assert_eq!(scroll_offset, 4);
+
+        adjust_scroll_offset(&mut scroll_offset, 0, 5, 10);
+        assert_eq!(scroll_offset, 0);
     }
 }

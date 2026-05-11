@@ -20,7 +20,7 @@ export JIRA_API_TOKEN="your-api-token" # https://id.atlassian.com/manage-profile
 export REPOS_DIR="/Users/daveystruijk/code"
 ```
 
-Press `F` in the app to choose the Jira project and visible statuses. The selection is cached.
+Press `F` in the app to choose the Jira project, visible statuses, and whether repo auto-tagging is enabled for that project. The selection is cached.
 
 Default hidden statuses: `Done`, `On development`, `Canceled`.
 
