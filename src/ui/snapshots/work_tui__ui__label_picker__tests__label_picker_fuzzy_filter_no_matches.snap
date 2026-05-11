@@ -6,15 +6,15 @@ expression: output
                                                             
                                                             
             ┌ Add repo label ──────────────────┐            
-            │/  Type to filter...              │            
+            │/  zzzzz                          │            
             │                                  │            
             │                                  │            
-            │frontend-app                      │            
-            │/home/user/repos/frontend-app     │            
-            │backend-api                       │            
-            │/home/user/repos/backend-api      │            
-            │billing-service                   │            
-            │/home/user/repos/billing-service  │            
+            │No matches                        │            
+            │                                  │            
+            │                                  │            
+            │                                  │            
+            │                                  │            
+            │                                  │            
             │                                  │            
             │                                  │            
             │                                  │            

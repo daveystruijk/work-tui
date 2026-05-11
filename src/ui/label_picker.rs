@@ -1,4 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
+use nucleo_matcher::{
+    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+    Config, Matcher, Utf32Str,
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
@@ -28,11 +32,27 @@ impl LabelPickerView {
             return repo_entries.iter().collect();
         }
 
-        let query = self.filter.to_lowercase();
-        repo_entries
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let pattern = Pattern::new(
+            &self.filter,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+
+        let mut scored: Vec<_> = repo_entries
             .iter()
-            .filter(|entry| entry.label.to_lowercase().contains(&query))
-            .collect()
+            .filter_map(|entry| {
+                let mut buffer = Vec::new();
+                let haystack = Utf32Str::new(&entry.label, &mut buffer);
+                pattern
+                    .score(haystack, &mut matcher)
+                    .map(|score| (score, entry))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.into_iter().map(|(_, entry)| entry).collect()
     }
 
     pub fn move_selection(&mut self, repo_entries: &[RepoEntry], down: bool) {
@@ -236,10 +256,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn label_picker_with_entries() {
-        let picker = LabelPickerView::default();
-        let entries = vec![
+    fn sample_entries() -> Vec<RepoEntry> {
+        vec![
             RepoEntry {
                 label: "frontend-app".to_string(),
                 normalized: "frontend-app".to_string(),
@@ -252,7 +270,48 @@ mod tests {
                 path: PathBuf::from("/home/user/repos/backend-api"),
                 github_slug: Some("org/backend-api".to_string()),
             },
-        ];
+            RepoEntry {
+                label: "billing-service".to_string(),
+                normalized: "billing-service".to_string(),
+                path: PathBuf::from("/home/user/repos/billing-service"),
+                github_slug: Some("org/billing-service".to_string()),
+            },
+            RepoEntry {
+                label: "data-pipeline".to_string(),
+                normalized: "data-pipeline".to_string(),
+                path: PathBuf::from("/home/user/repos/data-pipeline"),
+                github_slug: Some("org/data-pipeline".to_string()),
+            },
+        ]
+    }
+
+    #[test]
+    fn label_picker_with_entries() {
+        let picker = LabelPickerView::default();
+        let entries = sample_entries();
+        let output = render_to_string(60, 20, |frame| picker.render(frame, &entries));
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn label_picker_fuzzy_filter() {
+        let mut picker = LabelPickerView::default();
+        // "bka" should fuzzy-match "backend-api" (b...k from back, a from api)
+        for ch in "bka".chars() {
+            picker.type_char(ch);
+        }
+        let entries = sample_entries();
+        let output = render_to_string(60, 20, |frame| picker.render(frame, &entries));
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn label_picker_fuzzy_filter_no_matches() {
+        let mut picker = LabelPickerView::default();
+        for ch in "zzzzz".chars() {
+            picker.type_char(ch);
+        }
+        let entries = sample_entries();
         let output = render_to_string(60, 20, |frame| picker.render(frame, &entries));
         assert_snapshot!(output);
     }

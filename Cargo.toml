@@ -32,6 +32,7 @@ chrono = "0.4"
 dirs = "5"
 envy = "0.4"
 notify = "7"
+nucleo-matcher = "0.3"
 
 [dev-dependencies]
 insta = "1"

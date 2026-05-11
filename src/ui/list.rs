@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use color_eyre::{eyre::eyre, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use nucleo_matcher::{
+    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+    Config, Matcher, Utf32Str,
+};
 use ratatui::{
     layout::Constraint,
     style::{Modifier, Style},
@@ -664,6 +668,29 @@ mod tests {
         );
     }
 
+    /// Fuzzy search matches non-contiguous characters across issue fields.
+    #[test]
+    fn snapshots_search_fuzzy_matches() {
+        let issues = vec![
+            epic_issue("EPIC-1", "Platform migration"),
+            task_issue_with_parent("TASK-1", "Update config", "EPIC-1", "Platform migration"),
+            task_issue_with_parent("TASK-2", "Write tests", "EPIC-1", "Platform migration"),
+            story_issue("STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-3", "Update OAuth", "STORY-1", "Auth migration"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        // "pltfrm" fuzzy-matches "Platform" but would not substring-match
+        list.search_filter = "pltfrm".to_string();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "search_fuzzy_matches",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
     /// Searching for an epic by name surfaces it even without matching children.
     #[test]
     fn snapshots_search_matches_epic() {
@@ -1127,24 +1154,32 @@ impl ListView {
         use std::collections::HashMap as StdMap;
 
         let is_searching = !self.search_filter.is_empty();
-        let query = self.search_filter.to_lowercase();
 
-        let issue_matches_query = |issue: &Issue| -> bool {
-            issue.key.to_lowercase().contains(&query)
-                || issue
-                    .summary()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&query)
-                || issue
-                    .assignee()
-                    .map(|u| u.display_name.to_lowercase().contains(&query))
-                    .unwrap_or(false)
-                || issue
-                    .status()
-                    .map(|s| s.name.to_lowercase().contains(&query))
-                    .unwrap_or(false)
-        };
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let pattern = Pattern::new(
+            &self.search_filter,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+
+        let fuzzy_matches_issue =
+            |issue: &Issue, pattern: &Pattern, matcher: &mut Matcher| -> bool {
+                let fields = [
+                    issue.key.as_str().to_owned(),
+                    issue.summary().unwrap_or_default().to_owned(),
+                    issue
+                        .assignee()
+                        .map(|u| u.display_name.clone())
+                        .unwrap_or_default(),
+                    issue.status().map(|s| s.name.clone()).unwrap_or_default(),
+                ];
+                fields.iter().any(|field| {
+                    let mut buffer = Vec::new();
+                    let haystack = Utf32Str::new(field, &mut buffer);
+                    pattern.score(haystack, matcher).is_some()
+                })
+            };
 
         let matching_indices: Option<HashSet<usize>> = if !is_searching {
             None
@@ -1153,7 +1188,11 @@ impl ListView {
             // child matches, surface its parent from the issues list.
             let matching_parent_keys: HashSet<String> = story_children
                 .iter()
-                .filter(|(_, children)| children.iter().any(|c| issue_matches_query(c)))
+                .filter(|(_, children)| {
+                    children
+                        .iter()
+                        .any(|c| fuzzy_matches_issue(c, &pattern, &mut matcher))
+                })
                 .map(|(key, _)| key.clone())
                 .collect();
 
@@ -1162,7 +1201,8 @@ impl ListView {
                     .iter()
                     .enumerate()
                     .filter(|(_, issue)| {
-                        issue_matches_query(issue) || matching_parent_keys.contains(&issue.key)
+                        fuzzy_matches_issue(issue, &pattern, &mut matcher)
+                            || matching_parent_keys.contains(&issue.key)
                     })
                     .map(|(idx, _)| idx)
                     .collect(),
