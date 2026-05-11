@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use color_eyre::{eyre::eyre, Result};
 use futures::StreamExt;
@@ -20,12 +20,24 @@ pub struct IssueType {
     pub hierarchy_level: i32,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct JiraProject {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct JiraStatus {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct JiraConfig {
     pub jira_url: String,
     pub jira_email: String,
     pub jira_api_token: String,
-    pub jira_jql: String,
 }
 
 impl JiraConfig {
@@ -94,6 +106,56 @@ impl JiraClient {
             .into_iter()
             .next()
             .ok_or_else(|| eyre!("No Jira user found for configured email"))
+    }
+
+    pub async fn get_projects(&self) -> Result<Vec<JiraProject>> {
+        #[derive(serde::Deserialize)]
+        struct ProjectPage {
+            values: Vec<JiraProject>,
+            #[serde(rename = "isLast")]
+            is_last: bool,
+            #[serde(rename = "maxResults")]
+            max_results: usize,
+        }
+
+        let mut projects = Vec::new();
+        let mut start_at = 0;
+
+        loop {
+            let path = format!("/project/search?startAt={start_at}&maxResults=50");
+            let page: ProjectPage = self.jira.get("api", &path).await?;
+            projects.extend(page.values);
+
+            if page.is_last || page.max_results == 0 {
+                break;
+            }
+            start_at += page.max_results;
+        }
+
+        projects.sort_by(|left, right| left.key.cmp(&right.key).then(left.name.cmp(&right.name)));
+        Ok(projects)
+    }
+
+    pub async fn get_project_statuses(&self, project_key: &str) -> Result<Vec<JiraStatus>> {
+        #[derive(serde::Deserialize)]
+        struct IssueTypeStatuses {
+            statuses: Vec<JiraStatus>,
+        }
+
+        let path = format!("/project/{project_key}/statuses");
+        let groups: Vec<IssueTypeStatuses> = self.jira.get("api", &path).await?;
+        let mut seen_names = BTreeSet::new();
+        let mut statuses = Vec::new();
+
+        for status in groups.into_iter().flat_map(|group| group.statuses) {
+            let normalized = status.name.to_ascii_lowercase();
+            if seen_names.insert(normalized) {
+                statuses.push(status);
+            }
+        }
+
+        statuses.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(statuses)
     }
 
     pub async fn assign_issue(&self, issue_key: &str, account_id: &str) -> Result<()> {
@@ -452,9 +514,53 @@ impl IssueType {
     }
 }
 
+pub fn build_issue_search_jql(project_key: &str, selected_status_names: &[String]) -> String {
+    let mut clauses = vec![format!("project = {}", quote_jql_identifier(project_key))];
+
+    if !selected_status_names.is_empty() {
+        let statuses = selected_status_names
+            .iter()
+            .map(|status_name| quote_jql_string(status_name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        clauses.push(format!("status in ({statuses})"));
+    }
+
+    format!("{} ORDER BY updated DESC", clauses.join(" AND "))
+}
+
+fn quote_jql_identifier(value: &str) -> String {
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    {
+        return value.to_string();
+    }
+    quote_jql_string(value)
+}
+
+fn quote_jql_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::IssueType;
+    use super::{build_issue_search_jql, IssueType};
+
+    #[test]
+    fn builds_issue_search_jql_from_project_and_statuses() {
+        assert_eq!(
+            build_issue_search_jql(
+                "INI",
+                &[
+                    "In Progress".to_string(),
+                    "Ready for QA".to_string(),
+                    "On development".to_string(),
+                ]
+            ),
+            "project = INI AND status in (\"In Progress\", \"Ready for QA\", \"On development\") ORDER BY updated DESC"
+        );
+    }
 
     #[test]
     fn identifies_subtask_issue_types_by_negative_hierarchy() {

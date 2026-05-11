@@ -7,7 +7,7 @@
 //!   fetch-prs <repo-slugs...>
 //!   fetch-pr-detail <owner/repo> <pr-number>
 //!   fetch-ci-logs <owner/repo> <pr-number>
-//!   fetch-issues
+//!   fetch-issues <project-key> [status...]
 //!   fetch-children <parent-key>
 //!   scan-repos
 //!   detect-branches <issue-key> <repo-path>
@@ -20,7 +20,7 @@ use std::{env, path::PathBuf};
 use color_eyre::{eyre::eyre, Result};
 use tokio::process::Command;
 use work_tui::apis::github::{self, CheckStatus};
-use work_tui::apis::jira::{JiraClient, JiraConfig};
+use work_tui::apis::jira::{build_issue_search_jql, JiraClient, JiraConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         "fetch-prs" => fetch_prs(&args[2..]).await?,
         "fetch-pr-detail" => fetch_pr_detail_cmd(&args[2..]).await?,
         "fetch-ci-logs" => fetch_ci_logs(&args[2..]).await?,
-        "fetch-issues" => fetch_issues().await?,
+        "fetch-issues" => fetch_issues(&args[2..]).await?,
         "fetch-children" => fetch_children(&args[2..]).await?,
         "scan-repos" => scan_repos().await?,
         "detect-branches" => detect_branches(&args[2..]).await?,
@@ -53,11 +53,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn jira_client() -> Result<(JiraClient, String)> {
+fn jira_client() -> Result<JiraClient> {
     let config = JiraConfig::from_env()?;
-    let jql = config.jira_jql.clone();
     let client = JiraClient::new(&config)?;
-    Ok((client, jql))
+    Ok(client)
 }
 
 fn print_usage() {
@@ -142,8 +141,13 @@ async fn fetch_ci_logs(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_issues() -> Result<()> {
-    let (client, jql) = jira_client()?;
+async fn fetch_issues(args: &[String]) -> Result<()> {
+    let Some(project_key) = args.first() else {
+        return Err(eyre!("fetch-issues requires <project-key> [status... ]"));
+    };
+    let client = jira_client()?;
+    let selected_status_names = args[1..].to_vec();
+    let jql = build_issue_search_jql(project_key, &selected_status_names);
     let issues = client.search(&jql).await?;
     for issue in issues {
         println!("{}", issue.key);
@@ -161,7 +165,7 @@ async fn fetch_children(args: &[String]) -> Result<()> {
     let Some(parent_key) = args.first() else {
         return Err(eyre!("fetch-children requires <parent-key>"));
     };
-    let (client, _) = jira_client()?;
+    let client = jira_client()?;
     let jql = format!("parent = {parent_key} ORDER BY created DESC");
     let issues = client.search(&jql).await?;
     for issue in issues {
@@ -251,7 +255,7 @@ async fn finish(args: &[String]) -> Result<()> {
     let issue_key = &args[0];
     let issue_summary = &args[1];
     let repo_path = PathBuf::from(&args[2]);
-    let (client, _) = jira_client()?;
+    let client = jira_client()?;
     println!("WARNING: WRITE operation: finish workflow");
     let branch = work_tui::git::current_branch_in(&repo_path).await?;
     println!("current_branch: {}", branch);
@@ -284,7 +288,7 @@ async fn pick_up(args: &[String]) -> Result<()> {
     let issue_key = &args[0];
     let issue_summary = &args[1];
     let repo_path = args.get(2).map(PathBuf::from);
-    let (client, _) = jira_client()?;
+    let client = jira_client()?;
     println!("WARNING: WRITE operation: pick-up workflow");
     let myself = client.get_myself().await?;
     let account_id = myself.account_id.unwrap_or_default();

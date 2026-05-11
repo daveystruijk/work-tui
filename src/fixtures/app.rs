@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     apis::jira::{JiraClient, JiraConfig},
-    app::{AppView, DisplayRow},
+    app::{AppView, DisplayRow, JiraFilterState},
     config::AppConfig,
     ui::{CiLogsView, ListView, SidebarView, StatusBarView, UiAnimationView},
 };
@@ -15,7 +15,6 @@ pub fn test_app() -> AppView {
         jira_url: "http://localhost".to_string(),
         jira_email: "tester@example.com".to_string(),
         jira_api_token: "token".to_string(),
-        jira_jql: "project = TEST".to_string(),
     };
     let app_config = AppConfig {
         jira: config.clone(),
@@ -33,6 +32,7 @@ pub fn test_app() -> AppView {
         repo_error: None,
         list: ListView::default(),
         label_picker: None,
+        filter_picker: None,
         status_bar: StatusBarView::default(),
         loading: false,
         client,
@@ -57,6 +57,14 @@ pub fn test_app() -> AppView {
         pending_selected_issue_key: None,
         pending_prefetch_since: None,
         ticket_store: TicketStore::default(),
+        jira_filter: JiraFilterState {
+            selected_project_key: Some("TEST".to_string()),
+            selected_status_names: Vec::new(),
+            available_projects: Vec::new(),
+            available_statuses: Default::default(),
+            should_auto_open_picker: false,
+            loading_status_projects: Default::default(),
+        },
     }
 }
 

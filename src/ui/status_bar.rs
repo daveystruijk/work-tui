@@ -73,6 +73,12 @@ impl StatusBarView {
     pub fn handle_message(&mut self, msg: &Message) {
         match msg {
             Message::Myself(Err(err)) => self.set_error(format!("Failed to fetch user: {err}")),
+            Message::ProjectsLoaded(Err(err)) => {
+                self.set_error(format!("Failed to load Jira projects: {err}"))
+            }
+            Message::ProjectStatusesLoaded(project_key, Err(err)) => self.set_error(format!(
+                "Failed to load Jira statuses for {project_key}: {err}"
+            )),
             Message::Issues(Ok(_)) => self.last_updated = Some(Instant::now()),
             Message::Issues(Err(err)) => self.set_error(format!("Failed to load issues: {err}")),
             Message::GithubPrs(_, errors) => {

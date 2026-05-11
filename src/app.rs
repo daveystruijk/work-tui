@@ -8,15 +8,15 @@ use crate::{
     actions::{self, Message},
     apis::{
         github::{CheckStatus, GithubStatus, PrInfo, ReviewDecision},
-        jira::{Issue, JiraClient},
+        jira::{build_issue_search_jql, Issue, JiraClient, JiraProject, JiraStatus},
     },
     cache::{self, Cache},
     config::AppConfig,
     repos::{self, RepoEntry},
     ticket::{TicketSources, TicketStore},
     ui::{
-        CiLogsView, ConfirmDialogView, ImportTasksView, LabelPickerView, ListView, SidebarView,
-        StatusBarView, UiAnimationView,
+        CiLogsView, ConfirmDialogView, FilterPickerView, ImportTasksView, LabelPickerView,
+        ListView, SidebarView, StatusBarView, UiAnimationView,
     },
     utils::time::parse_duration_secs,
 };
@@ -68,7 +68,18 @@ pub enum InputFocus {
     ImportTasksPopup,
     CiLogPopup,
     LabelPicker,
+    JiraFilterPicker,
     ConfirmDialog,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct JiraFilterState {
+    pub selected_project_key: Option<String>,
+    pub selected_status_names: Vec<String>,
+    pub available_projects: Vec<JiraProject>,
+    pub available_statuses: HashMap<String, Vec<JiraStatus>>,
+    pub should_auto_open_picker: bool,
+    pub loading_status_projects: HashSet<String>,
 }
 
 pub struct AppView {
@@ -80,6 +91,7 @@ pub struct AppView {
     pub repo_error: Option<String>,
     pub list: ListView,
     pub label_picker: Option<LabelPickerView>,
+    pub filter_picker: Option<FilterPickerView>,
     pub status_bar: StatusBarView,
     pub loading: bool,
     pub client: JiraClient,
@@ -117,12 +129,17 @@ pub struct AppView {
     pub pending_prefetch_since: Option<std::time::Instant>,
     /// Enriched ticket data combining issues, PRs, repos, and active branches.
     pub ticket_store: TicketStore,
+    pub jira_filter: JiraFilterState,
 }
+
+pub(crate) const DEFAULT_HIDDEN_JIRA_STATUSES: &[&str] = &["done", "on development", "canceled"];
 
 impl AppView {
     pub fn new(config: AppConfig) -> Result<Self> {
         let client = JiraClient::new(&config.jira)?;
         let (message_tx, message_rx) = mpsc::unbounded_channel();
+        let cached = cache::load();
+        let should_auto_open_picker = cached.jira_project_key.is_none();
         let mut app = Self {
             should_quit: false,
             input_focus: InputFocus::default(),
@@ -132,6 +149,7 @@ impl AppView {
             repo_error: None,
             list: ListView::default(),
             label_picker: None,
+            filter_picker: None,
             status_bar: StatusBarView::default(),
             loading: true,
             client,
@@ -156,9 +174,16 @@ impl AppView {
             pending_selected_issue_key: None,
             pending_prefetch_since: None,
             ticket_store: TicketStore::default(),
+            jira_filter: JiraFilterState {
+                selected_project_key: cached.jira_project_key.clone(),
+                selected_status_names: cached.jira_status_names.clone(),
+                available_projects: Vec::new(),
+                available_statuses: HashMap::new(),
+                should_auto_open_picker,
+                loading_status_projects: HashSet::new(),
+            },
         };
 
-        let cached = cache::load();
         app.check_durations = cached.check_durations;
         app.list.collapsed_stories = cached.collapsed_stories;
 
@@ -169,20 +194,16 @@ impl AppView {
 
     /// Kick off all initialization work as background tasks.
     pub fn spawn_initialize(&self) {
-        actions::initialize::spawn(
-            self.message_tx.clone(),
-            self.client.clone(),
-            self.config.jira.jira_jql.clone(),
-        );
+        actions::initialize::spawn(self.message_tx.clone(), self.client.clone());
     }
 
     /// Spawn a full refresh (issues + PRs + statuses).
     pub fn spawn_refresh(&mut self) {
-        actions::refresh::spawn(
-            self.message_tx.clone(),
-            self.client.clone(),
-            self.config.jira.jira_jql.clone(),
-        );
+        let Some(jql) = self.current_issue_jql() else {
+            self.loading = false;
+            return;
+        };
+        actions::refresh::spawn(self.message_tx.clone(), self.client.clone(), jql);
         self.last_ci_refresh = std::time::Instant::now();
     }
 
@@ -196,14 +217,8 @@ impl AppView {
 
     /// Extract the Jira project key prefix (e.g. "INI-") from the JQL or issues.
     fn project_key_prefix(&self) -> Option<String> {
-        // Try extracting from JQL: "project = INI"
-        let jql_words: Vec<_> = self.config.jira.jira_jql.split_whitespace().collect();
-        if let Some(cap) = jql_words
-            .windows(3)
-            .find(|w| w[0].eq_ignore_ascii_case("project") && w[1] == "=")
-        {
-            let key = cap[2].trim_matches('"');
-            return Some(format!("{key}-"));
+        if let Some(project_key) = self.jira_filter.selected_project_key.as_deref() {
+            return Some(format!("{project_key}-"));
         }
 
         // Fallback: derive from first issue key
@@ -228,6 +243,85 @@ impl AppView {
     /// Spawn GitHub PR refresh (same query as initial fetch).
     pub fn spawn_github_prs_active(&mut self) {
         self.spawn_github_prs();
+    }
+
+    pub fn current_issue_jql(&self) -> Option<String> {
+        let project_key = self.jira_filter.selected_project_key.as_deref()?;
+        if self.jira_filter.selected_status_names.is_empty() {
+            return None;
+        }
+        Some(build_issue_search_jql(
+            project_key,
+            &self.jira_filter.selected_status_names,
+        ))
+    }
+
+    pub fn current_project_key(&self) -> Option<&str> {
+        self.jira_filter.selected_project_key.as_deref()
+    }
+
+    pub fn default_status_names_for_project(&self, project_key: &str) -> Vec<String> {
+        let Some(statuses) = self.jira_filter.available_statuses.get(project_key) else {
+            return Vec::new();
+        };
+        let excluded: HashSet<_> = DEFAULT_HIDDEN_JIRA_STATUSES
+            .iter()
+            .map(|status_name| status_name.to_string())
+            .collect();
+
+        let mut selected: Vec<String> = statuses
+            .iter()
+            .filter(|status| !excluded.contains(&status.name.to_ascii_lowercase()))
+            .map(|status| status.name.clone())
+            .collect();
+
+        if selected.is_empty() {
+            selected = statuses.iter().map(|status| status.name.clone()).collect();
+        }
+
+        selected
+    }
+
+    pub fn available_statuses_for_project(&self, project_key: &str) -> &[JiraStatus] {
+        self.jira_filter
+            .available_statuses
+            .get(project_key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn status_names_for_project(&self, project_key: &str) -> Vec<String> {
+        self.available_statuses_for_project(project_key)
+            .iter()
+            .map(|status| status.name.clone())
+            .collect()
+    }
+
+    pub fn spawn_project_statuses(&mut self, project_key: &str) {
+        if self
+            .jira_filter
+            .available_statuses
+            .contains_key(project_key)
+            || !self
+                .jira_filter
+                .loading_status_projects
+                .insert(project_key.to_string())
+        {
+            return;
+        }
+        actions::fetch_jira_filters::spawn_project_statuses(
+            self.message_tx.clone(),
+            self.client.clone(),
+            project_key.to_string(),
+        );
+    }
+
+    pub fn apply_jira_filter(&mut self, project_key: String, status_names: Vec<String>) {
+        self.jira_filter.selected_project_key = Some(project_key);
+        self.jira_filter.selected_status_names = status_names;
+        self.save_cache();
+        self.loading = true;
+        self.spawn_refresh();
     }
 
     /// Schedule a debounced prefetch of the selected PR detail.
@@ -380,6 +474,10 @@ impl AppView {
                     self.my_account_id = account_id;
                 }
             }
+            Message::ProjectsLoaded(result) => self.handle_projects_loaded_message(result),
+            Message::ProjectStatusesLoaded(project_key, result) => {
+                self.handle_project_statuses_loaded_message(project_key, result)
+            }
             Message::Issues(result) => self.handle_issues_message(result),
             Message::GithubPrs(all_prs, _) => {
                 self.handle_github_prs_message(all_prs);
@@ -469,6 +567,99 @@ impl AppView {
             .find(|task| task.id == progress.task_id)
         {
             task.progress = Some(progress);
+        }
+    }
+
+    fn handle_projects_loaded_message(&mut self, result: Result<Vec<JiraProject>>) {
+        match result {
+            Ok(projects) => {
+                self.jira_filter.available_projects = projects;
+                if self.jira_filter.available_projects.is_empty() {
+                    self.loading = false;
+                    return;
+                }
+
+                let project_exists = |project_key: &str| {
+                    self.jira_filter
+                        .available_projects
+                        .iter()
+                        .any(|project| project.key == project_key)
+                };
+
+                let selected_project_key = self
+                    .jira_filter
+                    .selected_project_key
+                    .clone()
+                    .filter(|project_key| project_exists(project_key));
+
+                if self.jira_filter.selected_project_key.is_some() && selected_project_key.is_none()
+                {
+                    self.jira_filter.should_auto_open_picker = true;
+                    self.jira_filter.selected_status_names.clear();
+                }
+
+                self.jira_filter.selected_project_key = selected_project_key;
+
+                if let Some(project_key) = self.current_project_key() {
+                    let project_key = project_key.to_string();
+                    self.spawn_project_statuses(&project_key);
+                } else {
+                    self.loading = false;
+                }
+
+                if self.jira_filter.should_auto_open_picker {
+                    crate::ui::filter_picker::open(self);
+                    self.jira_filter.should_auto_open_picker = false;
+                }
+            }
+            Err(_) => {
+                self.loading = false;
+            }
+        }
+    }
+
+    fn handle_project_statuses_loaded_message(
+        &mut self,
+        project_key: String,
+        result: Result<Vec<JiraStatus>>,
+    ) {
+        self.jira_filter
+            .loading_status_projects
+            .remove(&project_key);
+        let Ok(statuses) = result else {
+            if self.current_project_key() == Some(project_key.as_str()) {
+                self.loading = false;
+            }
+            return;
+        };
+
+        self.jira_filter
+            .available_statuses
+            .insert(project_key.clone(), statuses);
+
+        if self.current_project_key() == Some(project_key.as_str()) {
+            let available_names: HashSet<_> = self
+                .status_names_for_project(&project_key)
+                .into_iter()
+                .map(|status_name| status_name.to_ascii_lowercase())
+                .collect();
+            self.jira_filter
+                .selected_status_names
+                .retain(|status_name| available_names.contains(&status_name.to_ascii_lowercase()));
+
+            if self.jira_filter.selected_status_names.is_empty() {
+                self.jira_filter.selected_status_names =
+                    self.default_status_names_for_project(&project_key);
+            }
+
+            self.save_cache();
+            self.loading = true;
+            self.spawn_refresh();
+        }
+
+        let default_status_names = self.default_status_names_for_project(&project_key);
+        if let Some(picker) = self.filter_picker.as_mut() {
+            picker.hydrate_status_selection(&project_key, default_status_names);
         }
     }
 
@@ -672,12 +863,15 @@ impl AppView {
     }
 
     fn refetch_story_children(&self, story_keys: &[String]) {
+        let Some(jql) = self.current_issue_jql() else {
+            return;
+        };
         for key in story_keys {
             actions::fetch_children::spawn(
                 self.message_tx.clone(),
                 self.client.clone(),
                 key.clone(),
-                self.config.jira.jira_jql.clone(),
+                jql.clone(),
             );
         }
     }
@@ -752,11 +946,15 @@ impl AppView {
             return;
         }
         self.list.start_loading_children(parent_key);
+        let Some(jql) = self.current_issue_jql() else {
+            self.list.loading_children.remove(parent_key);
+            return;
+        };
         actions::fetch_children::spawn(
             self.message_tx.clone(),
             self.client.clone(),
             parent_key.to_string(),
-            self.config.jira.jira_jql.clone(),
+            jql,
         );
     }
 
@@ -838,6 +1036,8 @@ impl AppView {
         cache::save(&Cache {
             check_durations: self.check_durations.clone(),
             collapsed_stories: self.list.collapsed_stories.clone(),
+            jira_project_key: self.jira_filter.selected_project_key.clone(),
+            jira_status_names: self.jira_filter.selected_status_names.clone(),
         });
     }
 

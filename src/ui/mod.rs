@@ -1,5 +1,6 @@
 pub mod ci_logs;
 pub mod confirm_dialog;
+pub mod filter_picker;
 pub mod import_tasks;
 pub mod label_picker;
 pub mod list;
@@ -8,6 +9,7 @@ mod status_bar;
 
 pub use ci_logs::CiLogsView;
 pub use confirm_dialog::ConfirmDialogView;
+pub use filter_picker::FilterPickerView;
 pub use import_tasks::ImportTasksView;
 pub use label_picker::LabelPickerView;
 pub use list::ListView;
@@ -137,6 +139,11 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
         InputFocus::LabelPicker => {
             if let Some(picker) = &app.label_picker {
                 picker.render(frame, &app.repo_entries);
+            }
+        }
+        InputFocus::JiraFilterPicker => {
+            if let Some(picker) = &app.filter_picker {
+                picker.render(frame, &app.jira_filter);
             }
         }
         InputFocus::ConfirmDialog => {

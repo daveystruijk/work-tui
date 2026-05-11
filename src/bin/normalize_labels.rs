@@ -1,16 +1,16 @@
 //! One-off script to convert CamelCase Jira labels to kebab-case.
 //!
-//! Reads JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_JQL from env (same as work-tui).
+//! Reads JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN from env.
 //! Dry-run by default — pass `--apply` to actually update labels.
 //!
 //! Usage:
-//!   cargo run --bin normalize-labels            # dry-run
-//!   cargo run --bin normalize-labels -- --apply # apply changes
+//!   cargo run --bin normalize-labels -- --project PROJ
+//!   cargo run --bin normalize-labels -- --project PROJ --apply
 
 use std::collections::HashMap;
 use std::env;
 
-use color_eyre::Result;
+use color_eyre::{eyre::eyre, Result};
 use futures::StreamExt;
 use gouqi::{r#async::Jira, Credentials, SearchOptions};
 use work_tui::apis::jira::JiraConfig;
@@ -62,13 +62,19 @@ fn needs_conversion(label: &str) -> bool {
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let apply = env::args().any(|a| a == "--apply");
+    let args: Vec<String> = env::args().collect();
+    let apply = args.iter().any(|arg| arg == "--apply");
+    let project_key = args
+        .windows(2)
+        .find(|window| window[0] == "--project")
+        .map(|window| window[1].clone())
+        .ok_or_else(|| eyre!("--project <KEY> is required"))?;
 
     let config = JiraConfig::from_env()?;
     let host = config.jira_url.trim_end_matches('/').to_string();
     let credentials = Credentials::Basic(config.jira_email, config.jira_api_token);
     let jira = Jira::new(&host, credentials)?;
-    let jql = config.jira_jql;
+    let jql = format!("project = {project_key} ORDER BY updated DESC");
 
     println!("Searching issues with: {jql}");
     if !apply {

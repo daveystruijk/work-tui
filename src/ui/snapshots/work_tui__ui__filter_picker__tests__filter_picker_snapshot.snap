@@ -1,0 +1,30 @@
+---
+source: src/ui/filter_picker.rs
+assertion_line: 640
+expression: output
+---
+                                                                                                    
+                                                                                                    
+                                                                                                    
+        ┌ Jira filters ────────────────────────────────────────────────────────────────────┐        
+        │/ Type to filter projects...                                                      │        
+        │                                                                                  │        
+        │                                                                                  │        
+        │┌ Projects ────────────────────────┐┌ Statuses (2) ──────────────────────────────┐│        
+        ││INI       Internal Initiative     ││[ ] Backlog                                 ││        
+        ││OPS       Operations              ││[x] In Progress                             ││        
+        ││WEB       Website                 ││[x] Review                                  ││        
+        ││                                  ││[ ] Done                                    ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        ││                                  ││                                            ││        
+        │└──────────────────────────────────┘└────────────────────────────────────────────┘│        
+        │Tab switch pane  Enter apply  Esc cancel                                          │        
+        │Space toggle status  a toggle all                                                 │        
+        └──────────────────────────────────────────────────────────────────────────────────┘

@@ -11,15 +11,18 @@ A terminal UI for picking up work.
 
 ## Configuration
 
-All configuration is done through environment variables. All are **required**:
+Set Jira credentials and repository root through environment variables:
 
 ```sh
 export JIRA_URL="https://yourteam.atlassian.net"
 export JIRA_EMAIL="you@example.com"
 export JIRA_API_TOKEN="your-api-token" # https://id.atlassian.com/manage-profile/security/api-tokens
-export JIRA_JQL="project = PROJ and status != Done and status != 'On development' and status != 'Canceled' ORDER BY updated DESC"
 export REPOS_DIR="/Users/daveystruijk/code"
 ```
+
+Press `F` in the app to choose the Jira project and visible statuses. The selection is cached.
+
+Default hidden statuses: `Done`, `On development`, `Canceled`.
 
 ## Usage
 

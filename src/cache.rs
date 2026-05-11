@@ -14,6 +14,10 @@ pub struct Cache {
     /// Collapsed story keys with their section context.
     #[serde(default)]
     pub collapsed_stories: HashSet<(String, crate::app::ListSection)>,
+    #[serde(default)]
+    pub jira_project_key: Option<String>,
+    #[serde(default)]
+    pub jira_status_names: Vec<String>,
 }
 
 fn cache_path() -> Option<PathBuf> {

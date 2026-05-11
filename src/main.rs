@@ -231,6 +231,7 @@ async fn handle_key_event(app: &mut AppView, key_event: KeyEvent) {
         InputFocus::ImportTasksPopup => ui::import_tasks::update(app, key_event),
         InputFocus::CiLogPopup => ui::ci_logs::update(app, key_event).await,
         InputFocus::LabelPicker => ui::label_picker::update(app, key_event).await,
+        InputFocus::JiraFilterPicker => ui::filter_picker::update(app, key_event).await,
         InputFocus::ConfirmDialog => ui::confirm_dialog::update(app, key_event),
     }
 

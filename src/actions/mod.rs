@@ -19,6 +19,7 @@ pub mod fetch_children;
 pub mod fetch_ci_logs;
 pub mod fetch_github_pr_detail;
 pub mod fetch_github_prs;
+pub mod fetch_jira_filters;
 pub mod finish;
 pub mod fix_ci;
 pub mod import_tasks;
@@ -36,7 +37,7 @@ use tokio::sync::mpsc;
 
 use crate::apis::{
     github::{CheckStep, PrDetail, PrInfo},
-    jira::Issue,
+    jira::{Issue, JiraProject, JiraStatus},
 };
 
 /// Generic progress report sent by long-running actions.
@@ -83,6 +84,10 @@ pub enum Message {
     Myself(Result<String>),
     /// Issues fetched from Jira (from [`initialize`] / [`refresh`]).
     Issues(Result<Vec<Issue>>),
+    /// Jira projects fetched for filter selection (from [`initialize`]).
+    ProjectsLoaded(Result<Vec<JiraProject>>),
+    /// Jira statuses fetched for one project (from [`fetch_jira_filters`]).
+    ProjectStatusesLoaded(String, Result<Vec<JiraStatus>>),
     /// GitHub PRs fetched for all configured repos (from [`fetch_github_prs`]).
     /// Carries (successful PRs, per-repo error messages).
     GithubPrs(Vec<PrInfo>, Vec<String>),

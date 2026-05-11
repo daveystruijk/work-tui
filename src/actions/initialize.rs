@@ -3,12 +3,12 @@
 //! Spawns three independent tasks in parallel:
 //! 1. Resolve the current git branch
 //! 2. Fetch the Jira user identity
-//! 3. Fetch the initial issue list
+//! 3. Fetch Jira projects for the filter UI
 //!
 //! # Channel messages produced
 //! - [`Message::CurrentBranch`]
 //! - [`Message::Myself`]
-//! - [`Message::Issues`]
+//! - [`Message::ProjectsLoaded`]
 //! - [`Message::Progress`] (one per sub-task)
 
 use tokio::sync::mpsc;
@@ -19,7 +19,7 @@ use crate::apis::jira::JiraClient;
 use crate::git;
 
 /// Spawn all initialization tasks concurrently.
-pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String) {
+pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient) {
     super::spawn_action(tx, "initialize", "Initializing", |tx| async move {
         let current_branch = async {
             let _ = tx.send(Message::Progress(Progress {
@@ -48,17 +48,17 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, jql: String
             let _ = tx.send(Message::Myself(result));
         };
 
-        let issues = async {
+        let projects = async {
             let _ = tx.send(Message::Progress(Progress {
                 task_id: "initialize".into(),
-                message: "Fetching issues...".into(),
+                message: "Fetching Jira projects...".into(),
                 current: 3,
                 total: 3,
             }));
-            let result = client.search(&jql).await;
-            let _ = tx.send(Message::Issues(result));
+            let result = client.get_projects().await;
+            let _ = tx.send(Message::ProjectsLoaded(result));
         };
 
-        tokio::join!(current_branch, myself, issues);
+        tokio::join!(current_branch, myself, projects);
     });
 }

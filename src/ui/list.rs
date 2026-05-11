@@ -2112,6 +2112,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                             app.input_focus = crate::app::InputFocus::InlineNew;
                         }
                         'a' => open_label_picker(app),
+                        'F' => open_jira_filter_picker(app),
                         'r' => {
                             app.loading = true;
                             app.spawn_refresh();
@@ -2376,10 +2377,14 @@ fn spawn_submit_inline_new(app: &mut AppView) {
     }
 
     app.input_focus = InputFocus::List;
+    let Some(jql) = app.current_issue_jql() else {
+        app.status_bar.set_warning("Select a Jira project first");
+        return;
+    };
     actions::create_inline_issue::spawn(
         app.message_tx.clone(),
         app.client.clone(),
-        app.config.jira.jira_jql.clone(),
+        jql,
         state.project_key,
         summary,
         state.parent_key,
@@ -2387,16 +2392,8 @@ fn spawn_submit_inline_new(app: &mut AppView) {
 }
 
 fn derive_project_key(app: &AppView) -> String {
-    if let Some(cap) = app
-        .config
-        .jira
-        .jira_jql
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .windows(3)
-        .find(|window| window[0].eq_ignore_ascii_case("project") && window[1] == "=")
-    {
-        return cap[2].trim_matches('"').to_string();
+    if let Some(project_key) = app.current_project_key() {
+        return project_key.to_string();
     }
 
     if let Some(project_key) = app
@@ -2423,6 +2420,10 @@ fn open_label_picker(app: &mut AppView) {
     }
     app.label_picker = Some(LabelPickerView::default());
     app.input_focus = InputFocus::LabelPicker;
+}
+
+fn open_jira_filter_picker(app: &mut AppView) {
+    crate::ui::filter_picker::open(app);
 }
 
 fn open_ci_log_popup(app: &mut AppView) {
