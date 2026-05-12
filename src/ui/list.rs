@@ -1946,19 +1946,17 @@ impl ListView {
                 }
                 DisplayRow::Ticket { key, depth } => {
                     let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key);
-                    let is_group_header = issue
-                        .map(crate::issue::is_expandable)
-                        .unwrap_or(false)
+                    let is_group_header = issue.map(crate::issue::is_expandable).unwrap_or(false)
                         || self
-                        .display_rows
-                        .get(row_idx + 1)
-                        .map(|next| match next {
-                            DisplayRow::Ticket { depth: d, .. }
-                            | DisplayRow::Loading { depth: d }
-                            | DisplayRow::Empty { depth: d } => *d > *depth,
-                            _ => false,
-                        })
-                        .unwrap_or(false);
+                            .display_rows
+                            .get(row_idx + 1)
+                            .map(|next| match next {
+                                DisplayRow::Ticket { depth: d, .. }
+                                | DisplayRow::Loading { depth: d }
+                                | DisplayRow::Empty { depth: d } => *d > *depth,
+                                _ => false,
+                            })
+                            .unwrap_or(false);
                     if is_group_header {
                         let collapsed = current_section
                             .map(|s| self.collapsed_stories.contains(&(key.clone(), s)))

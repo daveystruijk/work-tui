@@ -133,11 +133,7 @@ impl FilterPickerView {
             self.sync_project_selection(filter_state);
             return;
         }
-        move_selected_index(
-            &mut self.project_selected,
-            count,
-            if down { 1 } else { -1 },
-        );
+        move_selected_index(&mut self.project_selected, count, if down { 1 } else { -1 });
         self.adjust_project_scroll_offset(count);
         self.sync_project_selection(filter_state);
     }
@@ -154,11 +150,7 @@ impl FilterPickerView {
             self.status_scroll_offset = 0;
             return;
         }
-        move_selected_index(
-            &mut self.status_selected,
-            count,
-            if down { 1 } else { -1 },
-        );
+        move_selected_index(&mut self.status_selected, count, if down { 1 } else { -1 });
         self.adjust_status_scroll_offset(count);
     }
 
@@ -206,14 +198,18 @@ impl FilterPickerView {
         let Some(project_key) = self.draft_project_key.as_deref() else {
             return false;
         };
-        self.draft_auto_tag_enabled_project_keys.contains(project_key)
+        self.draft_auto_tag_enabled_project_keys
+            .contains(project_key)
     }
 
     fn toggle_auto_tagging_for_draft_project(&mut self) {
         let Some(project_key) = self.draft_project_key.clone() else {
             return;
         };
-        if !self.draft_auto_tag_enabled_project_keys.remove(&project_key) {
+        if !self
+            .draft_auto_tag_enabled_project_keys
+            .remove(&project_key)
+        {
             self.draft_auto_tag_enabled_project_keys.insert(project_key);
         }
     }
@@ -339,7 +335,11 @@ impl FilterPickerView {
                 Span::styled("/ ", Style::default().fg(Theme::Accent)),
                 Span::styled(project_filter_display, project_filter_style),
                 Span::styled(
-                    if self.project_search_active { "▏" } else { "" },
+                    if self.project_search_active {
+                        "▏"
+                    } else {
+                        ""
+                    },
                     Style::default()
                         .fg(Theme::Accent)
                         .add_modifier(Modifier::SLOW_BLINK),
@@ -515,7 +515,8 @@ pub fn open(app: &mut AppView) {
     }
 
     let mut picker = FilterPickerView::default();
-    picker.draft_auto_tag_enabled_project_keys = app.jira_filter.auto_tag_enabled_project_keys.clone();
+    picker.draft_auto_tag_enabled_project_keys =
+        app.jira_filter.auto_tag_enabled_project_keys.clone();
     if let Some(current_project_key) = app.current_project_key() {
         picker.project_selected = app
             .jira_filter
