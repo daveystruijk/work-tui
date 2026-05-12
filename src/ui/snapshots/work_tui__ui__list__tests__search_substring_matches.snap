@@ -1,7 +1,0 @@
----
-source: src/ui/list.rs
-expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
----
-── BOARD (0) ──
-▸ EPIC-1 Platform migration [board]
-  ⟳ loading...

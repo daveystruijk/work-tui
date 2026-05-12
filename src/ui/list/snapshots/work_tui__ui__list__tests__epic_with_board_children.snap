@@ -1,6 +1,5 @@
 ---
-source: src/ui/list.rs
-assertion_line: 340
+source: src/ui/list/mod.rs
 expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
 ---
 ── BOARD (2) ──

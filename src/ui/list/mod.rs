@@ -1,3 +1,6 @@
+pub mod columns;
+pub mod row;
+
 use std::collections::{HashMap, HashSet};
 
 use color_eyre::{eyre::eyre, Result};
@@ -9,17 +12,13 @@ use nucleo_matcher::{
 use ratatui::{
     layout::Constraint,
     style::{Modifier, Style},
-    text::{Line, Span},
     widgets::{Block, Cell, HighlightSpacing, Row, Table, TableState},
     Frame,
 };
 
 use crate::actions;
 use crate::actions::Message;
-use crate::apis::{
-    github::{CheckStatus, MergeableState, PrInfo, ReviewDecision},
-    jira::Issue,
-};
+use crate::apis::jira::Issue;
 use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus, ListSection};
 use crate::theme::Theme;
 use crate::ticket::Ticket;
@@ -28,9 +27,11 @@ use crate::ui::{ImportTasksView, LabelPickerView};
 use tokio::process::Command;
 
 use super::{
-    adjust_scroll_offset, issue_type_icon, max_col_width, move_selected_index, status_color,
-    CellMap, UiAnimationView, COLUMNS, SPINNER_FRAMES,
+    adjust_scroll_offset, max_col_width, move_selected_index, CellMap, UiAnimationView, COLUMNS,
 };
+
+pub use row::find_issue_by_key;
+pub use row::ListRenderContext;
 
 /// Returns true if the issue's status indicates it belongs in the backlog section.
 fn is_backlog_status(issue: &Issue) -> bool {
@@ -374,7 +375,7 @@ mod tests {
                 }
                 DisplayRow::Ticket { key, depth } => {
                     let indent = "  ".repeat(*depth as usize);
-                    let issue = super::find_issue_by_key(issues, story_children, key);
+                    let issue = super::row::find_issue_by_key(issues, story_children, key);
                     let is_group_header = next_row_depth(i).map(|d| d > *depth).unwrap_or(false);
                     if is_group_header {
                         let summary = issue
@@ -806,7 +807,7 @@ mod tests {
             .add_modifier(Modifier::BOLD);
 
         // "Platform" with indices 0,4,5 matching "P", "f", "o"
-        let spans = super::highlight_spans("Platform", &[0, 4, 5], base, highlight);
+        let spans = super::columns::highlight_spans("Platform", &[0, 4, 5], base, highlight);
         let texts: Vec<(&str, Style)> = spans
             .iter()
             .map(|s| (s.content.as_ref(), s.style))
@@ -829,7 +830,7 @@ mod tests {
         let base = Style::default().fg(crate::theme::Theme::Text);
         let highlight = Style::default().fg(crate::theme::Theme::SearchMatch);
 
-        let spans = super::highlight_spans("Hello", &[], base, highlight);
+        let spans = super::columns::highlight_spans("Hello", &[], base, highlight);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content.as_ref(), "Hello");
         assert_eq!(spans[0].style, base);
@@ -840,19 +841,6 @@ mod tests {
             .filter(|row| matches!(row, DisplayRow::Ticket { key: row_key, .. } if row_key == key))
             .count()
     }
-}
-
-/// Read-only shared state passed to ListView for rendering.
-pub struct ListRenderContext<'a> {
-    pub issues: &'a [Issue],
-    pub story_children: &'a HashMap<String, Vec<Issue>>,
-    pub ticket_store: &'a crate::ticket::TicketStore,
-    pub github_prs: &'a HashMap<String, PrInfo>,
-    pub active_branches: &'a HashMap<String, String>,
-    pub check_durations: &'a HashMap<String, u64>,
-    pub animation: &'a UiAnimationView,
-    pub inline_new: Option<&'a InlineNewView>,
-    pub search_filter: &'a str,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1945,7 +1933,7 @@ impl ListView {
             let cells = match display_row {
                 DisplayRow::SectionHeader { section, count } => {
                     current_section = Some(*section);
-                    section_header_row(section, *count, area.width)
+                    row::section_header_row(section, *count, area.width)
                 }
                 DisplayRow::Ticket { key, depth } => {
                     let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key);
@@ -1968,7 +1956,7 @@ impl ListView {
                         let summary = issue
                             .map(|i| i.summary().unwrap_or_default())
                             .unwrap_or_default();
-                        story_header_row(
+                        row::story_header_row(
                             key,
                             &summary,
                             row_idx,
@@ -1977,7 +1965,7 @@ impl ListView {
                             has_pending_import,
                         )
                     } else if let Some(ticket) = ctx.ticket_store.get(key) {
-                        issue_row(ctx, &self.pending_import_keys, ticket, row_idx, *depth)
+                        row::issue_row(ctx, &self.pending_import_keys, ticket, row_idx, *depth)
                     } else {
                         let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key)
                             .unwrap_or_else(|| panic!("missing issue for key {key}"));
@@ -1987,14 +1975,16 @@ impl ListView {
                             repos: vec![],
                             active_branch: ctx.active_branches.get(key).cloned(),
                         };
-                        issue_row(ctx, &self.pending_import_keys, &fallback, row_idx, *depth)
+                        row::issue_row(ctx, &self.pending_import_keys, &fallback, row_idx, *depth)
                     }
                 }
-                DisplayRow::InlineNew { depth } => inline_new_row(ctx.inline_new, row_idx, *depth),
-                DisplayRow::Loading { depth } => {
-                    loading_row(ctx.animation.spinner_tick, row_idx, *depth)
+                DisplayRow::InlineNew { depth } => {
+                    row::inline_new_row(ctx.inline_new, row_idx, *depth)
                 }
-                DisplayRow::Empty { depth } => empty_row(row_idx, *depth),
+                DisplayRow::Loading { depth } => {
+                    row::loading_row(ctx.animation.spinner_tick, row_idx, *depth)
+                }
+                DisplayRow::Empty { depth } => row::empty_row(row_idx, *depth),
             };
             row_data.push(cells);
         }
@@ -2591,429 +2581,6 @@ async fn open_url_in_browser(url: &str) -> Result<()> {
     Err(eyre!(stderr))
 }
 
-fn story_header_row(
-    key: &str,
-    summary: &str,
-    _idx: usize,
-    collapsed: bool,
-    depth: u8,
-    has_pending_import: bool,
-) -> (CellMap<'static>, Style) {
-    let row_style = Style::default().fg(Theme::Muted);
-
-    let first_line = summary.lines().next().unwrap_or_default().to_string();
-    let icon = if collapsed { "▶" } else { "▼" };
-    let indent = "  ".repeat(depth as usize);
-    let header_style = Style::default()
-        .fg(Theme::AccentSoft)
-        .add_modifier(Modifier::BOLD);
-
-    let mut summary_spans = vec![Span::styled(
-        format!("{}{} {}", indent, icon, key),
-        header_style,
-    )];
-    if has_pending_import {
-        summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
-    }
-    summary_spans.push(Span::styled(format!(" {first_line}"), header_style));
-    let summary_line = Line::from(summary_spans);
-
-    let cells = HashMap::from([("Issue", summary_line)]);
-    (cells, row_style)
-}
-
-fn section_header_row(
-    section: &ListSection,
-    count: usize,
-    _width: u16,
-) -> (CellMap<'static>, Style) {
-    let row_style = Style::default().fg(Theme::Muted).bg(Theme::SidebarBg);
-    let label = match section {
-        ListSection::Board => "BOARD",
-        ListSection::Backlog => "BACKLOG",
-    };
-    let label_color = match label {
-        "BOARD" | "BACKLOG" => Theme::Muted,
-        _ => Theme::AccentSoft,
-    };
-    let header_style = Style::default()
-        .fg(label_color)
-        .bg(Theme::SidebarBg)
-        .add_modifier(Modifier::BOLD);
-    let issue_word = if count == 1 { "issue" } else { "issues" };
-    let cells = HashMap::from([(
-        "Issue",
-        Line::from(vec![Span::styled(
-            format!("{label} ({count} {issue_word})"),
-            header_style,
-        )]),
-    )]);
-    (cells, row_style)
-}
-
-fn inline_new_row(
-    state: Option<&InlineNewView>,
-    _idx: usize,
-    depth: u8,
-) -> (CellMap<'static>, Style) {
-    let row_style = Style::default().fg(Theme::Text);
-
-    let summary_text = state.map(|s| s.summary.as_str()).unwrap_or("");
-    let prefix = if depth > 0 {
-        "  ".repeat(depth as usize)
-    } else {
-        String::new()
-    };
-
-    let cells = HashMap::from([(
-        "Issue",
-        Line::from(vec![
-            Span::styled(format!("{prefix}◦ "), Style::default().fg(Theme::Muted)),
-            Span::styled(
-                "NEW",
-                Style::default()
-                    .fg(Theme::Warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" ", Style::default()),
-            Span::styled(summary_text.to_string(), Style::default().fg(Theme::Text)),
-            Span::styled(
-                "▏".to_string(),
-                Style::default()
-                    .fg(Theme::Accent)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ]),
-    )]);
-    (cells, row_style)
-}
-
-fn loading_row(spinner_tick: usize, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
-    let row_style = Style::default().fg(Theme::Muted);
-    let indent = "  ".repeat(depth as usize);
-    let spinner = SPINNER_FRAMES[spinner_tick % SPINNER_FRAMES.len()];
-    let cells = HashMap::from([(
-        "Issue",
-        Line::styled(
-            format!("{indent}{spinner} Loading..."),
-            Style::default().fg(Theme::Muted),
-        ),
-    )]);
-    (cells, row_style)
-}
-
-fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
-    let row_style = Style::default().fg(Theme::Muted);
-    let indent = "  ".repeat(depth as usize);
-    let cells = HashMap::from([(
-        "Issue",
-        Line::styled(
-            format!("{indent}No issues"),
-            Style::default().fg(Theme::Muted),
-        ),
-    )]);
-    (cells, row_style)
-}
-
-/// Split text into spans, highlighting characters at the given indices with `highlight_style`.
-fn highlight_spans(
-    text: &str,
-    indices: &[u32],
-    base_style: Style,
-    highlight_style: Style,
-) -> Vec<Span<'static>> {
-    if indices.is_empty() {
-        return vec![Span::styled(text.to_string(), base_style)];
-    }
-
-    let match_set: HashSet<u32> = indices.iter().copied().collect();
-    let mut spans = Vec::new();
-    let mut current = String::new();
-    let mut current_is_match = false;
-
-    for (char_idx, ch) in text.chars().enumerate() {
-        let is_match = match_set.contains(&(char_idx as u32));
-        if is_match != current_is_match && !current.is_empty() {
-            let style = if current_is_match {
-                highlight_style
-            } else {
-                base_style
-            };
-            spans.push(Span::styled(std::mem::take(&mut current), style));
-        }
-        current_is_match = is_match;
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        let style = if current_is_match {
-            highlight_style
-        } else {
-            base_style
-        };
-        spans.push(Span::styled(current, style));
-    }
-
-    spans
-}
-
-/// Compute match indices for `text` against all search atoms.
-/// Returns the union of matched char positions across all atoms.
-fn search_match_indices(text: &str, atoms: &[Atom], matcher: &mut Matcher) -> Vec<u32> {
-    let mut all_indices = Vec::new();
-    for atom in atoms {
-        let mut buffer = Vec::new();
-        let haystack = Utf32Str::new(text, &mut buffer);
-        let mut indices = Vec::new();
-        if atom.indices(haystack, matcher, &mut indices).is_some() {
-            all_indices.extend(indices);
-        }
-    }
-    all_indices.sort_unstable();
-    all_indices.dedup();
-    all_indices
-}
-
-fn issue_row(
-    ctx: &ListRenderContext,
-    pending_import_keys: &HashSet<String>,
-    ticket: &Ticket,
-    _idx: usize,
-    depth: u8,
-) -> (CellMap<'static>, Style) {
-    let issue = &ticket.issue;
-    let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
-    let status_name = issue.status().map(|s| s.name).unwrap_or_default();
-    let status_style = status_color(&status_name);
-    let assignee_user = issue.assignee();
-    let assignee = assignee_user
-        .as_ref()
-        .map(|u| {
-            u.display_name
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        })
-        .unwrap_or_default();
-    let is_active = ticket.active_branch.is_some();
-    let repos = ticket
-        .repos
-        .iter()
-        .map(|repo| repo.label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let summary = issue
-        .summary()
-        .unwrap_or_default()
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    let row_style = Style::default().fg(Theme::Text);
-
-    let key_prefix = if depth > 0 {
-        "  ".repeat(depth as usize)
-    } else {
-        String::new()
-    };
-
-    let is_searching = !ctx.search_filter.is_empty();
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let search_atoms: Vec<Atom> = ctx
-        .search_filter
-        .split_whitespace()
-        .map(|word| {
-            Atom::new(
-                word,
-                CaseMatching::Ignore,
-                Normalization::Smart,
-                AtomKind::Substring,
-                false,
-            )
-        })
-        .collect();
-    let highlight_style = Style::default()
-        .fg(Theme::SearchMatch)
-        .add_modifier(Modifier::BOLD);
-
-    let has_pending_import = pending_import_keys.contains(&issue.key);
-    let icon = issue_type_icon(&issue_type);
-
-    // Key field — highlight search matches
-    let key_base_style = Style::default()
-        .fg(Theme::Accent)
-        .add_modifier(Modifier::BOLD);
-    let key_highlight_style = Style::default()
-        .fg(Theme::SearchMatch)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    let key_indices = if is_searching {
-        search_match_indices(&issue.key, &search_atoms, &mut matcher)
-    } else {
-        Vec::new()
-    };
-    let key_spans = highlight_spans(
-        &issue.key,
-        &key_indices,
-        key_base_style,
-        key_highlight_style,
-    );
-
-    let mut summary_spans = vec![Span::styled(
-        format!("{}{} ", key_prefix, icon),
-        Style::default().fg(Theme::Muted),
-    )];
-    summary_spans.extend(key_spans);
-    if has_pending_import {
-        summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
-    }
-
-    // Summary field — highlight search matches
-    let summary_base_style = Style::default().fg(Theme::Text);
-    let summary_indices = if is_searching {
-        search_match_indices(&summary, &search_atoms, &mut matcher)
-    } else {
-        Vec::new()
-    };
-    let summary_highlighted = highlight_spans(
-        &summary,
-        &summary_indices,
-        summary_base_style,
-        highlight_style,
-    );
-    summary_spans.push(Span::styled(" ", summary_base_style));
-    summary_spans.extend(summary_highlighted);
-    let summary_line = Line::from(summary_spans);
-
-    // Status field — highlight search matches
-    let status_indices = if is_searching {
-        search_match_indices(&status_name, &search_atoms, &mut matcher)
-    } else {
-        Vec::new()
-    };
-    let status_line = Line::from(highlight_spans(
-        &status_name,
-        &status_indices,
-        status_style,
-        highlight_style,
-    ));
-
-    // Dev field — highlight search matches
-    let dev_base_style = Style::default().fg(Theme::Muted);
-    let dev_indices = if is_searching {
-        search_match_indices(&assignee, &search_atoms, &mut matcher)
-    } else {
-        Vec::new()
-    };
-    let dev_line = Line::from(highlight_spans(
-        &assignee,
-        &dev_indices,
-        dev_base_style,
-        highlight_style,
-    ));
-
-    let mut cells = HashMap::from([
-        ("Issue", summary_line),
-        ("Status", status_line),
-        ("Dev", dev_line),
-        (
-            "Repo",
-            Line::from(if is_active {
-                vec![
-                    Span::styled("⎇ ", Style::default().fg(Theme::Accent)),
-                    Span::styled(repos, Style::default().fg(Theme::Accent)),
-                ]
-            } else {
-                vec![Span::styled(repos, Style::default().fg(Theme::AccentSoft))]
-            }),
-        ),
-    ]);
-
-    if let Some(pr) = ticket.pr.as_ref() {
-        // ◷ column: most recent PR activity (commit, comment, review, pipeline)
-        if let Some(timestamp) = pr.most_recent_activity() {
-            if let Some(label) = crate::utils::time::format_relative_time(timestamp) {
-                let color = crate::utils::time::elapsed_since_iso(timestamp)
-                    .map(Theme::recency_color)
-                    .unwrap_or(Theme::Muted);
-                cells.insert("◷", Line::styled(label, Style::default().fg(color)));
-            }
-        }
-
-        let pr_color = if pr.is_draft {
-            Theme::Muted
-        } else if pr.state.eq_ignore_ascii_case("merged") {
-            Theme::Accent
-        } else {
-            match &pr.review_decision {
-                Some(ReviewDecision::Approved) => Theme::Success,
-                Some(ReviewDecision::ChangesRequested) => Theme::Error,
-                _ => Theme::Info,
-            }
-        };
-        let mut pr_spans = vec![Span::styled(
-            format!("#{}", pr.number),
-            Style::default().fg(pr_color),
-        )];
-        if pr.mergeable == Some(MergeableState::Conflicting) {
-            pr_spans.push(Span::styled("!", Style::default().fg(Theme::Error)));
-        }
-        cells.insert("PR", Line::from(pr_spans));
-
-        let mut ci_spans = Vec::new();
-        for run in &pr.check_runs {
-            let (icon, color) = match run.status {
-                CheckStatus::Pass => ("✓", Theme::Success),
-                CheckStatus::Fail => ("✗", Theme::Error),
-                CheckStatus::Pending => ("●", Theme::Warning),
-            };
-            ci_spans.push(Span::styled(icon, Style::default().fg(color)));
-        }
-        if pr.checks == CheckStatus::Pending {
-            let spinner = SPINNER_FRAMES[ctx.animation.spinner_tick % SPINNER_FRAMES.len()];
-            ci_spans.push(Span::styled(
-                format!(" {spinner}"),
-                Style::default().fg(Theme::Warning),
-            ));
-            if let Some(eta) = pr_eta(ctx.check_durations, pr) {
-                ci_spans.push(Span::styled(
-                    format!(" {eta}"),
-                    Style::default().fg(Theme::Muted),
-                ));
-            }
-        }
-        cells.insert("CI", Line::from(ci_spans));
-    }
-
-    (cells, row_style)
-}
-
-/// Compute the ETA string for a PR's pending checks.
-fn pr_eta(check_durations: &HashMap<String, u64>, pr: &PrInfo) -> Option<String> {
-    let pending_runs: Vec<_> = pr
-        .check_runs
-        .iter()
-        .filter(|r| r.status == CheckStatus::Pending)
-        .collect();
-    if pending_runs.is_empty() {
-        return None;
-    }
-    let mut max_remaining: Option<u64> = None;
-    for run in &pending_runs {
-        let cache_key = format!("{}/{}", pr.repo_slug, run.name);
-        let Some(&historical) = check_durations.get(&cache_key) else {
-            continue;
-        };
-        let elapsed = run
-            .started_at
-            .as_deref()
-            .and_then(crate::utils::time::elapsed_since_iso)
-            .unwrap_or(0);
-        let remaining = historical.saturating_sub(elapsed);
-        max_remaining = Some(max_remaining.map_or(remaining, |cur: u64| cur.max(remaining)));
-    }
-    max_remaining.map(|r| format!("~{}", crate::utils::time::format_duration(r)))
-}
-
 /// Numeric rank for sorting issues by status.
 fn status_rank(issue: &Issue) -> u8 {
     const ORDER: &[&str] = &["review", "progress", "rejected", "plan", "proposed"];
@@ -3027,20 +2594,6 @@ fn status_rank(issue: &Issue) -> u8 {
         .position(|&keyword| name.contains(keyword))
         .map(|i| i as u8)
         .unwrap_or(ORDER.len() as u8)
-}
-
-/// Look up an issue by key across all issue sources.
-pub fn find_issue_by_key<'a>(
-    issues: &'a [Issue],
-    story_children: &'a HashMap<String, Vec<Issue>>,
-    key: &str,
-) -> Option<&'a Issue> {
-    issues.iter().find(|issue| issue.key == key).or_else(|| {
-        story_children
-            .values()
-            .flat_map(|children| children.iter())
-            .find(|issue| issue.key == key)
-    })
 }
 
 fn issue_created_str(issue: &Issue) -> String {

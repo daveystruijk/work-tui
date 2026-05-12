@@ -1,6 +1,5 @@
 ---
-source: src/ui/list.rs
-assertion_line: 104
+source: src/ui/list/mod.rs
 expression: rendered
 ---
  Issue                                            Status       Dev                                                      

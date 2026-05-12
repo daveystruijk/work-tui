@@ -1,5 +1,5 @@
 ---
-source: src/ui/list.rs
+source: src/ui/list/mod.rs
 expression: rendered
 ---
  Issue                                            Status       Dev                                                      
