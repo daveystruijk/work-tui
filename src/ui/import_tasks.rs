@@ -32,16 +32,18 @@ impl ImportTasksView {
     }
 
     pub fn render(&self, frame: &mut Frame) {
-        let pending_tasks: Vec<&TaskEntry> =
-            self.tasks.iter().filter(|t| t.key.is_none()).collect();
+        let new_tasks: Vec<&TaskEntry> = self.tasks.iter().filter(|t| t.key.is_none()).collect();
+        let changed_tasks: Vec<&TaskEntry> =
+            self.tasks.iter().filter(|t| t.has_changes()).collect();
+        let actionable_count = new_tasks.len() + changed_tasks.len();
 
         let area = popup_rect(frame.area());
         frame.render_widget(Clear, area);
 
         let title = format!(
             " Import {} task{} into {} ",
-            pending_tasks.len(),
-            if pending_tasks.len() == 1 { "" } else { "s" },
+            actionable_count,
+            if actionable_count == 1 { "" } else { "s" },
             self.issue_key,
         );
 
@@ -68,52 +70,105 @@ impl ImportTasksView {
         let content_width = content_area.width.saturating_sub(4) as usize;
 
         let mut lines: Vec<Line> = Vec::new();
+        let mut item_number = 0;
 
-        if pending_tasks.len() == 1 {
-            lines.push(Line::from(Span::styled(
-                "  Will update the current issue with:",
-                Style::default().fg(Theme::Muted),
-            )));
-            lines.push(Line::from(""));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  Will create subtasks under this issue:",
-                Style::default().fg(Theme::Muted),
-            )));
-            lines.push(Line::from(""));
-        }
-
-        for (index, task) in pending_tasks.iter().enumerate() {
-            let number = format!("  {}. ", index + 1);
-            lines.push(Line::from(vec![
-                Span::styled(number, Style::default().fg(Theme::Muted)),
-                Span::styled(
-                    &task.title,
-                    Style::default()
-                        .fg(Theme::Text)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-
-            if !task.description.is_empty() {
-                let wrapped = wrap_text(&task.description, content_width.saturating_sub(5), 4);
-                for wrapped_line in wrapped {
-                    lines.push(Line::from(Span::styled(
-                        format!("     {wrapped_line}"),
-                        Style::default().fg(Theme::Muted),
-                    )));
-                }
-            }
-
-            lines.push(Line::from(""));
-        }
-
-        let skipped_count = self.tasks.iter().filter(|t| t.key.is_some()).count();
-        if skipped_count > 0 {
+        // --- Changed tasks section ---
+        if !changed_tasks.is_empty() {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "  ({skipped_count} task{} already imported, skipped)",
-                    if skipped_count == 1 { "" } else { "s" }
+                    "  Will update {} existing task{}:",
+                    changed_tasks.len(),
+                    if changed_tasks.len() == 1 { "" } else { "s" }
+                ),
+                Style::default().fg(Theme::Muted),
+            )));
+            lines.push(Line::from(""));
+
+            for task in &changed_tasks {
+                item_number += 1;
+                let task_key = task.key.as_deref().unwrap_or("?");
+                let number = format!("  {item_number}. ");
+                lines.push(Line::from(vec![
+                    Span::styled(number, Style::default().fg(Theme::Muted)),
+                    Span::styled(format!("{task_key} "), Style::default().fg(Theme::Warning)),
+                    Span::styled(
+                        &task.title,
+                        Style::default()
+                            .fg(Theme::Text)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+
+                if !task.description.is_empty() {
+                    let wrapped = wrap_text(&task.description, content_width.saturating_sub(5), 4);
+                    for wrapped_line in wrapped {
+                        lines.push(Line::from(Span::styled(
+                            format!("     {wrapped_line}"),
+                            Style::default().fg(Theme::Muted),
+                        )));
+                    }
+                }
+
+                lines.push(Line::from(""));
+            }
+        }
+
+        // --- New tasks section ---
+        if !new_tasks.is_empty() {
+            if new_tasks.len() == 1 && changed_tasks.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  Will update the current issue with:",
+                    Style::default().fg(Theme::Muted),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  Will create {} new task{}:",
+                        new_tasks.len(),
+                        if new_tasks.len() == 1 { "" } else { "s" }
+                    ),
+                    Style::default().fg(Theme::Muted),
+                )));
+            }
+            lines.push(Line::from(""));
+
+            for task in &new_tasks {
+                item_number += 1;
+                let number = format!("  {item_number}. ");
+                lines.push(Line::from(vec![
+                    Span::styled(number, Style::default().fg(Theme::Muted)),
+                    Span::styled(
+                        &task.title,
+                        Style::default()
+                            .fg(Theme::Text)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+
+                if !task.description.is_empty() {
+                    let wrapped = wrap_text(&task.description, content_width.saturating_sub(5), 4);
+                    for wrapped_line in wrapped {
+                        lines.push(Line::from(Span::styled(
+                            format!("     {wrapped_line}"),
+                            Style::default().fg(Theme::Muted),
+                        )));
+                    }
+                }
+
+                lines.push(Line::from(""));
+            }
+        }
+
+        let unchanged_count = self
+            .tasks
+            .iter()
+            .filter(|t| t.key.is_some() && !t.has_changes())
+            .count();
+        if unchanged_count > 0 {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  ({unchanged_count} task{} unchanged, skipped)",
+                    if unchanged_count == 1 { "" } else { "s" }
                 ),
                 Style::default().fg(Theme::Muted),
             )));

@@ -33,6 +33,38 @@ pub struct TaskEntry {
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Title at the time of last import, used to detect changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_title: Option<String>,
+    /// Description at the time of last import, used to detect changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_description: Option<String>,
+}
+
+impl TaskEntry {
+    /// Returns true if this task was previously imported but the title or
+    /// description has since changed in the openspec JSON.
+    pub fn has_changes(&self) -> bool {
+        let Some(ref _key) = self.key else {
+            return false;
+        };
+        let title_changed = self
+            .imported_title
+            .as_ref()
+            .map(|imported| imported != &self.title)
+            .unwrap_or(false);
+        let description_changed = self
+            .imported_description
+            .as_ref()
+            .map(|imported| imported != &self.description)
+            .unwrap_or(false);
+        title_changed || description_changed
+    }
+
+    /// Returns true if this task needs action (either new or changed).
+    pub fn needs_action(&self) -> bool {
+        self.key.is_none() || self.has_changes()
+    }
 }
 
 /// Resolve the openspec changes directory if it exists.
@@ -173,29 +205,66 @@ async fn run(
     issue_type_name: &str,
     project_key: &str,
 ) -> Result<()> {
-    let pending_tasks: Vec<usize> = tasks
+    let new_task_indices: Vec<usize> = tasks
         .iter()
         .enumerate()
         .filter(|(_, task)| task.key.is_none())
         .map(|(index, _)| index)
         .collect();
 
-    if pending_tasks.is_empty() {
-        return Err(eyre!("All tasks already have keys assigned"));
+    let changed_task_indices: Vec<usize> = tasks
+        .iter()
+        .enumerate()
+        .filter(|(_, task)| task.has_changes())
+        .map(|(index, _)| index)
+        .collect();
+
+    if new_task_indices.is_empty() && changed_task_indices.is_empty() {
+        return Err(eyre!("No new or changed tasks to import"));
     }
 
-    let pending_task_count = pending_tasks.len();
-    let base_progress_total = pending_task_count + 1;
+    let total_actions = new_task_indices.len() + changed_task_indices.len();
+    let mut current_step = 0;
 
-    if pending_task_count == 1 {
-        let task_index = pending_tasks[0];
+    // --- Update changed tasks ---
+    for &task_index in &changed_task_indices {
+        current_step += 1;
+        let task = &tasks[task_index];
+        let task_key = task.key.as_deref().unwrap();
+
+        let _ = tx.send(Message::Progress(Progress {
+            task_id: "import_tasks".into(),
+            message: format!("Updating {task_key}: {}...", task.title),
+            current: current_step,
+            total: total_actions + 1,
+        }));
+
+        client
+            .update_summary_and_description(task_key, &task.title, &task.description)
+            .await?;
+
+        tasks[task_index].imported_title = Some(tasks[task_index].title.clone());
+        tasks[task_index].imported_description = Some(tasks[task_index].description.clone());
+        write_tasks_json(tasks_path, &tasks)?;
+    }
+
+    // --- Create new tasks ---
+    if new_task_indices.is_empty() {
+        return Ok(());
+    }
+
+    let new_task_count = new_task_indices.len();
+
+    // Single new task: update the current issue directly
+    if new_task_count == 1 && changed_task_indices.is_empty() {
+        let task_index = new_task_indices[0];
         let task = &tasks[task_index];
 
         let _ = tx.send(Message::Progress(Progress {
             task_id: "import_tasks".into(),
             message: format!("Updating {issue_key}..."),
-            current: 1,
-            total: base_progress_total,
+            current: current_step + 1,
+            total: total_actions + 1,
         }));
 
         client
@@ -203,33 +272,33 @@ async fn run(
             .await?;
 
         tasks[task_index].key = Some(issue_key.to_string());
+        tasks[task_index].imported_title = Some(tasks[task_index].title.clone());
+        tasks[task_index].imported_description = Some(tasks[task_index].description.clone());
         write_tasks_json(tasks_path, &tasks)?;
 
         return Ok(());
     }
 
     let plan = plan_multi_task_import(issue_type_name);
-    let multi_task_progress_total =
-        base_progress_total + usize::from(plan.should_convert_parent_to_story);
-    let first_create_step = 1 + usize::from(plan.should_convert_parent_to_story);
 
     if plan.should_convert_parent_to_story {
+        current_step += 1;
         let _ = tx.send(Message::Progress(Progress {
             task_id: "import_tasks".into(),
             message: format!("Converting {issue_key} to Story..."),
-            current: 1,
-            total: multi_task_progress_total,
+            current: current_step,
+            total: total_actions + 1 + usize::from(plan.should_convert_parent_to_story),
         }));
         client.update_issue_type(issue_key, "Story").await?;
     }
 
-    // Get subtask issue type
     let issue_types = client.get_issue_types(project_key).await?;
     let child_issue_type =
         select_child_issue_type(&issue_types, plan.child_creation_mode, project_key)?;
     let child_issue_type_id = child_issue_type.id.clone();
 
-    for (step, &task_index) in pending_tasks.iter().enumerate() {
+    for &task_index in &new_task_indices {
+        current_step += 1;
         let task = &tasks[task_index];
         let progress_label = match plan.child_creation_mode {
             ChildCreationMode::StandardTask => "Creating task",
@@ -239,8 +308,8 @@ async fn run(
         let _ = tx.send(Message::Progress(Progress {
             task_id: "import_tasks".into(),
             message: format!("{progress_label}: {}...", task.title),
-            current: step + first_create_step,
-            total: multi_task_progress_total,
+            current: current_step,
+            total: total_actions + 1 + usize::from(plan.should_convert_parent_to_story),
         }));
 
         let created_key = client
@@ -254,6 +323,8 @@ async fn run(
             .await?;
 
         tasks[task_index].key = Some(created_key);
+        tasks[task_index].imported_title = Some(tasks[task_index].title.clone());
+        tasks[task_index].imported_description = Some(tasks[task_index].description.clone());
         write_tasks_json(tasks_path, &tasks)?;
     }
 
@@ -295,6 +366,72 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn task_entry_without_key_needs_action() {
+        let task = TaskEntry {
+            title: "New task".into(),
+            description: "desc".into(),
+            key: None,
+            imported_title: None,
+            imported_description: None,
+        };
+        assert!(task.needs_action());
+        assert!(!task.has_changes());
+    }
+
+    #[test]
+    fn task_entry_with_unchanged_content_does_not_need_action() {
+        let task = TaskEntry {
+            title: "Same title".into(),
+            description: "Same desc".into(),
+            key: Some("TEST-1".into()),
+            imported_title: Some("Same title".into()),
+            imported_description: Some("Same desc".into()),
+        };
+        assert!(!task.needs_action());
+        assert!(!task.has_changes());
+    }
+
+    #[test]
+    fn task_entry_with_changed_title_needs_action() {
+        let task = TaskEntry {
+            title: "Updated title".into(),
+            description: "Same desc".into(),
+            key: Some("TEST-1".into()),
+            imported_title: Some("Old title".into()),
+            imported_description: Some("Same desc".into()),
+        };
+        assert!(task.needs_action());
+        assert!(task.has_changes());
+    }
+
+    #[test]
+    fn task_entry_with_changed_description_needs_action() {
+        let task = TaskEntry {
+            title: "Same title".into(),
+            description: "Updated desc".into(),
+            key: Some("TEST-1".into()),
+            imported_title: Some("Same title".into()),
+            imported_description: Some("Old desc".into()),
+        };
+        assert!(task.needs_action());
+        assert!(task.has_changes());
+    }
+
+    #[test]
+    fn task_entry_without_imported_fields_does_not_detect_changes() {
+        // Legacy tasks.json without imported_title/imported_description
+        let task = TaskEntry {
+            title: "Some title".into(),
+            description: "Some desc".into(),
+            key: Some("TEST-1".into()),
+            imported_title: None,
+            imported_description: None,
+        };
+        assert!(!task.needs_action());
+        assert!(!task.has_changes());
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub fn scan(repos_dir: &Path) -> HashSet<String> {
             continue;
         };
 
-        if tasks.iter().any(|task| task.key.is_none()) {
+        if tasks.iter().any(|task| task.needs_action()) {
             pending_keys.insert(issue_key);
         }
     }
@@ -165,5 +165,76 @@ mod tests {
         let pending_keys = scan(&repos_dir.path);
 
         assert_eq!(pending_keys, HashSet::from([String::from("INI-4347")]));
+    }
+
+    #[test]
+    fn scans_changed_tasks_from_openspec_changes() {
+        let repos_dir = TestReposDir::new("scan-openspec-changed-tasks");
+        let tasks_path = repos_dir
+            .path
+            .join("openspec")
+            .join("changes")
+            .join("ini-5000-update-flow")
+            .join("tasks.json");
+
+        fs::create_dir_all(tasks_path.parent().unwrap()).unwrap();
+        // All tasks have keys, but one has a changed title
+        fs::write(
+            &tasks_path,
+            r#"[
+  {
+    "title": "Updated title",
+    "description": "Same desc",
+    "key": "INI-5001",
+    "imported_title": "Old title",
+    "imported_description": "Same desc"
+  },
+  {
+    "title": "Unchanged",
+    "description": "Unchanged desc",
+    "key": "INI-5002",
+    "imported_title": "Unchanged",
+    "imported_description": "Unchanged desc"
+  }
+]"#,
+        )
+        .unwrap();
+
+        let pending_keys = scan(&repos_dir.path);
+
+        assert_eq!(pending_keys, HashSet::from([String::from("INI-5000")]));
+    }
+
+    #[test]
+    fn scan_skips_fully_imported_unchanged_tasks() {
+        let repos_dir = TestReposDir::new("scan-openspec-unchanged-tasks");
+        let tasks_path = repos_dir
+            .path
+            .join("openspec")
+            .join("changes")
+            .join("ini-6000-stable")
+            .join("tasks.json");
+
+        fs::create_dir_all(tasks_path.parent().unwrap()).unwrap();
+        fs::write(
+            &tasks_path,
+            r#"[
+  {
+    "title": "Done task",
+    "description": "Done desc",
+    "key": "INI-6001",
+    "imported_title": "Done task",
+    "imported_description": "Done desc"
+  }
+]"#,
+        )
+        .unwrap();
+
+        let pending_keys = scan(&repos_dir.path);
+
+        assert!(
+            pending_keys.is_empty(),
+            "fully imported unchanged tasks should not appear as pending"
+        );
     }
 }

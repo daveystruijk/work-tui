@@ -2,6 +2,7 @@
 source: src/ui/list/mod.rs
 expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
 ---
-── BOARD (0) ──
+── BOARD (2) ──
 ▸ EPIC-1 Platform migration [board]
-  ⟳ loading...
+  • TASK-1 Update config [In Progress]
+  • TASK-2 Write tests [In Progress]

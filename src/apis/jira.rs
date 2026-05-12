@@ -433,6 +433,24 @@ impl JiraClient {
     const MANAGED_TEXT_START: &'static str = "--- Spec (AI-generated) ---";
     const MANAGED_TEXT_END: &'static str = "--- End Spec ---";
 
+    pub async fn update_summary_and_description(
+        &self,
+        issue_key: &str,
+        summary: &str,
+        description: &str,
+    ) -> Result<()> {
+        let payload = json!({
+            "fields": {
+                "summary": summary,
+                "description": description,
+            }
+        });
+        self.jira
+            .put::<(), _>("api", &format!("/issue/{issue_key}"), payload)
+            .await?;
+        Ok(())
+    }
+
     pub async fn append_description(&self, issue_key: &str, extra_text: &str) -> Result<()> {
         let issue = self.get_issue(issue_key).await?;
         let panel = Self::managed_panel(extra_text);

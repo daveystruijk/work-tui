@@ -825,6 +825,29 @@ mod tests {
         );
     }
 
+    /// Searching for a story title surfaces child tasks that belong to it.
+    #[test]
+    fn snapshots_search_by_story_title_surfaces_children() {
+        let issues = vec![
+            story_issue("STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-1", "Update config", "STORY-1", "Auth migration"),
+            task_issue_with_parent("TASK-2", "Write tests", "STORY-1", "Auth migration"),
+            story_issue("STORY-2", "Payment refactor"),
+            task_issue_with_parent("TASK-3", "Add Stripe", "STORY-2", "Payment refactor"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        // Search for "auth" — should match STORY-1 and its children via parent summary
+        list.search_filter = "auth".to_string();
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "search_by_story_title_surfaces_children",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
     /// Render-level test: searching highlights matched characters in the list.
     #[test]
     fn snapshots_search_highlight_render() {
@@ -1303,6 +1326,7 @@ impl ListView {
             .collect();
 
         let issue_matches_search = |issue: &Issue, atoms: &[Atom], matcher: &mut Matcher| -> bool {
+            let parent_summary = issue.parent().and_then(|p| p.summary()).unwrap_or_default();
             let fields = [
                 issue.key.as_str().to_owned(),
                 issue.summary().unwrap_or_default().to_owned(),
@@ -1311,6 +1335,7 @@ impl ListView {
                     .map(|u| u.display_name.clone())
                     .unwrap_or_default(),
                 issue.status().map(|s| s.name.clone()).unwrap_or_default(),
+                parent_summary,
             ];
             // Every word must match at least one field (but different words
             // can match different fields).
@@ -2534,8 +2559,8 @@ fn open_import_tasks_popup(app: &mut AppView) {
         }
     };
 
-    let pending_count = tasks.iter().filter(|t| t.key.is_none()).count();
-    if pending_count == 0 {
+    let actionable_count = tasks.iter().filter(|t| t.needs_action()).count();
+    if actionable_count == 0 {
         app.status_bar.set_warning("All tasks already imported");
         return;
     }

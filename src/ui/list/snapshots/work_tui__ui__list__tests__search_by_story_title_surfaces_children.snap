@@ -4,5 +4,5 @@ expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
 ---
 ── BOARD (2) ──
 ▸ STORY-1 Auth migration [board]
-  • TASK-1 Update OAuth [In Progress]
-  • TASK-2 Add tests [In Progress]
+  • TASK-1 Update config [In Progress]
+  • TASK-2 Write tests [In Progress]
