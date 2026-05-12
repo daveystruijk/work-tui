@@ -54,6 +54,7 @@ pub fn test_app() -> AppView {
         previous_key: None,
         import_tasks_popup: None,
         confirm_dialog: None,
+        help_overlay: None,
         pending_selected_issue_key: None,
         pending_prefetch_since: None,
         ticket_store: TicketStore::default(),

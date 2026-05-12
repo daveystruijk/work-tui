@@ -233,6 +233,7 @@ async fn handle_key_event(app: &mut AppView, key_event: KeyEvent) {
         InputFocus::LabelPicker => ui::label_picker::update(app, key_event).await,
         InputFocus::JiraFilterPicker => ui::filter_picker::update(app, key_event).await,
         InputFocus::ConfirmDialog => ui::confirm_dialog::update(app, key_event),
+        InputFocus::HelpOverlay => ui::help_overlay::update(app, key_event),
     }
 
     app.previous_key = Some(key_event.code);

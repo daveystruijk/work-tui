@@ -70,6 +70,7 @@ pub enum InputFocus {
     LabelPicker,
     JiraFilterPicker,
     ConfirmDialog,
+    HelpOverlay,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -124,6 +125,7 @@ pub struct AppView {
     pub previous_key: Option<KeyCode>,
     pub import_tasks_popup: Option<ImportTasksView>,
     pub confirm_dialog: Option<ConfirmDialogView>,
+    pub help_overlay: Option<crate::ui::HelpOverlayView>,
     pub pending_selected_issue_key: Option<String>,
     /// When set, a prefetch of the selected PR detail is scheduled after a short delay.
     /// This avoids firing fetches while the user is scrolling quickly through the list.
@@ -172,6 +174,7 @@ impl AppView {
             previous_key: None,
             import_tasks_popup: None,
             confirm_dialog: None,
+            help_overlay: None,
             pending_selected_issue_key: None,
             pending_prefetch_since: None,
             ticket_store: TicketStore::default(),

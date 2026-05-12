@@ -1,6 +1,7 @@
 pub mod ci_logs;
 pub mod confirm_dialog;
 pub mod filter_picker;
+pub mod help_overlay;
 pub mod import_tasks;
 pub mod label_picker;
 pub mod list;
@@ -10,6 +11,7 @@ mod status_bar;
 pub use ci_logs::CiLogsView;
 pub use confirm_dialog::ConfirmDialogView;
 pub use filter_picker::FilterPickerView;
+pub use help_overlay::HelpOverlayView;
 pub use import_tasks::ImportTasksView;
 pub use label_picker::LabelPickerView;
 pub use list::ListView;
@@ -184,6 +186,11 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
         InputFocus::ConfirmDialog => {
             if let Some(dialog) = &app.confirm_dialog {
                 dialog.render(frame);
+            }
+        }
+        InputFocus::HelpOverlay => {
+            if let Some(overlay) = &app.help_overlay {
+                overlay.render(frame);
             }
         }
         _ => {}

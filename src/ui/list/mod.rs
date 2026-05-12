@@ -2156,6 +2156,10 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                         'c' => open_ci_log_popup(app),
                         'e' => spawn_openspec_propose(app),
                         'i' => open_import_tasks_popup(app),
+                        '?' => {
+                            app.help_overlay = Some(crate::ui::HelpOverlayView::default());
+                            app.input_focus = crate::app::InputFocus::HelpOverlay;
+                        }
                         'h' => {
                             app.list.collapse_story(
                                 &app.ticket_store,

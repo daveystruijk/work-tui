@@ -1,0 +1,40 @@
+---
+source: src/ui/help_overlay.rs
+expression: output
+---
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                ┌ Keybindings ─────────────────────────────────┐                
+                │  Navigation                                 █│                
+                │                                             █│                
+                │    j / ↓         Move down                  █│                
+                │    k / ↑         Move up                    █│                
+                │    G             Go to bottom               █│                
+                │    g g           Go to top                  █│                
+                │    Ctrl-D        Half page down             █│                
+                │    Ctrl-U        Half page up               █│                
+                │    h             Collapse story             █│                
+                │    l             Expand story               █│                
+                │    Space         Toggle collapse            █│                
+                │                                             █│                
+                │  Actions                                    █│                
+                │                                             █│                
+                │    p             Pick up issue              █│                
+                │    f             Finish issue               █│                
+                │    n             New issue (inline)         █│                
+                │    o             Open PR in browser         █│                
+                │    t             Open issue in browser      █│                
+                │    b             Branch diff                █│                
+                │    V             Approve & auto-merge PR    █│                
+                │    S             Toggle story/task type     █│                
+                │    r             Refresh                    █│                
+                │                                              │                
+                │  Popups                                      │                
+                │                                              │                
+                │    /             Search                      │                
+                │    a             Label picker                │                
+                │    F             Jira filter picker          │                
+                │j/k:Scroll  Esc/?:Close                       │                
+                └──────────────────────────────────────────────┘
