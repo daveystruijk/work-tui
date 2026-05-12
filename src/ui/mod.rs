@@ -128,11 +128,7 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
     // Render list — take out to avoid borrow conflict, then put back
     let inline_new_clone = app.list.inline_new.clone();
     let list_ctx = list::ListRenderContext {
-        issues: &app.issues,
-        story_children: &app.story_children,
         ticket_store: &app.ticket_store,
-        github_prs: &app.github_prs,
-        active_branches: &app.active_branches,
         check_durations: &app.check_durations,
         animation: &app.animation,
         inline_new: inline_new_clone.as_ref(),

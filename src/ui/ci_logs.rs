@@ -335,12 +335,12 @@ pub async fn update(app: &mut AppView, key_event: KeyEvent) {
 
 /// Checkout the PR branch and open opencode with the CI error as prompt.
 fn spawn_fix_ci(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         app.status_bar.set_warning("No issue selected");
         return;
     };
-    let issue_key = issue.key.clone();
-    let repo_path = match app.repo_matches(issue).first() {
+    let issue_key = ticket.issue.key.clone();
+    let repo_path = match ticket.repos.first() {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
@@ -348,7 +348,7 @@ fn spawn_fix_ci(app: &mut AppView) {
             return;
         }
     };
-    let Some(pr) = app.github_prs.get(&issue_key) else {
+    let Some(pr) = ticket.pr.as_ref() else {
         app.status_bar
             .set_warning(format!("No PR found for {issue_key}"));
         return;
@@ -375,11 +375,10 @@ fn spawn_fix_ci(app: &mut AppView) {
 }
 
 fn cycle_tab_from_app(app: &mut AppView, delta: isize) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let Some(pr) = app.github_prs.get(&issue_key) else {
+    let Some(pr) = ticket.pr.as_ref() else {
         return;
     };
     let check_run_count = pr.check_runs.len();

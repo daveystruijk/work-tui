@@ -362,16 +362,16 @@ impl AppView {
     }
 
     pub fn prefetch_selected_pr_detail(&mut self) {
-        let Some(issue) = self.list.selected_issue(&self.issues, &self.story_children) else {
+        let Some(ticket) = self.list.selected_ticket(&self.ticket_store) else {
             return;
         };
-        let issue_key = issue.key.clone();
+        let issue_key = ticket.issue.key.clone();
         if self.sidebar.detail_loaded.contains(&issue_key)
             || self.sidebar.detail_loading.contains(&issue_key)
         {
             return;
         }
-        let Some(pr) = self.github_prs.get(&issue_key) else {
+        let Some(pr) = ticket.pr.as_ref() else {
             return;
         };
 
@@ -777,8 +777,8 @@ impl AppView {
                 self.input_focus = InputFocus::List;
                 let found_index = self.list.display_rows.iter().position(|row| {
                     self.list
-                        .issue_for_display_row(row, &self.issues, &self.story_children)
-                        .map(|issue| issue.key == key)
+                        .ticket_for_display_row(row, &self.ticket_store)
+                        .map(|ticket| ticket.issue.key == key)
                         .unwrap_or(false)
                 });
                 if let Some(index) = found_index {
@@ -929,14 +929,14 @@ impl AppView {
     }
 
     fn selected_issue_restore_keys(&self) -> Vec<String> {
-        let Some(issue) = self.list.selected_issue(&self.issues, &self.story_children) else {
+        let Some(ticket) = self.list.selected_ticket(&self.ticket_store) else {
             return Vec::new();
         };
 
         let mut keys = Vec::with_capacity(1);
-        keys.push(issue.key.clone());
+        keys.push(ticket.issue.key.clone());
         keys.extend(
-            crate::issue::ancestors(issue)
+            crate::issue::ancestors(&ticket.issue)
                 .into_iter()
                 .map(|ancestor| ancestor.key),
         );
@@ -984,8 +984,8 @@ impl AppView {
     fn display_row_index_for_issue_key(&self, key: &str) -> Option<usize> {
         self.list.display_rows.iter().position(|row| {
             self.list
-                .issue_for_display_row(row, &self.issues, &self.story_children)
-                .map(|issue| issue.key == key)
+                .ticket_for_display_row(row, &self.ticket_store)
+                .map(|ticket| ticket.issue.key == key)
                 .unwrap_or(false)
         })
     }
@@ -1061,10 +1061,7 @@ impl AppView {
 
     /// Returns the Ticket for the currently selected display row, if any.
     pub fn selected_ticket(&self) -> Option<&crate::ticket::Ticket> {
-        let issue = self
-            .list
-            .selected_issue(&self.issues, &self.story_children)?;
-        self.ticket_store.get(&issue.key)
+        self.list.selected_ticket(&self.ticket_store)
     }
 
     /// Rebuild the ticket store from current app state.
@@ -1221,6 +1218,7 @@ mod tests {
             .remove(&("TEST-1".to_string(), ListSection::Backlog));
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
+        app.rebuild_tickets();
         app.list.selected_index = 1;
 
         let restore_keys = app.selected_issue_restore_keys();
@@ -1229,12 +1227,13 @@ mod tests {
         app.restore_expanded_story_loading(&["TEST-1".to_string()]);
         app.list
             .rebuild_display_rows(&app.issues, &app.story_children);
+        app.rebuild_tickets();
 
         assert!(app.restore_selection_for_issue_keys(&restore_keys));
         assert_eq!(
             app.list
-                .selected_issue(&app.issues, &app.story_children)
-                .map(|issue| issue.key.as_str()),
+                .selected_ticket(&app.ticket_store)
+                .map(|ticket| ticket.issue.key.as_str()),
             Some("TEST-1")
         );
     }
@@ -1256,8 +1255,8 @@ mod tests {
 
         assert_eq!(
             app.list
-                .selected_issue(&app.issues, &app.story_children)
-                .map(|issue| issue.key.as_str()),
+                .selected_ticket(&app.ticket_store)
+                .map(|ticket| ticket.issue.key.as_str()),
             Some("TEST-2")
         );
         assert_eq!(app.pending_selected_issue_key, None);

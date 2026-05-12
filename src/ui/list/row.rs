@@ -5,11 +5,9 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::apis::github::PrInfo;
-use crate::apis::jira::Issue;
 use crate::app::InlineNewView;
 use crate::theme::Theme;
-use crate::ticket::Ticket;
+use crate::ticket::{Ticket, TicketStore};
 use crate::ui::{CellMap, SPINNER_FRAMES};
 
 use super::columns;
@@ -17,29 +15,11 @@ use super::UiAnimationView;
 
 /// Read-only shared state passed to ListView for rendering.
 pub struct ListRenderContext<'a> {
-    pub issues: &'a [Issue],
-    pub story_children: &'a HashMap<String, Vec<Issue>>,
-    pub ticket_store: &'a crate::ticket::TicketStore,
-    pub github_prs: &'a HashMap<String, PrInfo>,
-    pub active_branches: &'a HashMap<String, String>,
+    pub ticket_store: &'a TicketStore,
     pub check_durations: &'a HashMap<String, u64>,
     pub animation: &'a UiAnimationView,
     pub inline_new: Option<&'a InlineNewView>,
     pub search_filter: &'a str,
-}
-
-/// Look up an issue by key across all issue sources.
-pub fn find_issue_by_key<'a>(
-    issues: &'a [Issue],
-    story_children: &'a HashMap<String, Vec<Issue>>,
-    key: &str,
-) -> Option<&'a Issue> {
-    issues.iter().find(|issue| issue.key == key).or_else(|| {
-        story_children
-            .values()
-            .flat_map(|children| children.iter())
-            .find(|issue| issue.key == key)
-    })
 }
 
 /// Render a ticket (issue) row by assembling all column renderers.
@@ -47,7 +27,6 @@ pub fn issue_row(
     ctx: &ListRenderContext,
     pending_import_keys: &HashSet<String>,
     ticket: &Ticket,
-    _idx: usize,
     depth: u8,
 ) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Text);
@@ -73,15 +52,15 @@ pub fn issue_row(
 
 /// Render a story/epic group header row.
 pub fn story_header_row(
-    key: &str,
-    summary: &str,
-    _idx: usize,
+    ticket: &Ticket,
     collapsed: bool,
     depth: u8,
     has_pending_import: bool,
 ) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted);
 
+    let key = &ticket.issue.key;
+    let summary = ticket.issue.summary().unwrap_or_default();
     let first_line = summary.lines().next().unwrap_or_default().to_string();
     let icon = if collapsed { "▶" } else { "▼" };
     let indent = "  ".repeat(depth as usize);
@@ -107,7 +86,6 @@ pub fn story_header_row(
 pub fn section_header_row(
     section: &crate::app::ListSection,
     count: usize,
-    _width: u16,
 ) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted).bg(Theme::SidebarBg);
     let label = match section {
@@ -134,11 +112,7 @@ pub fn section_header_row(
 }
 
 /// Render an inline-new-issue placeholder row.
-pub fn inline_new_row(
-    state: Option<&InlineNewView>,
-    _idx: usize,
-    depth: u8,
-) -> (CellMap<'static>, Style) {
+pub fn inline_new_row(state: Option<&InlineNewView>, depth: u8) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Text);
 
     let summary_text = state.map(|s| s.summary.as_str()).unwrap_or("");
@@ -172,7 +146,7 @@ pub fn inline_new_row(
 }
 
 /// Render a loading spinner row.
-pub fn loading_row(spinner_tick: usize, _idx: usize, depth: u8) -> (CellMap<'static>, Style) {
+pub fn loading_row(spinner_tick: usize, depth: u8) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted);
     let indent = "  ".repeat(depth as usize);
     let spinner = SPINNER_FRAMES[spinner_tick % SPINNER_FRAMES.len()];
@@ -187,7 +161,7 @@ pub fn loading_row(spinner_tick: usize, _idx: usize, depth: u8) -> (CellMap<'sta
 }
 
 /// Render an empty-children placeholder row.
-pub fn empty_row(_idx: usize, depth: u8) -> (CellMap<'static>, Style) {
+pub fn empty_row(depth: u8) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Muted);
     let indent = "  ".repeat(depth as usize);
     let cells = HashMap::from([(

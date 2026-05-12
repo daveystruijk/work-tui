@@ -21,7 +21,7 @@ use crate::actions::Message;
 use crate::apis::jira::Issue;
 use crate::app::{AppView, DisplayRow, InlineNewView, InputFocus, ListSection};
 use crate::theme::Theme;
-use crate::ticket::Ticket;
+use crate::ticket::{Ticket, TicketStore};
 use crate::ui::confirm_dialog::{ConfirmAction, ConfirmDialogView};
 use crate::ui::{ImportTasksView, LabelPickerView};
 use tokio::process::Command;
@@ -30,7 +30,6 @@ use super::{
     adjust_scroll_offset, max_col_width, move_selected_index, CellMap, UiAnimationView, COLUMNS,
 };
 
-pub use row::find_issue_by_key;
 pub use row::ListRenderContext;
 
 /// Returns true if the issue's status indicates it belongs in the backlog section.
@@ -93,12 +92,26 @@ mod tests {
 
     use ratatui::style::{Modifier, Style};
 
+    use crate::ticket::{TicketSources, TicketStore};
     use crate::ui::render;
     use crate::{
         apis::jira::Issue,
         app::{DisplayRow, ListSection},
         fixtures::{render_to_string, selected_issue_app, test_issue},
     };
+
+    fn ticket_store_from(
+        issues: &[Issue],
+        story_children: &HashMap<String, Vec<Issue>>,
+    ) -> TicketStore {
+        TicketStore::from_sources(&TicketSources {
+            issues,
+            story_children,
+            github_prs: &HashMap::new(),
+            active_branches: &HashMap::new(),
+            repo_entries: &[],
+        })
+    }
 
     use super::ListView;
 
@@ -186,9 +199,17 @@ mod tests {
 
         list.rebuild_display_rows(&issues, &story_children);
         list.selected_index = 1;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
         list.selected_index = 2;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
 
         // STORY-1 appears once in BOARD (expanded under EPIC-1); BACKLOG epic starts collapsed
         assert_eq!(story_header_count(&list.display_rows, "STORY-1"), 1);
@@ -223,7 +244,11 @@ mod tests {
 
         list.rebuild_display_rows(&issues, &story_children);
         list.selected_index = 1;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
 
         assert_eq!(story_header_count(&list.display_rows, "STORY-1"), 1);
     }
@@ -352,6 +377,7 @@ mod tests {
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> String {
+        let store = ticket_store_from(issues, story_children);
         let next_row_depth = |i: usize| -> Option<u8> {
             rows.get(i + 1).and_then(|r| match r {
                 DisplayRow::Ticket { depth, .. }
@@ -375,7 +401,7 @@ mod tests {
                 }
                 DisplayRow::Ticket { key, depth } => {
                     let indent = "  ".repeat(*depth as usize);
-                    let issue = super::row::find_issue_by_key(issues, story_children, key);
+                    let issue = store.get(key).map(|t| &t.issue);
                     let is_group_header = next_row_depth(i).map(|d| d > *depth).unwrap_or(false);
                     if is_group_header {
                         let summary = issue
@@ -443,9 +469,17 @@ mod tests {
         list.rebuild_display_rows(&issues, &story_children);
         // Expand the epic and story in BOARD
         list.selected_index = 1;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
         list.selected_index = 2;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
 
         assert_snapshot!(
             "epic_with_board_children",
@@ -508,7 +542,11 @@ mod tests {
         list.rebuild_display_rows(&issues, &story_children);
         // Expand the epic in BOARD
         list.selected_index = 1;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
 
         assert_snapshot!(
             "epic_with_mixed_children",
@@ -566,7 +604,11 @@ mod tests {
         list.rebuild_display_rows(&issues, &story_children);
         // Expand EPIC-1 in BOARD
         list.selected_index = 1;
-        list.expand_story(&issues, &story_children);
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
 
         assert_snapshot!(
             "mixed_board_and_backlog",
@@ -882,35 +924,29 @@ impl ListView {
         self.loading_children.insert(parent_key.to_string());
     }
 
-    /// Returns the issue for the currently selected display row, if any.
-    pub fn selected_issue<'a>(
-        &self,
-        issues: &'a [Issue],
-        story_children: &'a HashMap<String, Vec<Issue>>,
-    ) -> Option<&'a Issue> {
-        self.issue_for_row(self.selected_index, issues, story_children)
+    /// Returns the ticket for the currently selected display row, if any.
+    pub fn selected_ticket<'a>(&self, ticket_store: &'a TicketStore) -> Option<&'a Ticket> {
+        self.ticket_for_row(self.selected_index, ticket_store)
     }
 
-    /// Returns the issue for a given display row index, if any.
-    pub fn issue_for_row<'a>(
+    /// Returns the ticket for a given display row index, if any.
+    pub fn ticket_for_row<'a>(
         &self,
         row_index: usize,
-        issues: &'a [Issue],
-        story_children: &'a HashMap<String, Vec<Issue>>,
-    ) -> Option<&'a Issue> {
+        ticket_store: &'a TicketStore,
+    ) -> Option<&'a Ticket> {
         let row = self.display_rows.get(row_index)?;
-        self.issue_for_display_row(row, issues, story_children)
+        self.ticket_for_display_row(row, ticket_store)
     }
 
-    /// Returns the issue for a given display row, if any.
-    pub fn issue_for_display_row<'a>(
+    /// Returns the ticket for a given display row, if any.
+    pub fn ticket_for_display_row<'a>(
         &self,
         row: &DisplayRow,
-        issues: &'a [Issue],
-        story_children: &'a HashMap<String, Vec<Issue>>,
-    ) -> Option<&'a Issue> {
+        ticket_store: &'a TicketStore,
+    ) -> Option<&'a Ticket> {
         match row {
-            DisplayRow::Ticket { key, .. } => find_issue_by_key(issues, story_children, key),
+            DisplayRow::Ticket { key, .. } => ticket_store.get(key),
             DisplayRow::InlineNew { .. }
             | DisplayRow::SectionHeader { .. }
             | DisplayRow::Loading { .. }
@@ -922,6 +958,7 @@ impl ListView {
     /// Returns the key if expansion needs a children fetch, None otherwise.
     pub fn toggle_story_collapse(
         &mut self,
+        ticket_store: &TicketStore,
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> Option<String> {
@@ -929,8 +966,8 @@ impl ListView {
             Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return None,
         };
-        let issue = find_issue_by_key(issues, story_children, &key)?;
-        if !crate::issue::is_expandable(issue) {
+        let ticket = ticket_store.get(&key)?;
+        if !crate::issue::is_expandable(&ticket.issue) {
             return None;
         }
         let Some(section) = self.section_for_row(self.selected_index) else {
@@ -950,6 +987,7 @@ impl ListView {
     /// Returns the key if expansion needs a children fetch, None otherwise.
     pub fn expand_story(
         &mut self,
+        ticket_store: &TicketStore,
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> Option<String> {
@@ -957,8 +995,8 @@ impl ListView {
             Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return None,
         };
-        let issue = find_issue_by_key(issues, story_children, &key)?;
-        if !crate::issue::is_expandable(issue) {
+        let ticket = ticket_store.get(&key)?;
+        if !crate::issue::is_expandable(&ticket.issue) {
             return None;
         }
         let Some(section) = self.section_for_row(self.selected_index) else {
@@ -975,6 +1013,7 @@ impl ListView {
     /// Collapse the story at the current selection.
     pub fn collapse_story(
         &mut self,
+        ticket_store: &TicketStore,
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) -> bool {
@@ -982,10 +1021,10 @@ impl ListView {
             Some(DisplayRow::Ticket { key, .. }) => key.clone(),
             _ => return false,
         };
-        let Some(issue) = find_issue_by_key(issues, story_children, &key) else {
+        let Some(ticket) = ticket_store.get(&key) else {
             return false;
         };
-        if !crate::issue::is_expandable(issue) {
+        if !crate::issue::is_expandable(&ticket.issue) {
             return false;
         }
         let Some(section) = self.section_for_row(self.selected_index) else {
@@ -1047,11 +1086,27 @@ impl ListView {
     }
 
     /// Returns the story key and its depth for inline creation.
+    /// Only returns a parent when the selected row is a group header
+    /// (i.e. has children at a deeper depth below it), or when the
+    /// selection is inside an existing story group.
     fn selected_story_or_enclosing(&self) -> Option<(String, u8)> {
         if let Some(DisplayRow::Ticket { key, depth, .. }) =
             self.display_rows.get(self.selected_index)
         {
-            return Some((key.clone(), *depth));
+            let is_group_header = self
+                .display_rows
+                .get(self.selected_index + 1)
+                .map(|next| match next {
+                    DisplayRow::Ticket { depth: d, .. }
+                    | DisplayRow::Loading { depth: d }
+                    | DisplayRow::Empty { depth: d } => *d > *depth,
+                    _ => false,
+                })
+                .unwrap_or(false);
+            if is_group_header {
+                return Some((key.clone(), *depth));
+            }
+            return self.enclosing_story_key_and_depth();
         }
         if matches!(
             self.display_rows.get(self.selected_index),
@@ -1181,12 +1236,13 @@ impl ListView {
 
     pub fn cancel_search(
         &mut self,
+        ticket_store: &TicketStore,
         issues: &[Issue],
         story_children: &HashMap<String, Vec<Issue>>,
     ) {
         let selected_key = self
-            .selected_issue(issues, story_children)
-            .map(|issue| issue.key.clone());
+            .selected_ticket(ticket_store)
+            .map(|ticket| ticket.issue.key.clone());
         self.search_filter.clear();
         self.rebuild_display_rows(issues, story_children);
         if let Some(key) = selected_key {
@@ -1933,11 +1989,13 @@ impl ListView {
             let cells = match display_row {
                 DisplayRow::SectionHeader { section, count } => {
                     current_section = Some(*section);
-                    row::section_header_row(section, *count, area.width)
+                    row::section_header_row(section, *count)
                 }
                 DisplayRow::Ticket { key, depth } => {
-                    let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key);
-                    let is_group_header = issue.map(crate::issue::is_expandable).unwrap_or(false)
+                    let ticket = ctx.ticket_store.get(key);
+                    let is_group_header = ticket
+                        .map(|t| crate::issue::is_expandable(&t.issue))
+                        .unwrap_or(false)
                         || self
                             .display_rows
                             .get(row_idx + 1)
@@ -1953,38 +2011,20 @@ impl ListView {
                             .map(|s| self.collapsed_stories.contains(&(key.clone(), s)))
                             .unwrap_or(false);
                         let has_pending_import = self.pending_import_keys.contains(key);
-                        let summary = issue
-                            .map(|i| i.summary().unwrap_or_default())
-                            .unwrap_or_default();
-                        row::story_header_row(
-                            key,
-                            &summary,
-                            row_idx,
-                            collapsed,
-                            *depth,
-                            has_pending_import,
-                        )
-                    } else if let Some(ticket) = ctx.ticket_store.get(key) {
-                        row::issue_row(ctx, &self.pending_import_keys, ticket, row_idx, *depth)
+                        let ticket =
+                            ticket.unwrap_or_else(|| panic!("missing ticket for key {key}"));
+                        row::story_header_row(ticket, collapsed, *depth, has_pending_import)
                     } else {
-                        let issue = find_issue_by_key(&ctx.issues, &ctx.story_children, key)
-                            .unwrap_or_else(|| panic!("missing issue for key {key}"));
-                        let fallback = Ticket {
-                            issue: issue.clone(),
-                            pr: ctx.github_prs.get(key).cloned(),
-                            repos: vec![],
-                            active_branch: ctx.active_branches.get(key).cloned(),
-                        };
-                        row::issue_row(ctx, &self.pending_import_keys, &fallback, row_idx, *depth)
+                        let ticket =
+                            ticket.unwrap_or_else(|| panic!("missing ticket for key {key}"));
+                        row::issue_row(ctx, &self.pending_import_keys, ticket, *depth)
                     }
                 }
-                DisplayRow::InlineNew { depth } => {
-                    row::inline_new_row(ctx.inline_new, row_idx, *depth)
-                }
+                DisplayRow::InlineNew { depth } => row::inline_new_row(ctx.inline_new, *depth),
                 DisplayRow::Loading { depth } => {
-                    row::loading_row(ctx.animation.spinner_tick, row_idx, *depth)
+                    row::loading_row(ctx.animation.spinner_tick, *depth)
                 }
-                DisplayRow::Empty { depth } => row::empty_row(row_idx, *depth),
+                DisplayRow::Empty { depth } => row::empty_row(*depth),
             };
             row_data.push(cells);
         }
@@ -2117,22 +2157,29 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                         'e' => spawn_openspec_propose(app),
                         'i' => open_import_tasks_popup(app),
                         'h' => {
-                            app.list.collapse_story(&app.issues, &app.story_children);
+                            app.list.collapse_story(
+                                &app.ticket_store,
+                                &app.issues,
+                                &app.story_children,
+                            );
                             app.save_cache();
                         }
                         'l' => {
-                            if let Some(key) =
-                                app.list.expand_story(&app.issues, &app.story_children)
-                            {
+                            if let Some(key) = app.list.expand_story(
+                                &app.ticket_store,
+                                &app.issues,
+                                &app.story_children,
+                            ) {
                                 app.spawn_fetch_children(&key);
                             }
                             app.save_cache();
                         }
                         ' ' => {
-                            if let Some(key) = app
-                                .list
-                                .toggle_story_collapse(&app.issues, &app.story_children)
-                            {
+                            if let Some(key) = app.list.toggle_story_collapse(
+                                &app.ticket_store,
+                                &app.issues,
+                                &app.story_children,
+                            ) {
                                 app.spawn_fetch_children(&key);
                             }
                             app.save_cache();
@@ -2142,7 +2189,8 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                 }
                 KeyCode::Esc => {
                     if !app.list.search_filter.is_empty() {
-                        app.list.cancel_search(&app.issues, &app.story_children);
+                        app.list
+                            .cancel_search(&app.ticket_store, &app.issues, &app.story_children);
                         app.input_focus = crate::app::InputFocus::List;
                     }
                 }
@@ -2159,7 +2207,8 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
         }
         crate::app::InputFocus::Search => match key_event.code {
             KeyCode::Esc => {
-                app.list.cancel_search(&app.issues, &app.story_children);
+                app.list
+                    .cancel_search(&app.ticket_store, &app.issues, &app.story_children);
                 app.input_focus = crate::app::InputFocus::List;
             }
             KeyCode::Enter => {
@@ -2223,17 +2272,15 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
 
 /// Show confirmation dialog before picking up an issue.
 fn show_pick_up_dialog(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let issue_summary = issue.summary().unwrap_or_default();
-    let issue_description = crate::issue::description(issue).unwrap_or_default();
-    let repo_path = app
-        .repo_matches(issue)
-        .first()
-        .map(|entry| entry.path.clone());
-    let ancestors = crate::issue::ancestors_from_sources(issue, &app.issues, &app.story_children);
+    let issue_key = ticket.issue.key.clone();
+    let issue_summary = ticket.issue.summary().unwrap_or_default();
+    let issue_description = crate::issue::description(&ticket.issue).unwrap_or_default();
+    let repo_path = ticket.repos.first().map(|entry| entry.path.clone());
+    let ancestors =
+        crate::issue::ancestors_from_sources(&ticket.issue, &app.issues, &app.story_children);
 
     app.confirm_dialog = Some(ConfirmDialogView {
         action: ConfirmAction::PickUp {
@@ -2250,11 +2297,11 @@ fn show_pick_up_dialog(app: &mut AppView) {
 
 /// Show confirmation dialog before opening branch diff.
 fn show_branch_diff_dialog(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let repo_path = match app.repo_matches(issue).first() {
+    let issue_key = ticket.issue.key.clone();
+    let repo_path = match ticket.repos.first() {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
@@ -2274,11 +2321,11 @@ fn show_branch_diff_dialog(app: &mut AppView) {
 
 /// Spawn approve + auto-merge for the selected issue's PR.
 fn spawn_approve_merge(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let Some(pr) = app.github_prs.get(&issue_key) else {
+    let issue_key = ticket.issue.key.clone();
+    let Some(pr) = ticket.pr.as_ref() else {
         app.status_bar
             .set_warning(format!("No PR found for {issue_key}"));
         return;
@@ -2289,12 +2336,12 @@ fn spawn_approve_merge(app: &mut AppView) {
 
 /// Show confirmation dialog before finishing an issue.
 fn show_finish_dialog(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let issue_summary = issue.summary().unwrap_or_default();
-    let repo_path = match app.repo_matches(issue).first() {
+    let issue_key = ticket.issue.key.clone();
+    let issue_summary = ticket.issue.summary().unwrap_or_default();
+    let repo_path = match ticket.repos.first() {
         Some(entry) => entry.path.clone(),
         None => {
             app.status_bar
@@ -2315,14 +2362,15 @@ fn show_finish_dialog(app: &mut AppView) {
 
 /// Spawn issue type toggle: Task → Story, or Story → Task if it has no children.
 fn spawn_toggle_story_type(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_type_name = issue
+    let issue_type_name = ticket
+        .issue
         .issue_type()
         .map(|t| t.name.to_lowercase())
         .unwrap_or_default();
-    let issue_key = issue.key.clone();
+    let issue_key = ticket.issue.key.clone();
 
     if issue_type_name.contains("story") || issue_type_name.contains("epic") {
         let has_children = app
@@ -2387,8 +2435,8 @@ fn derive_project_key(app: &AppView) -> String {
 
     if let Some(project_key) = app
         .list
-        .selected_issue(&app.issues, &app.story_children)
-        .and_then(|issue| issue.project())
+        .selected_ticket(&app.ticket_store)
+        .and_then(|ticket| ticket.issue.project())
         .map(|project| project.key)
     {
         return project_key;
@@ -2416,12 +2464,12 @@ fn open_jira_filter_picker(app: &mut AppView) {
 }
 
 fn open_ci_log_popup(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         app.status_bar.set_warning("No issue selected");
         return;
     };
-    let issue_key = issue.key.clone();
-    let Some(pr) = app.github_prs.get(&issue_key) else {
+    let issue_key = ticket.issue.key.clone();
+    let Some(pr) = ticket.pr.as_ref() else {
         app.status_bar
             .set_warning(format!("No linked PR for {issue_key}"));
         return;
@@ -2454,11 +2502,12 @@ fn spawn_ci_log_fetch(app: &mut AppView, issue_key: &str) {
 
 /// Scan openspec changes for pending import tasks.
 fn open_import_tasks_popup(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let issue_type_name = issue
+    let issue_key = ticket.issue.key.clone();
+    let issue_type_name = ticket
+        .issue
         .issue_type()
         .map(|t| t.name.clone())
         .unwrap_or_default();
@@ -2500,20 +2549,21 @@ fn open_import_tasks_popup(app: &mut AppView) {
 
 /// Open an opencode session to propose an openspec change for the selected issue.
 fn spawn_openspec_propose(app: &mut AppView) {
-    let Some(issue) = app.list.selected_issue(&app.issues, &app.story_children) else {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
         return;
     };
-    let issue_key = issue.key.clone();
-    let issue_summary = issue.summary().unwrap_or_default();
-    let issue_description = crate::issue::description(issue).unwrap_or_default();
+    let issue_key = ticket.issue.key.clone();
+    let issue_summary = ticket.issue.summary().unwrap_or_default();
+    let issue_description = crate::issue::description(&ticket.issue).unwrap_or_default();
 
-    let repo_slugs: Vec<String> = app
-        .repo_matches(issue)
+    let repo_slugs: Vec<String> = ticket
+        .repos
         .iter()
         .filter_map(|entry| entry.github_slug.clone())
         .collect();
 
-    let ancestors = crate::issue::ancestors_from_sources(issue, &app.issues, &app.story_children);
+    let ancestors =
+        crate::issue::ancestors_from_sources(&ticket.issue, &app.issues, &app.story_children);
 
     actions::openspec_propose::spawn(
         app.message_tx.clone(),
@@ -2527,8 +2577,8 @@ fn spawn_openspec_propose(app: &mut AppView) {
 }
 
 async fn open_selected_issue_in_browser(app: &mut AppView) -> Result<()> {
-    let issue_key = match app.list.selected_issue(&app.issues, &app.story_children) {
-        Some(issue) => issue.key.clone(),
+    let issue_key = match app.list.selected_ticket(&app.ticket_store) {
+        Some(ticket) => ticket.issue.key.clone(),
         None => return Err(eyre!("No issue selected")),
     };
 
@@ -2538,14 +2588,13 @@ async fn open_selected_issue_in_browser(app: &mut AppView) -> Result<()> {
 }
 
 async fn open_selected_pr_in_browser(app: &mut AppView) -> Result<()> {
-    let issue_key = match app.list.selected_issue(&app.issues, &app.story_children) {
-        Some(issue) => issue.key.clone(),
-        None => return Err(eyre!("No issue selected")),
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
+        return Err(eyre!("No issue selected"));
     };
-
-    let pr = app
-        .github_prs
-        .get(&issue_key)
+    let issue_key = ticket.issue.key.clone();
+    let pr = ticket
+        .pr
+        .as_ref()
         .ok_or_else(|| eyre!("No PR found for {issue_key}"))?;
 
     let url = pr.url.clone();
