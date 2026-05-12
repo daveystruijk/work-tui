@@ -1827,9 +1827,12 @@ impl ListView {
             return;
         }
 
-        if self.loading_children.contains(parent_key)
-            || (!parent_groups.contains_key(parent_key) && !story_children.contains_key(parent_key))
-        {
+        // Only show the loading spinner when no children data exists yet.
+        // When a refetch is in-flight but we still have stale data, keep
+        // showing the old children to avoid a visible flicker.
+        let has_no_data =
+            !parent_groups.contains_key(parent_key) && !story_children.contains_key(parent_key);
+        if has_no_data {
             rows.push(DisplayRow::Loading { depth });
             return;
         }

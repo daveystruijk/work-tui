@@ -693,7 +693,10 @@ impl AppView {
                 let expanded_story_keys = self.expanded_loaded_story_keys();
                 let selection_restore_keys = self.selected_issue_restore_keys();
                 self.issues = issues;
-                self.story_children.clear();
+                // Retain story_children for stories that still exist in the
+                // new issues list. Clearing eagerly causes a visible flicker
+                // because the async refetch hasn't completed yet.
+                self.retain_valid_story_children();
                 self.restore_expanded_story_loading(&expanded_story_keys);
                 self.list
                     .rebuild_display_rows(&self.issues, &self.story_children);
@@ -719,6 +722,26 @@ impl AppView {
                 self.loading = false;
             }
         }
+    }
+
+    /// Remove story_children entries whose parent key no longer appears in the
+    /// current issues list (or as a child of another story). Keeps existing
+    /// children data so the UI doesn't flicker while the async refetch is
+    /// in-flight.
+    fn retain_valid_story_children(&mut self) {
+        let known_keys: HashSet<String> = self
+            .issues
+            .iter()
+            .map(|issue| issue.key.clone())
+            .chain(
+                self.story_children
+                    .values()
+                    .flatten()
+                    .map(|issue| issue.key.clone()),
+            )
+            .collect();
+        self.story_children
+            .retain(|key, _| known_keys.contains(key));
     }
 
     fn handle_github_prs_message(&mut self, all_prs: Vec<PrInfo>) {
@@ -882,7 +905,12 @@ impl AppView {
             self.list
                 .collapsed_stories
                 .remove(&(key.clone(), ListSection::Backlog));
-            self.list.start_loading_children(key);
+            // Only mark as loading if we don't already have children data.
+            // Retained stale data is shown until the refetch completes,
+            // avoiding a visible flicker.
+            if !self.story_children.contains_key(key) {
+                self.list.start_loading_children(key);
+            }
         }
     }
 
@@ -1381,5 +1409,131 @@ mod tests {
             );
         }
         issue
+    }
+
+    /// retain_valid_story_children keeps entries for stories still present in
+    /// the issues list, preventing a visible flicker during async refetch.
+    #[test]
+    fn retain_valid_story_children_keeps_existing_stories() {
+        let mut app = test_app();
+        let story = story_issue("TEST-1", "Story parent");
+        app.issues = vec![story.clone(), ticket_issue("TEST-3", Some(&story))];
+        app.story_children
+            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
+
+        app.retain_valid_story_children();
+
+        assert!(
+            app.story_children.contains_key("TEST-1"),
+            "story_children should be retained for stories still in the issues list"
+        );
+        assert_eq!(app.story_children["TEST-1"][0].key, "TEST-2");
+    }
+
+    /// retain_valid_story_children removes entries for stories that no longer
+    /// exist in the issues list.
+    #[test]
+    fn retain_valid_story_children_removes_gone_stories() {
+        let mut app = test_app();
+        let story = story_issue("TEST-1", "Story parent");
+        app.issues = vec![story];
+        app.story_children
+            .insert("TEST-1".to_string(), vec![ticket_issue("TEST-2", None)]);
+        app.story_children
+            .insert("GONE-1".to_string(), vec![ticket_issue("GONE-2", None)]);
+
+        app.retain_valid_story_children();
+
+        assert!(app.story_children.contains_key("TEST-1"));
+        assert!(
+            !app.story_children.contains_key("GONE-1"),
+            "story_children for removed stories should be cleaned up"
+        );
+    }
+
+    /// Expanded stories with retained children don't show a loading spinner
+    /// after restore_expanded_story_loading — they keep displaying the stale
+    /// children until the refetch completes.
+    #[test]
+    fn restore_expanded_skips_loading_when_children_retained() {
+        let mut app = test_app();
+        let story = story_issue("TEST-1", "Story parent");
+        app.issues = vec![story.clone(), ticket_issue("TEST-3", Some(&story))];
+        app.story_children.insert(
+            "TEST-1".to_string(),
+            vec![ticket_issue("TEST-2", Some(&story))],
+        );
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), ListSection::Board));
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), ListSection::Backlog));
+
+        // Simulate the refresh path: retain children, then restore expanded state.
+        app.retain_valid_story_children();
+        app.restore_expanded_story_loading(&["TEST-1".to_string()]);
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+
+        // No Loading rows should appear — retained children are shown instead.
+        let has_loading = app
+            .list
+            .display_rows
+            .iter()
+            .any(|row| matches!(row, DisplayRow::Loading { .. }));
+        assert!(
+            !has_loading,
+            "retained children should prevent loading spinners"
+        );
+        // The retained child should still be visible.
+        let has_child = app
+            .list
+            .display_rows
+            .iter()
+            .any(|row| matches!(row, DisplayRow::Ticket { key, .. } if key == "TEST-2"));
+        assert!(
+            has_child,
+            "retained child should still appear in display rows"
+        );
+    }
+
+    /// Search results are preserved when story_children data is retained
+    /// across a rebuild (simulating what happens during refresh).
+    #[test]
+    fn search_results_stable_with_retained_children() {
+        let mut app = test_app();
+        let story = story_issue("TEST-1", "Story parent");
+        let mut child = ticket_issue("TEST-2", Some(&story));
+        child
+            .fields
+            .insert("summary".to_string(), json!("Unique searchable child"));
+        app.issues = vec![story];
+        app.story_children.insert("TEST-1".to_string(), vec![child]);
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), ListSection::Board));
+        app.list
+            .collapsed_stories
+            .remove(&("TEST-1".to_string(), ListSection::Backlog));
+
+        // Activate search that matches the child.
+        app.list.search_filter = "searchable".to_string();
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+        let rows_before = app.list.display_rows.len();
+        assert!(rows_before > 0, "search should find matching child");
+
+        // Simulate refresh path: retain children, restore expanded, rebuild.
+        app.retain_valid_story_children();
+        app.restore_expanded_story_loading(&["TEST-1".to_string()]);
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+
+        assert_eq!(
+            app.list.display_rows.len(),
+            rows_before,
+            "search results should remain stable when children are retained"
+        );
     }
 }
