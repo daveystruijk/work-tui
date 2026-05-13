@@ -2187,6 +2187,7 @@ pub async fn update(app: &mut crate::app::AppView, key_event: KeyEvent) {
                         }
                         'V' => spawn_approve_merge(app),
                         'c' => open_ci_log_popup(app),
+                        'y' => copy_ticket_slack_link(app),
                         'e' => spawn_openspec_propose(app),
                         'i' => open_import_tasks_popup(app),
                         '?' => {
@@ -2680,6 +2681,39 @@ fn status_rank(issue: &Issue) -> u8 {
         .position(|&keyword| name.contains(keyword))
         .map(|i| i as u8)
         .unwrap_or(ORDER.len() as u8)
+}
+
+fn copy_ticket_slack_link(app: &mut AppView) {
+    let Some(ticket) = app.list.selected_ticket(&app.ticket_store) else {
+        return;
+    };
+
+    let issue_key = &ticket.issue.key;
+    let summary = ticket.issue.summary().unwrap_or_default();
+    let jira_url = format!("{}/browse/{}", app.config.jira.jira_url, issue_key);
+
+    let (html, plain) = if let Some(pr) = &ticket.pr {
+        let html = format!(
+            r#"<a href="{}">#{}</a> {summary} (<a href="{}">{}</a>)"#,
+            pr.url, pr.number, jira_url, issue_key
+        );
+        let plain = format!("{} {summary} ({issue_key})", pr.url);
+        (html, plain)
+    } else {
+        let html = format!(r#"{summary} (<a href="{jira_url}">{issue_key}</a>)"#);
+        let plain = format!("{summary} ({issue_key})");
+        (html, plain)
+    };
+
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        app.status_bar.set_error("Failed to access clipboard");
+        return;
+    };
+    if clipboard.set_html(&html, Some(&plain)).is_err() {
+        app.status_bar.set_error("Failed to copy to clipboard");
+        return;
+    }
+    app.status_bar.set_warning("Copied to clipboard");
 }
 
 fn issue_created_str(issue: &Issue) -> String {

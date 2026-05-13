@@ -121,7 +121,11 @@ pub fn derive_story_status(story: &Issue, children: &[Issue]) -> Option<DerivedS
 
     let tiers: Vec<StatusTier> = children
         .iter()
-        .filter_map(|child| child.status().map(|s| classify_status(&s.name.to_lowercase())))
+        .filter_map(|child| {
+            child
+                .status()
+                .map(|s| classify_status(&s.name.to_lowercase()))
+        })
         .collect();
 
     if tiers.is_empty() {

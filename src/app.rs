@@ -535,8 +535,8 @@ impl AppView {
                 self.spawn_github_prs_active();
             }
             Message::Finished(issue_key, result) => {
-                if result.is_ok() {
-                    self.apply_finished(&issue_key);
+                if let Ok(pr_url) = result {
+                    self.apply_finished(&issue_key, &pr_url);
                     self.spawn_sync_story_statuses();
                 }
             }
@@ -808,25 +808,58 @@ impl AppView {
         }
     }
 
-    /// Optimistically update issue status to "Review" after finishing.
-    fn apply_finished(&mut self, issue_key: &str) {
+    /// Optimistically update issue status to "Review" and insert a placeholder PR.
+    fn apply_finished(&mut self, issue_key: &str, pr_url: &str) {
         let issue = self
             .issues
             .iter_mut()
             .chain(self.story_children.values_mut().flatten())
             .find(|issue| issue.key == issue_key);
-        if let Some(issue) = issue {
-            if let Some(status) = issue.fields.get("status").cloned() {
-                let mut status_obj = status;
-                if let Some(obj) = status_obj.as_object_mut() {
-                    obj.insert("name".to_string(), serde_json::json!("Review"));
-                    issue
-                        .fields
-                        .insert("status".to_string(), status_obj.clone());
+        let (title, branch) = issue
+            .map(|issue| {
+                if let Some(status) = issue.fields.get("status").cloned() {
+                    let mut status_obj = status;
+                    if let Some(obj) = status_obj.as_object_mut() {
+                        obj.insert("name".to_string(), serde_json::json!("Review"));
+                        issue
+                            .fields
+                            .insert("status".to_string(), status_obj.clone());
+                    }
                 }
-            }
-        }
-        // Also refresh PRs since a new PR was created.
+                let title = format!("{} {}", issue.key, issue.summary().unwrap_or_default());
+                (title, self.current_branch.clone())
+            })
+            .unwrap_or_default();
+
+        // Parse PR number and repo slug from the URL (e.g. https://github.com/owner/repo/pull/123)
+        let (pr_number, repo_slug) = parse_pr_url(pr_url);
+
+        self.github_prs.insert(
+            issue_key.to_string(),
+            PrInfo {
+                number: pr_number,
+                title,
+                state: "OPEN".to_string(),
+                is_draft: false,
+                checks: CheckStatus::Pending,
+                check_runs: vec![],
+                url: pr_url.to_string(),
+                head_branch: branch,
+                repo_slug,
+                comments: vec![],
+                review_threads: vec![],
+                changed_files: None,
+                additions: None,
+                deletions: None,
+                mergeable: None,
+                review_decision: None,
+                auto_merge_enabled: true,
+                updated_at: None,
+            },
+        );
+        self.rebuild_tickets();
+
+        // Also refresh PRs in the background to get full data.
         self.spawn_github_prs_active();
     }
 
@@ -1180,6 +1213,20 @@ impl AppView {
             }
         }
     }
+}
+
+/// Parse a GitHub PR URL like `https://github.com/owner/repo/pull/123`
+/// into `(pr_number, repo_slug)`. Returns `(0, "")` on parse failure.
+fn parse_pr_url(url: &str) -> (u64, String) {
+    // Expected: https://github.com/{owner}/{repo}/pull/{number}
+    let parts: Vec<&str> = url.trim_end_matches('/').rsplit('/').collect();
+    let number = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    // parts: [number, "pull", repo, owner, ...]
+    let repo_slug = match (parts.get(2), parts.get(3)) {
+        (Some(repo), Some(owner)) => format!("{owner}/{repo}"),
+        _ => String::new(),
+    };
+    (number, repo_slug)
 }
 
 #[cfg(test)]
