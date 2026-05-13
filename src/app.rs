@@ -532,6 +532,7 @@ impl AppView {
             Message::Finished(issue_key, result) => {
                 if result.is_ok() {
                     self.apply_finished(&issue_key);
+                    self.spawn_sync_story_statuses();
                 }
             }
             Message::InlineCreated(result) => self.handle_inline_created_message(result),

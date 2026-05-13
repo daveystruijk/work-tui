@@ -667,9 +667,10 @@ fn check_run_timing(
                 .as_deref()
                 .and_then(crate::utils::time::elapsed_since_iso)?;
             let cache_key = format!("{}/{}", pr.repo_slug, run.name);
-            let eta = check_durations.get(&cache_key).map(|&historical| {
+            let eta = check_durations.get(&cache_key).and_then(|&historical| {
                 let remaining = historical.saturating_sub(elapsed);
-                format!(" (~{})", crate::utils::time::format_duration(remaining))
+                (remaining > 0)
+                    .then(|| format!(" (~{})", crate::utils::time::format_duration(remaining)))
             });
             Some(format!(
                 "{}{}",
@@ -704,9 +705,10 @@ fn check_step_timing(
                 .as_deref()
                 .and_then(crate::utils::time::elapsed_since_iso)?;
             let cache_key = format!("{}/{}/{}", pr.repo_slug, run.name, step.name);
-            let eta = check_durations.get(&cache_key).map(|&historical| {
+            let eta = check_durations.get(&cache_key).and_then(|&historical| {
                 let remaining = historical.saturating_sub(elapsed);
-                format!(" (~{})", crate::utils::time::format_duration(remaining))
+                (remaining > 0)
+                    .then(|| format!(" (~{})", crate::utils::time::format_duration(remaining)))
             });
             Some(format!(
                 "{}{}",

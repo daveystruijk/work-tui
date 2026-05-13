@@ -70,5 +70,7 @@ fn pr_eta(check_durations: &HashMap<String, u64>, pr: &PrInfo) -> Option<String>
         let remaining = historical.saturating_sub(elapsed);
         max_remaining = Some(max_remaining.map_or(remaining, |cur: u64| cur.max(remaining)));
     }
-    max_remaining.map(|r| format!("~{}", crate::utils::time::format_duration(r)))
+    max_remaining
+        .filter(|&r| r > 0)
+        .map(|r| format!("~{}", crate::utils::time::format_duration(r)))
 }
