@@ -28,6 +28,7 @@ pub mod openspec_propose;
 pub mod pick_up;
 pub mod refresh;
 pub mod scan_import_tasks;
+pub mod sync_story_statuses;
 pub mod tag_jira_repos;
 
 use color_eyre::Result;
@@ -129,6 +130,9 @@ pub enum Message {
     /// Tasks imported from tasks.json (from [`import_tasks`]).
     /// Carries (issue_key, result).
     TasksImported(String, Result<()>),
+    /// Story statuses synced based on child ticket statuses (from [`sync_story_statuses`]).
+    /// Carries a list of (story_key, derived_status) pairs that were successfully transitioned.
+    StoryStatusSynced(Vec<(String, sync_story_statuses::DerivedStatus)>),
     /// Issue keys that have pending import tasks (from [`scan_import_tasks`]).
     PendingImportKeys(HashSet<String>),
     /// An action has started.

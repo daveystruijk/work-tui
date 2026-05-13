@@ -565,6 +565,9 @@ impl AppView {
                 }
                 Err(err) => self.status_bar.set_error(format!("Import failed: {err}")),
             },
+            Message::StoryStatusSynced(synced) => {
+                self.apply_story_status_synced(&synced);
+            }
             Message::PendingImportKeys(_) => {}
             Message::ActionStarted { id, label } => self.start_running_action(id, label),
             Message::ActionFinished(id) => self.finish_running_action(&id),
@@ -720,6 +723,7 @@ impl AppView {
                 self.spawn_github_prs();
                 self.spawn_tag_jira_repos();
                 self.spawn_scan_import_tasks();
+                self.spawn_sync_story_statuses();
             }
             Err(_) => {
                 self.loading = false;
@@ -878,6 +882,7 @@ impl AppView {
         self.list
             .rebuild_display_rows(&self.issues, &self.story_children);
         self.restore_pending_selection();
+        self.spawn_sync_story_statuses();
     }
 
     fn expanded_loaded_story_keys(&self) -> Vec<String> {
@@ -1042,6 +1047,46 @@ impl AppView {
     /// Scan openspec changes for pending import tasks.
     pub fn spawn_scan_import_tasks(&self) {
         actions::scan_import_tasks::spawn(self.message_tx.clone(), self.config.repos_dir.clone());
+    }
+
+    /// Sync story statuses based on their children's statuses.
+    pub fn spawn_sync_story_statuses(&self) {
+        let entries =
+            actions::sync_story_statuses::compute_sync_entries(&self.issues, &self.story_children);
+        actions::sync_story_statuses::spawn(self.message_tx.clone(), self.client.clone(), entries);
+    }
+
+    /// Optimistically update local issue statuses after story sync completes.
+    fn apply_story_status_synced(
+        &mut self,
+        synced: &[(String, actions::sync_story_statuses::DerivedStatus)],
+    ) {
+        for (story_key, derived_status) in synced {
+            let issue = self
+                .issues
+                .iter_mut()
+                .chain(self.story_children.values_mut().flatten())
+                .find(|issue| issue.key == *story_key);
+            if let Some(issue) = issue {
+                if let Some(status) = issue.fields.get("status").cloned() {
+                    let mut status_obj = status;
+                    if let Some(obj) = status_obj.as_object_mut() {
+                        obj.insert(
+                            "name".to_string(),
+                            serde_json::json!(derived_status.label()),
+                        );
+                        issue
+                            .fields
+                            .insert("status".to_string(), status_obj.clone());
+                    }
+                }
+            }
+        }
+        if !synced.is_empty() {
+            self.rebuild_tickets();
+            self.list
+                .rebuild_display_rows(&self.issues, &self.story_children);
+        }
     }
 
     pub fn repo_matches(&self, issue: &Issue) -> Vec<&RepoEntry> {

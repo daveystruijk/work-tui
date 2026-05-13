@@ -11,6 +11,7 @@ use crate::ticket::{Ticket, TicketStore};
 use crate::ui::{CellMap, SPINNER_FRAMES};
 
 use super::columns;
+use super::columns::issue::CollapseState;
 use super::UiAnimationView;
 
 /// Read-only shared state passed to ListView for rendering.
@@ -28,57 +29,38 @@ pub fn issue_row(
     pending_import_keys: &HashSet<String>,
     ticket: &Ticket,
     depth: u8,
+    collapse_state: CollapseState,
 ) -> (CellMap<'static>, Style) {
     let row_style = Style::default().fg(Theme::Text);
+    let is_group_header = !matches!(collapse_state, CollapseState::None);
 
-    let cells = HashMap::from([
-        (
-            "Issue",
-            columns::issue::render(ticket, pending_import_keys, ctx.search_filter, depth),
-        ),
-        ("Status", columns::status::render(ticket, ctx.search_filter)),
-        ("Dev", columns::dev::render(ticket, ctx.search_filter)),
-        ("◷", columns::time::render(ticket)),
-        ("PR", columns::pr::render(ticket)),
-        (
-            "CI",
-            columns::ci::render(ticket, ctx.animation.spinner_tick, ctx.check_durations),
-        ),
-        ("Repo", columns::repo::render(ticket)),
-    ]);
+    let issue_cell = columns::issue::render(
+        ticket,
+        pending_import_keys,
+        ctx.search_filter,
+        depth,
+        collapse_state,
+    );
+    let cells = if is_group_header {
+        HashMap::from([("Issue", issue_cell)])
+    } else {
+        let status_cell = columns::status::render(ticket, ctx.search_filter);
+        let dev_cell = columns::dev::render(ticket, ctx.search_filter);
+        let time_cell = columns::time::render(ticket);
+        let pr_cell = columns::pr::render(ticket);
+        let ci_cell = columns::ci::render(ticket, ctx.animation.spinner_tick, ctx.check_durations);
+        let repo_cell = columns::repo::render(ticket);
+        HashMap::from([
+            ("Issue", issue_cell),
+            ("Status", status_cell),
+            ("Dev", dev_cell),
+            ("◷", time_cell),
+            ("PR", pr_cell),
+            ("CI", ci_cell),
+            ("Repo", repo_cell),
+        ])
+    };
 
-    (cells, row_style)
-}
-
-/// Render a story/epic group header row.
-pub fn story_header_row(
-    ticket: &Ticket,
-    collapsed: bool,
-    depth: u8,
-    has_pending_import: bool,
-) -> (CellMap<'static>, Style) {
-    let row_style = Style::default().fg(Theme::Muted);
-
-    let key = &ticket.issue.key;
-    let summary = ticket.issue.summary().unwrap_or_default();
-    let first_line = summary.lines().next().unwrap_or_default().to_string();
-    let icon = if collapsed { "▶" } else { "▼" };
-    let indent = "  ".repeat(depth as usize);
-    let header_style = Style::default()
-        .fg(Theme::AccentSoft)
-        .add_modifier(Modifier::BOLD);
-
-    let mut summary_spans = vec![Span::styled(
-        format!("{}{} {}", indent, icon, key),
-        header_style,
-    )];
-    if has_pending_import {
-        summary_spans.push(Span::styled(" *", Style::default().fg(Theme::Warning)));
-    }
-    summary_spans.push(Span::styled(format!(" {first_line}"), header_style));
-    let summary_line = Line::from(summary_spans);
-
-    let cells = HashMap::from([("Issue", summary_line)]);
     (cells, row_style)
 }
 

@@ -15,14 +15,27 @@ use crate::ui::issue_type_icon;
 
 use super::{highlight_spans, search_match_indices};
 
+/// Collapse state for expandable issues (stories/epics).
+#[derive(Debug, Clone, Copy)]
+pub enum CollapseState {
+    /// Not an expandable issue — show the regular type icon.
+    None,
+    /// Expandable and currently collapsed.
+    Collapsed,
+    /// Expandable and currently expanded.
+    Expanded,
+}
+
 /// Render the "Issue" column for a ticket row.
 ///
 /// Contains: indent + icon + key (with search highlight) + pending-import marker + summary (with search highlight).
+/// For expandable issues, shows ▶/▼ instead of the type icon.
 pub fn render(
     ticket: &Ticket,
     pending_import_keys: &HashSet<String>,
     search_filter: &str,
     depth: u8,
+    collapse_state: CollapseState,
 ) -> Line<'static> {
     let issue = &ticket.issue;
     let issue_type = issue.issue_type().map(|ty| ty.name).unwrap_or_default();
@@ -34,10 +47,12 @@ pub fn render(
         .unwrap_or_default()
         .to_string();
 
-    let key_prefix = if depth > 0 {
-        "  ".repeat(depth as usize)
-    } else {
-        String::new()
+    let indent = "  ".repeat(depth as usize);
+
+    let icon = match collapse_state {
+        CollapseState::None => issue_type_icon(&issue_type),
+        CollapseState::Collapsed => "▶",
+        CollapseState::Expanded => "▼",
     };
 
     let is_searching = !search_filter.is_empty();
@@ -59,7 +74,6 @@ pub fn render(
         .add_modifier(Modifier::BOLD);
 
     let has_pending_import = pending_import_keys.contains(&issue.key);
-    let icon = issue_type_icon(&issue_type);
 
     // Key field — highlight search matches
     let key_base_style = Style::default()
@@ -81,7 +95,7 @@ pub fn render(
     );
 
     let mut spans = vec![Span::styled(
-        format!("{}{} ", key_prefix, icon),
+        format!("{indent}{icon} "),
         Style::default().fg(Theme::Muted),
     )];
     spans.extend(key_spans);

@@ -2017,10 +2017,11 @@ impl ListView {
                     row::section_header_row(section, *count)
                 }
                 DisplayRow::Ticket { key, depth } => {
-                    let ticket = ctx.ticket_store.get(key);
-                    let is_group_header = ticket
-                        .map(|t| crate::issue::is_expandable(&t.issue))
-                        .unwrap_or(false)
+                    let ticket = ctx
+                        .ticket_store
+                        .get(key)
+                        .unwrap_or_else(|| panic!("missing ticket for key {key}"));
+                    let is_expandable = crate::issue::is_expandable(&ticket.issue)
                         || self
                             .display_rows
                             .get(row_idx + 1)
@@ -2031,19 +2032,25 @@ impl ListView {
                                 _ => false,
                             })
                             .unwrap_or(false);
-                    if is_group_header {
+                    let collapse_state = if is_expandable {
                         let collapsed = current_section
                             .map(|s| self.collapsed_stories.contains(&(key.clone(), s)))
                             .unwrap_or(false);
-                        let has_pending_import = self.pending_import_keys.contains(key);
-                        let ticket =
-                            ticket.unwrap_or_else(|| panic!("missing ticket for key {key}"));
-                        row::story_header_row(ticket, collapsed, *depth, has_pending_import)
+                        if collapsed {
+                            columns::issue::CollapseState::Collapsed
+                        } else {
+                            columns::issue::CollapseState::Expanded
+                        }
                     } else {
-                        let ticket =
-                            ticket.unwrap_or_else(|| panic!("missing ticket for key {key}"));
-                        row::issue_row(ctx, &self.pending_import_keys, ticket, *depth)
-                    }
+                        columns::issue::CollapseState::None
+                    };
+                    row::issue_row(
+                        ctx,
+                        &self.pending_import_keys,
+                        ticket,
+                        *depth,
+                        collapse_state,
+                    )
                 }
                 DisplayRow::InlineNew { depth } => row::inline_new_row(ctx.inline_new, *depth),
                 DisplayRow::Loading { depth } => {
