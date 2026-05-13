@@ -39,6 +39,7 @@ pub fn test_app() -> AppView {
         my_account_id: String::new(),
         current_branch: String::new(),
         active_branches: Default::default(),
+        dirty_repos: Default::default(),
         github_statuses: Default::default(),
         github_loading: false,
         animation: UiAnimationView::default(),

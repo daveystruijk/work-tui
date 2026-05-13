@@ -109,6 +109,7 @@ mod tests {
             story_children,
             github_prs: &HashMap::new(),
             active_branches: &HashMap::new(),
+            dirty_repos: &std::collections::HashSet::new(),
             repo_entries: &[],
         })
     }

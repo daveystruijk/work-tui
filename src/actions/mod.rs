@@ -95,7 +95,8 @@ pub enum Message {
     /// Detailed GitHub data fetched for one selected PR.
     GithubPrDetail(String, Result<PrDetail>),
     /// Active branches resolved (from [`detect_active_branches`]).
-    ActiveBranches(HashMap<String, String>),
+    /// Carries (issue_key -> repo_label, set of dirty repo paths).
+    ActiveBranches(HashMap<String, String>, std::collections::HashSet<std::path::PathBuf>),
     /// Pick-up completed (from [`pick_up`]).
     PickedUp(Result<PickUpResult>),
     /// Branch diff opened (from [`branch_diff`]).

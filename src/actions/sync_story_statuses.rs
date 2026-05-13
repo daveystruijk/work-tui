@@ -2,10 +2,13 @@
 //! the statuses of their child tickets.
 //!
 //! After issues or story children are loaded, this action examines each story
-//! that has loaded children and derives the appropriate status:
+//! that has loaded children and derives the appropriate status based on the
+//! "highest watermark" of child statuses:
 //!
-//! - If **any** child is in "Review" → story should transition to "Review"
-//! - If all non-backlog children are "In Progress" → story should transition to "In Progress"
+//! - If **all** children are backlog (plan/proposed/backlog) → story should be "Planned"
+//! - If **any** child is in progress → story should be "In Progress"
+//! - If all non-backlog children are in review (or done) → story should be "Review"
+//! - If **all** children are done → story should be "Done"
 //!
 //! Stories that already have the correct status are skipped. When a story is
 //! transitioned, it is also moved to the active board.
@@ -31,32 +34,76 @@ pub struct StorySyncEntry {
 /// The status a story should have based on its children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DerivedStatus {
-    Review,
+    Planned,
     InProgress,
+    Review,
+    Done,
 }
 
 impl DerivedStatus {
     pub fn label(&self) -> &'static str {
         match self {
-            DerivedStatus::Review => "Review",
+            DerivedStatus::Planned => "Planned",
             DerivedStatus::InProgress => "In Progress",
+            DerivedStatus::Review => "Review",
+            DerivedStatus::Done => "Done",
         }
     }
 
     /// Keywords to match against available Jira transition names.
     fn transition_keyword(&self) -> &'static str {
         match self {
-            DerivedStatus::Review => "review",
+            DerivedStatus::Planned => "plan",
             DerivedStatus::InProgress => "progress",
+            DerivedStatus::Review => "review",
+            DerivedStatus::Done => "done",
         }
     }
 
     fn fallback_keyword(&self) -> Option<&'static str> {
         match self {
+            DerivedStatus::Planned => Some("backlog"),
             DerivedStatus::InProgress => Some("start"),
             DerivedStatus::Review => None,
+            DerivedStatus::Done => Some("close"),
         }
     }
+
+    /// Whether the story's current status already matches this derived status.
+    fn matches_current(&self, story_status: &str) -> bool {
+        match self {
+            DerivedStatus::Planned => {
+                story_status.contains("plan")
+                    || story_status.contains("proposed")
+                    || story_status.contains("backlog")
+            }
+            DerivedStatus::InProgress => story_status.contains("progress"),
+            DerivedStatus::Review => story_status.contains("review"),
+            DerivedStatus::Done => story_status.contains("done"),
+        }
+    }
+}
+
+/// Classify a single status string into a tier.
+fn classify_status(status: &str) -> StatusTier {
+    if status.contains("done") || status.contains("cancel") || status.contains("closed") {
+        StatusTier::Done
+    } else if status.contains("review") {
+        StatusTier::Review
+    } else if status.contains("progress") {
+        StatusTier::InProgress
+    } else {
+        // plan, proposed, backlog, to do, etc.
+        StatusTier::Backlog
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum StatusTier {
+    Backlog,
+    InProgress,
+    Review,
+    Done,
 }
 
 /// Derive the target status for a story based on its children's statuses.
@@ -72,45 +119,47 @@ pub fn derive_story_status(story: &Issue, children: &[Issue]) -> Option<DerivedS
         .unwrap_or_default()
         .to_lowercase();
 
-    let child_statuses: Vec<String> = children
+    let tiers: Vec<StatusTier> = children
         .iter()
-        .filter_map(|child| child.status().map(|s| s.name.to_lowercase()))
+        .filter_map(|child| child.status().map(|s| classify_status(&s.name.to_lowercase())))
         .collect();
 
-    if child_statuses.is_empty() {
+    if tiers.is_empty() {
         return None;
     }
 
-    // Skip stories that are already done or canceled
-    if story_status.contains("done") || story_status.contains("cancel") {
+    // Skip stories that are already canceled
+    if story_status.contains("cancel") {
         return None;
     }
 
-    let has_review = child_statuses.iter().any(|s| s.contains("review"));
-
-    let non_backlog_children: Vec<&String> = child_statuses
+    let all_backlog = tiers.iter().all(|t| *t == StatusTier::Backlog);
+    let all_done = tiers.iter().all(|t| *t == StatusTier::Done);
+    let has_in_progress = tiers.iter().any(|t| *t == StatusTier::InProgress);
+    let has_backlog = tiers.iter().any(|t| *t == StatusTier::Backlog);
+    let all_review_or_done = tiers
         .iter()
-        .filter(|s| !s.contains("plan") && !s.contains("proposed") && !s.contains("backlog"))
-        .collect();
+        .all(|t| *t == StatusTier::Review || *t == StatusTier::Done);
 
-    let all_in_progress = !non_backlog_children.is_empty()
-        && non_backlog_children.iter().all(|s| s.contains("progress"));
+    let derived = if all_done {
+        DerivedStatus::Done
+    } else if all_backlog {
+        DerivedStatus::Planned
+    } else if all_review_or_done {
+        // Only review when every child is review or done (no backlog, no in-progress)
+        DerivedStatus::Review
+    } else if has_in_progress || has_backlog {
+        // Any in-progress work, or a mix of review/backlog → In Progress
+        DerivedStatus::InProgress
+    } else {
+        DerivedStatus::Review
+    };
 
-    if has_review {
-        if story_status.contains("review") {
-            return None; // Already in review
-        }
-        return Some(DerivedStatus::Review);
+    if derived.matches_current(&story_status) {
+        return None;
     }
 
-    if all_in_progress {
-        if story_status.contains("progress") {
-            return None; // Already in progress
-        }
-        return Some(DerivedStatus::InProgress);
-    }
-
-    None
+    Some(derived)
 }
 
 /// Compute all stories that need status syncing from the current app state.
@@ -239,11 +288,52 @@ mod tests {
     }
 
     #[test]
-    fn derives_review_when_any_child_in_review() {
-        let story = issue_with_status("STORY-1", "In Progress", "Story");
+    fn derives_in_progress_when_review_and_in_progress_mixed() {
+        let story = issue_with_status("STORY-1", "Proposed", "Story");
         let children = vec![
             issue_with_status("TASK-1", "In Progress", "Task"),
             issue_with_status("TASK-2", "Review", "Task"),
+        ];
+
+        let result = derive_story_status(&story, &children);
+
+        // In Progress work still exists, so story stays In Progress
+        assert_eq!(result, Some(DerivedStatus::InProgress));
+    }
+
+    #[test]
+    fn derives_review_when_all_active_children_in_review() {
+        let story = issue_with_status("STORY-1", "In Progress", "Story");
+        let children = vec![
+            issue_with_status("TASK-1", "Review", "Task"),
+            issue_with_status("TASK-2", "Review", "Task"),
+        ];
+
+        let result = derive_story_status(&story, &children);
+
+        assert_eq!(result, Some(DerivedStatus::Review));
+    }
+
+    #[test]
+    fn derives_in_progress_when_review_and_backlog_mixed() {
+        let story = issue_with_status("STORY-1", "Proposed", "Story");
+        let children = vec![
+            issue_with_status("TASK-1", "Review", "Task"),
+            issue_with_status("TASK-2", "Proposed", "Task"),
+        ];
+
+        let result = derive_story_status(&story, &children);
+
+        // Backlog items remain, so story is In Progress (not Review)
+        assert_eq!(result, Some(DerivedStatus::InProgress));
+    }
+
+    #[test]
+    fn derives_review_when_mix_of_review_and_done() {
+        let story = issue_with_status("STORY-1", "In Progress", "Story");
+        let children = vec![
+            issue_with_status("TASK-1", "Review", "Task"),
+            issue_with_status("TASK-2", "Done", "Task"),
         ];
 
         let result = derive_story_status(&story, &children);
@@ -265,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_backlog_children_for_in_progress_derivation() {
+    fn derives_in_progress_with_backlog_and_in_progress_children() {
         let story = issue_with_status("STORY-1", "Proposed", "Story");
         let children = vec![
             issue_with_status("TASK-1", "In Progress", "Task"),
@@ -274,8 +364,33 @@ mod tests {
 
         let result = derive_story_status(&story, &children);
 
-        // TASK-2 is backlog (proposed), only TASK-1 is active and in progress
         assert_eq!(result, Some(DerivedStatus::InProgress));
+    }
+
+    #[test]
+    fn derives_planned_when_all_children_are_backlog() {
+        let story = issue_with_status("STORY-1", "In Progress", "Story");
+        let children = vec![
+            issue_with_status("TASK-1", "Proposed", "Task"),
+            issue_with_status("TASK-2", "Backlog", "Task"),
+        ];
+
+        let result = derive_story_status(&story, &children);
+
+        assert_eq!(result, Some(DerivedStatus::Planned));
+    }
+
+    #[test]
+    fn derives_done_when_all_children_are_done() {
+        let story = issue_with_status("STORY-1", "In Progress", "Story");
+        let children = vec![
+            issue_with_status("TASK-1", "Done", "Task"),
+            issue_with_status("TASK-2", "Done", "Task"),
+        ];
+
+        let result = derive_story_status(&story, &children);
+
+        assert_eq!(result, Some(DerivedStatus::Done));
     }
 
     #[test]
@@ -299,8 +414,28 @@ mod tests {
     }
 
     #[test]
-    fn no_change_when_story_is_done() {
+    fn no_change_when_story_already_planned() {
+        let story = issue_with_status("STORY-1", "Proposed", "Story");
+        let children = vec![issue_with_status("TASK-1", "Proposed", "Task")];
+
+        let result = derive_story_status(&story, &children);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn no_change_when_story_already_done() {
         let story = issue_with_status("STORY-1", "Done", "Story");
+        let children = vec![issue_with_status("TASK-1", "Done", "Task")];
+
+        let result = derive_story_status(&story, &children);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn no_change_when_story_is_canceled() {
+        let story = issue_with_status("STORY-1", "Canceled", "Story");
         let children = vec![issue_with_status("TASK-1", "Review", "Task")];
 
         let result = derive_story_status(&story, &children);
@@ -309,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn no_change_with_mixed_statuses() {
+    fn derives_in_progress_with_mixed_non_review_statuses() {
         let story = issue_with_status("STORY-1", "Proposed", "Story");
         let children = vec![
             issue_with_status("TASK-1", "In Progress", "Task"),
@@ -318,8 +453,8 @@ mod tests {
 
         let result = derive_story_status(&story, &children);
 
-        // Mixed active statuses (not all in progress, none in review)
-        assert_eq!(result, None);
+        // "To Do" is backlog tier, "In Progress" is active → In Progress
+        assert_eq!(result, Some(DerivedStatus::InProgress));
     }
 
     #[test]

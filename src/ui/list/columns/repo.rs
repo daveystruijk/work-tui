@@ -8,7 +8,6 @@ use crate::ticket::Ticket;
 
 /// Render the "Repo" column for a ticket row.
 pub fn render(ticket: &Ticket) -> Line<'static> {
-    let is_active = ticket.active_branch.is_some();
     let repos = ticket
         .repos
         .iter()
@@ -16,15 +15,17 @@ pub fn render(ticket: &Ticket) -> Line<'static> {
         .collect::<Vec<_>>()
         .join(", ");
 
-    if is_active {
-        Line::from(vec![
-            Span::styled("⎇ ", Style::default().fg(Theme::Accent)),
-            Span::styled(repos, Style::default().fg(Theme::Accent)),
-        ])
+    let color = if ticket.active_branch.is_some() {
+        Theme::Success
     } else {
-        Line::from(vec![Span::styled(
-            repos,
-            Style::default().fg(Theme::AccentSoft),
-        )])
+        Theme::Muted
+    };
+
+    let mut spans = vec![Span::styled(repos, Style::default().fg(color))];
+
+    if ticket.has_dirty_repo {
+        spans.push(Span::styled("*", Style::default().fg(Theme::Warning)));
     }
+
+    Line::from(spans)
 }

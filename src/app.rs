@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use color_eyre::Result;
 use crossterm::event::KeyCode;
@@ -101,6 +102,8 @@ pub struct AppView {
     pub current_branch: String,
     /// Maps issue key -> repo label for issues whose branch is currently checked out
     pub active_branches: HashMap<String, String>,
+    /// Repo paths with uncommitted changes
+    pub dirty_repos: HashSet<PathBuf>,
     /// Maps issue key -> GitHub PR status
     pub github_statuses: HashMap<String, GithubStatus>,
     /// Whether GitHub statuses are currently being loaded
@@ -159,6 +162,7 @@ impl AppView {
             my_account_id: String::new(),
             current_branch: String::new(),
             active_branches: HashMap::new(),
+            dirty_repos: HashSet::new(),
             github_statuses: HashMap::new(),
             github_loading: false,
             animation: UiAnimationView::default(),
@@ -510,8 +514,9 @@ impl AppView {
                 self.handle_github_prs_message(all_prs);
             }
             Message::GithubPrDetail(_, _) => {}
-            Message::ActiveBranches(active) => {
+            Message::ActiveBranches(active, dirty) => {
                 self.active_branches = active;
+                self.dirty_repos = dirty;
                 self.rebuild_tickets();
             }
             Message::PickedUp(result) => {
@@ -1052,6 +1057,9 @@ impl AppView {
 
     /// Sync story statuses based on their children's statuses.
     pub fn spawn_sync_story_statuses(&self) {
+        if !self.is_current_project_auto_tagging_enabled() {
+            return;
+        }
         let entries =
             actions::sync_story_statuses::compute_sync_entries(&self.issues, &self.story_children);
         actions::sync_story_statuses::spawn(self.message_tx.clone(), self.client.clone(), entries);
@@ -1120,6 +1128,7 @@ impl AppView {
             story_children: &self.story_children,
             github_prs: &self.github_prs,
             active_branches: &self.active_branches,
+            dirty_repos: &self.dirty_repos,
             repo_entries: &self.repo_entries,
         });
     }

@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::apis::github::PrInfo;
 use crate::apis::jira::Issue;
@@ -12,6 +13,8 @@ pub struct Ticket {
     pub pr: Option<PrInfo>,
     pub repos: Vec<RepoEntry>,
     pub active_branch: Option<String>,
+    /// Whether any matched repo has a dirty work tree.
+    pub has_dirty_repo: bool,
 }
 
 impl Ticket {
@@ -33,6 +36,7 @@ pub struct TicketSources<'a> {
     pub story_children: &'a HashMap<String, Vec<Issue>>,
     pub github_prs: &'a HashMap<String, PrInfo>,
     pub active_branches: &'a HashMap<String, String>,
+    pub dirty_repos: &'a HashSet<PathBuf>,
     pub repo_entries: &'a [RepoEntry],
 }
 
@@ -48,6 +52,7 @@ impl TicketStore {
             let pr = sources.github_prs.get(&key).cloned();
             let repos = repo_matches_for_issue(sources.repo_entries, issue);
             let active_branch = sources.active_branches.get(&key).cloned();
+            let has_dirty_repo = repos.iter().any(|r| sources.dirty_repos.contains(&r.path));
             tickets.insert(
                 key,
                 Ticket {
@@ -55,6 +60,7 @@ impl TicketStore {
                     pr,
                     repos,
                     active_branch,
+                    has_dirty_repo,
                 },
             );
         };
@@ -85,6 +91,7 @@ impl TicketStore {
                             pr: None,
                             repos: vec![],
                             active_branch: None,
+                            has_dirty_repo: false,
                         },
                     );
                 }
