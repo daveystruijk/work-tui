@@ -46,7 +46,11 @@ pub fn test_app() -> AppView {
         story_children: Default::default(),
         sidebar: SidebarView::default(),
         github_prs: Default::default(),
+        reviewable_pr_notification_scope: None,
+        reviewable_pr_ids: Default::default(),
         check_durations: Default::default(),
+        #[cfg(test)]
+        reviewable_notifications: Vec::new(),
         running_tasks: Default::default(),
         message_tx,
         message_rx,

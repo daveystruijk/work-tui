@@ -124,6 +124,21 @@ pub struct PrDetail {
 }
 
 impl PrInfo {
+    pub fn is_reviewable_for_notification(&self) -> bool {
+        self.state.eq_ignore_ascii_case("open")
+            && !self.is_draft
+            && self.checks == CheckStatus::Pass
+            && self.mergeable == Some(MergeableState::Mergeable)
+            && matches!(
+                self.review_decision,
+                None | Some(ReviewDecision::ReviewRequired)
+            )
+    }
+
+    pub fn reviewable_notification_id(&self) -> String {
+        format!("{}#{}", self.repo_slug, self.number)
+    }
+
     pub fn apply_detail(&mut self, detail: PrDetail) {
         self.checks = detail.checks;
         self.check_runs = detail.check_runs;

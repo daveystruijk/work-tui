@@ -1,0 +1,7 @@
+---
+source: src/app.rs
+expression: "format!(\"{}\\n{}\", notification.summary, notification.body)"
+---
+TEST-77 ready for review
+PR #77 · Make notifications useful
+example/work-tui

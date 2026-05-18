@@ -22,6 +22,12 @@ use crate::{
     utils::time::parse_duration_secs,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReviewablePrNotification {
+    summary: String,
+    body: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RunningAction {
     pub id: String,
@@ -114,8 +120,12 @@ pub struct AppView {
     pub sidebar: SidebarView,
     /// Maps issue key -> matched PR info from GitHub
     pub github_prs: HashMap<String, PrInfo>,
+    pub reviewable_pr_notification_scope: Option<String>,
+    pub reviewable_pr_ids: HashSet<String>,
     /// Historical CI check durations in seconds, keyed by "repo_slug/check_name".
     pub check_durations: HashMap<String, u64>,
+    #[cfg(test)]
+    pub reviewable_notifications: Vec<ReviewablePrNotification>,
     /// Currently running background tasks
     pub running_tasks: Vec<RunningAction>,
     /// Sender for background tasks to deliver results
@@ -169,7 +179,11 @@ impl AppView {
             story_children: HashMap::new(),
             sidebar: SidebarView::default(),
             github_prs: HashMap::new(),
+            reviewable_pr_notification_scope: None,
+            reviewable_pr_ids: HashSet::new(),
             check_durations: HashMap::new(),
+            #[cfg(test)]
+            reviewable_notifications: Vec::new(),
             running_tasks: Vec::new(),
             message_tx,
             message_rx,
@@ -270,6 +284,92 @@ impl AppView {
 
     pub fn current_project_key(&self) -> Option<&str> {
         self.jira_filter.selected_project_key.as_deref()
+    }
+
+    fn reviewable_pr_notification_scope(&self) -> String {
+        let mut issue_keys: Vec<_> = self.issues.iter().map(|issue| issue.key.as_str()).collect();
+        issue_keys.sort_unstable();
+
+        let mut selected_status_names = self.jira_filter.selected_status_names.clone();
+        selected_status_names.sort_unstable();
+
+        format!(
+            "{}|{}|{}",
+            self.current_project_key().unwrap_or_default(),
+            selected_status_names.join(","),
+            issue_keys.join(",")
+        )
+    }
+
+    fn current_reviewable_pr_ids(&self) -> HashSet<String> {
+        self.github_prs
+            .values()
+            .filter(|pr| pr.is_reviewable_for_notification())
+            .map(PrInfo::reviewable_notification_id)
+            .collect()
+    }
+
+    fn new_reviewable_pr_notifications(
+        &self,
+        previous_reviewable_pr_ids: &HashSet<String>,
+    ) -> Vec<ReviewablePrNotification> {
+        let mut notifications: Vec<_> = self
+            .github_prs
+            .iter()
+            .filter(|(_, pr)| {
+                pr.is_reviewable_for_notification()
+                    && !previous_reviewable_pr_ids.contains(&pr.reviewable_notification_id())
+            })
+            .map(|(issue_key, pr)| build_reviewable_pr_notification(issue_key, pr))
+            .collect();
+        notifications.sort_by(|left, right| {
+            left.summary
+                .cmp(&right.summary)
+                .then(left.body.cmp(&right.body))
+        });
+        notifications
+    }
+
+    fn sync_reviewable_pr_notifications(&mut self, had_errors: bool) {
+        if had_errors {
+            return;
+        }
+
+        let scope = self.reviewable_pr_notification_scope();
+        let current_reviewable_pr_ids = self.current_reviewable_pr_ids();
+
+        if self.reviewable_pr_notification_scope.as_deref() != Some(scope.as_str()) {
+            self.reviewable_pr_notification_scope = Some(scope);
+            self.reviewable_pr_ids = current_reviewable_pr_ids;
+            return;
+        }
+
+        let notifications = self.new_reviewable_pr_notifications(&self.reviewable_pr_ids);
+        for notification in notifications {
+            self.show_reviewable_pr_notification(notification);
+        }
+
+        self.reviewable_pr_ids = current_reviewable_pr_ids;
+    }
+
+    fn show_reviewable_pr_notification(&mut self, notification: ReviewablePrNotification) {
+        #[cfg(test)]
+        {
+            self.reviewable_notifications.push(notification);
+            return;
+        }
+
+        #[cfg(not(test))]
+        {
+            if let Err(err) = notify_rust::Notification::new()
+                .appname("work-tui")
+                .summary(&notification.summary)
+                .body(&notification.body)
+                .show()
+            {
+                tracing::warn!("Failed to show reviewable PR notification: {err}");
+            }
+        }
     }
 
     pub fn default_status_names_for_project(&self, project_key: &str) -> Vec<String> {
@@ -510,8 +610,8 @@ impl AppView {
                 self.handle_project_statuses_loaded_message(project_key, result)
             }
             Message::Issues(result) => self.handle_issues_message(result),
-            Message::GithubPrs(all_prs, _) => {
-                self.handle_github_prs_message(all_prs);
+            Message::GithubPrs(all_prs, errors) => {
+                self.handle_github_prs_message(all_prs, !errors.is_empty());
             }
             Message::GithubPrDetail(_, _) => {}
             Message::ActiveBranches(active, dirty) => {
@@ -757,7 +857,7 @@ impl AppView {
             .retain(|key, _| known_keys.contains(key));
     }
 
-    fn handle_github_prs_message(&mut self, all_prs: Vec<PrInfo>) {
+    fn handle_github_prs_message(&mut self, all_prs: Vec<PrInfo>, had_errors: bool) {
         let previous_prs = self.sidebar.begin_pr_refresh(&self.github_prs);
 
         self.github_prs.clear();
@@ -776,6 +876,7 @@ impl AppView {
 
         self.sidebar
             .handle_pr_refresh(&mut self.github_prs, &previous_prs);
+        self.sync_reviewable_pr_notifications(had_errors);
         self.record_check_durations();
         self.save_cache();
         self.rebuild_tickets();
@@ -1229,17 +1330,26 @@ fn parse_pr_url(url: &str) -> (u64, String) {
     (number, repo_slug)
 }
 
+fn build_reviewable_pr_notification(issue_key: &str, pr: &PrInfo) -> ReviewablePrNotification {
+    ReviewablePrNotification {
+        summary: format!("{issue_key} ready for review"),
+        body: format!("PR #{} · {}\n{}", pr.number, pr.title, pr.repo_slug),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use insta::assert_snapshot;
     use serde_json::json;
 
     use crate::{
         actions::Message,
+        apis::github::{CheckStatus, MergeableState, ReviewDecision},
         apis::jira::Issue,
         fixtures::{test_app, test_issue},
     };
 
-    use super::{DisplayRow, ListSection};
+    use super::{build_reviewable_pr_notification, DisplayRow, ListSection};
 
     #[test]
     fn expanded_loaded_story_keys_only_keeps_open_story_rows() {
@@ -1440,6 +1550,102 @@ mod tests {
         } else {
             panic!("Expected GithubStatus::Found");
         }
+    }
+
+    #[test]
+    fn reviewable_pr_notification_snapshot() {
+        let mut pr = crate::fixtures::pr::test_pr();
+        pr.number = 77;
+        pr.title = "Make notifications useful".to_string();
+        pr.repo_slug = "example/work-tui".to_string();
+        let notification = build_reviewable_pr_notification("TEST-77", &pr);
+
+        assert_snapshot!(
+            "reviewable_pr_notification",
+            format!("{}\n{}", notification.summary, notification.body)
+        );
+    }
+
+    #[test]
+    fn github_pr_refresh_notifies_when_pr_becomes_reviewable() {
+        let mut app = test_app();
+        let mut issue = test_issue();
+        issue.key = "TEST-1".to_string();
+        app.issues = vec![issue];
+
+        let mut pending_pr = crate::fixtures::pr::test_pr();
+        pending_pr.head_branch = "TEST-1-notification".to_string();
+        pending_pr.repo_slug = "example/work-tui".to_string();
+        pending_pr.number = 11;
+        pending_pr.checks = CheckStatus::Pending;
+        pending_pr.mergeable = Some(MergeableState::Mergeable);
+        pending_pr.review_decision = Some(ReviewDecision::ReviewRequired);
+
+        app.handle_message(Message::GithubPrs(vec![pending_pr.clone()], vec![]));
+        assert!(app.reviewable_notifications.is_empty());
+
+        let mut reviewable_pr = pending_pr;
+        reviewable_pr.checks = CheckStatus::Pass;
+
+        app.handle_message(Message::GithubPrs(vec![reviewable_pr], vec![]));
+
+        assert_eq!(app.reviewable_notifications.len(), 1);
+        assert_eq!(
+            app.reviewable_notifications[0],
+            build_reviewable_pr_notification("TEST-1", &app.github_prs["TEST-1"])
+        );
+    }
+
+    #[test]
+    fn github_pr_refresh_does_not_notify_on_initial_reviewable_load() {
+        let mut app = test_app();
+        let mut issue = test_issue();
+        issue.key = "TEST-1".to_string();
+        app.issues = vec![issue];
+
+        let mut pr = crate::fixtures::pr::test_pr();
+        pr.head_branch = "TEST-1-notification".to_string();
+        pr.repo_slug = "example/work-tui".to_string();
+        pr.number = 11;
+        pr.checks = CheckStatus::Pass;
+        pr.mergeable = Some(MergeableState::Mergeable);
+        pr.review_decision = None;
+
+        app.handle_message(Message::GithubPrs(vec![pr], vec![]));
+
+        assert!(app.reviewable_notifications.is_empty());
+        assert!(app.reviewable_pr_ids.contains("example/work-tui#11"));
+    }
+
+    #[test]
+    fn github_pr_refresh_does_not_notify_when_refresh_has_errors() {
+        let mut app = test_app();
+        let mut issue = test_issue();
+        issue.key = "TEST-1".to_string();
+        app.issues = vec![issue];
+
+        let mut pending_pr = crate::fixtures::pr::test_pr();
+        pending_pr.head_branch = "TEST-1-notification".to_string();
+        pending_pr.repo_slug = "example/work-tui".to_string();
+        pending_pr.number = 11;
+        pending_pr.checks = CheckStatus::Pending;
+        pending_pr.mergeable = Some(MergeableState::Mergeable);
+        pending_pr.review_decision = Some(ReviewDecision::ReviewRequired);
+        app.handle_message(Message::GithubPrs(vec![pending_pr.clone()], vec![]));
+
+        let mut reviewable_pr = pending_pr;
+        reviewable_pr.checks = CheckStatus::Pass;
+        app.handle_message(Message::GithubPrs(
+            vec![reviewable_pr.clone()],
+            vec!["partial failure".to_string()],
+        ));
+
+        assert!(app.reviewable_notifications.is_empty());
+        assert!(app.reviewable_pr_ids.is_empty());
+
+        app.handle_message(Message::GithubPrs(vec![reviewable_pr], vec![]));
+
+        assert_eq!(app.reviewable_notifications.len(), 1);
     }
 
     #[test]
