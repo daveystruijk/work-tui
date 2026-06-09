@@ -37,6 +37,11 @@ pub fn load() -> Cache {
 }
 
 pub fn save(cache: &Cache) {
+    // Never write to the shared, real cache file from tests — otherwise the
+    // `TEST` fixture filter would clobber the user's saved Jira selection.
+    if cfg!(test) {
+        return;
+    }
     let Some(path) = cache_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);

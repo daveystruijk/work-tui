@@ -516,10 +516,12 @@ mod tests {
 
     #[test]
     fn responsive_sidebar_scales_with_width() {
-        // A mid-range width yields a proportional sidebar between the bounds.
-        let width = responsive_sidebar_width(150);
+        // A mid-range width yields a proportional sidebar strictly between the
+        // bounds. 120/3 = 40, which sits between SIDEBAR_MIN_WIDTH (32) and
+        // SIDEBAR_MAX_WIDTH (48) without being clamped.
+        let width = responsive_sidebar_width(120);
         assert!(width >= SIDEBAR_MIN_WIDTH && width <= SIDEBAR_MAX_WIDTH);
-        assert_eq!(width, 150 / 3);
+        assert_eq!(width, 120 / 3);
     }
 
     #[test]
