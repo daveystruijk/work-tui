@@ -37,6 +37,32 @@ pub const COLUMNS: &[&str] = &["Issue", "Status", "Dev", "◷", "PR", "CI", "Rep
 pub const SIDEBAR_SECTION_MARGIN: u16 = 1;
 pub const SCROLL_OFF: usize = 3;
 
+/// Sidebar responsiveness tuning.
+///
+/// The sidebar takes a proportion of the terminal width, clamped between a
+/// minimum and maximum, and disappears once the list column would be squeezed
+/// below `SIDEBAR_MIN_LIST_WIDTH`.
+const SIDEBAR_WIDTH_RATIO: u16 = 3; // 1/3 of the terminal width
+const SIDEBAR_MIN_WIDTH: u16 = 32;
+const SIDEBAR_MAX_WIDTH: u16 = 48;
+const SIDEBAR_MIN_LIST_WIDTH: u16 = 80;
+
+/// Compute the responsive sidebar width for a given total terminal width.
+/// Returns `0` when the sidebar should be hidden (narrow terminals).
+pub fn responsive_sidebar_width(total_width: u16) -> u16 {
+    // Hide the sidebar if the terminal can't comfortably fit the list plus a
+    // minimum-width sidebar.
+    if total_width < SIDEBAR_MIN_LIST_WIDTH + SIDEBAR_MIN_WIDTH {
+        return 0;
+    }
+
+    let proportional = total_width / SIDEBAR_WIDTH_RATIO;
+    let width = proportional.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+
+    // Never let the sidebar starve the list column.
+    width.min(total_width.saturating_sub(SIDEBAR_MIN_LIST_WIDTH))
+}
+
 pub type CellMap<'a> = HashMap<&'static str, Line<'a>>;
 
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -101,10 +127,19 @@ pub fn adjust_scroll_offset(
 pub fn render(app: &mut AppView, frame: &mut Frame) {
     let area = frame.area();
 
-    // Horizontal split: list column (flexible) | sidebar column (fixed 44 wide)
+    // Horizontal split: list column (flexible) | sidebar column (responsive).
+    // The sidebar width scales with the terminal width (clamped to a sane
+    // range) and is hidden entirely on narrow terminals so the list can use
+    // the full width.
+    let sidebar_width = responsive_sidebar_width(area.width);
+    let column_constraints = if sidebar_width == 0 {
+        vec![Constraint::Min(1)]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(sidebar_width)]
+    };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(44)])
+        .constraints(column_constraints)
         .split(area);
 
     // Compute footer height from copied/cloned values to avoid borrow overlap
@@ -151,13 +186,15 @@ pub fn render(app: &mut AppView, frame: &mut Frame) {
             .render(frame, list_chunks[1], &status_bar_ctx);
     }
 
-    // Sidebar
-    let sidebar_ctx = sidebar::SidebarRenderContext {
-        selected_ticket: app.selected_ticket(),
-        animation_tick: app.animation.spinner_tick,
-        check_durations: &app.check_durations,
-    };
-    app.sidebar.render(frame, columns[1], &sidebar_ctx);
+    // Sidebar (only when there is room for it)
+    if sidebar_width > 0 {
+        let sidebar_ctx = sidebar::SidebarRenderContext {
+            selected_ticket: app.selected_ticket(),
+            animation_tick: app.animation.spinner_tick,
+            check_durations: &app.check_durations,
+        };
+        app.sidebar.render(frame, columns[1], &sidebar_ctx);
+    }
 
     // Popup overlays
     use crate::app::InputFocus;
@@ -422,7 +459,10 @@ pub fn issue_type_icon(issue_type: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{adjust_scroll_offset, move_selected_index, wrap_text};
+    use super::{
+        adjust_scroll_offset, move_selected_index, responsive_sidebar_width, wrap_text,
+        SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_LIST_WIDTH, SIDEBAR_MIN_WIDTH,
+    };
 
     #[test]
     fn wrap_text_truncates_long_word_after_line_break() {
@@ -450,5 +490,44 @@ mod tests {
 
         adjust_scroll_offset(&mut scroll_offset, 0, 5, 10);
         assert_eq!(scroll_offset, 0);
+    }
+
+    #[test]
+    fn responsive_sidebar_hidden_on_narrow_terminals() {
+        // Below list-min + sidebar-min the sidebar collapses entirely.
+        assert_eq!(responsive_sidebar_width(0), 0);
+        assert_eq!(
+            responsive_sidebar_width(SIDEBAR_MIN_LIST_WIDTH + SIDEBAR_MIN_WIDTH - 1),
+            0
+        );
+    }
+
+    #[test]
+    fn responsive_sidebar_clamps_to_min_and_max() {
+        // Just wide enough to show the sidebar: clamps up to the minimum.
+        assert_eq!(
+            responsive_sidebar_width(SIDEBAR_MIN_LIST_WIDTH + SIDEBAR_MIN_WIDTH),
+            SIDEBAR_MIN_WIDTH
+        );
+
+        // Very wide terminal: clamps down to the maximum.
+        assert_eq!(responsive_sidebar_width(1000), SIDEBAR_MAX_WIDTH);
+    }
+
+    #[test]
+    fn responsive_sidebar_scales_with_width() {
+        // A mid-range width yields a proportional sidebar between the bounds.
+        let width = responsive_sidebar_width(150);
+        assert!(width >= SIDEBAR_MIN_WIDTH && width <= SIDEBAR_MAX_WIDTH);
+        assert_eq!(width, 150 / 3);
+    }
+
+    #[test]
+    fn responsive_sidebar_never_starves_list() {
+        // The list column always keeps at least its minimum width.
+        for total in (SIDEBAR_MIN_LIST_WIDTH + SIDEBAR_MIN_WIDTH)..=200 {
+            let sidebar = responsive_sidebar_width(total);
+            assert!(total - sidebar >= SIDEBAR_MIN_LIST_WIDTH, "total={total}");
+        }
     }
 }

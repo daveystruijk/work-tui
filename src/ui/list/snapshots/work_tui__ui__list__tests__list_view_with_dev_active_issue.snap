@@ -2,15 +2,15 @@
 source: src/ui/list/mod.rs
 expression: rendered
 ---
- Issue                                            Status       Dev                                                      
-▌◦ TEST-123 Snapshot the sidebar render           In Progress  Casey          ◦ Snapshot the sidebar render             
+ Issue                                                Status       Dev                                                  
+▌◦ TEST-123 Snapshot the sidebar render               In Progress  Casey          ◦ Snapshot the sidebar render         
                                                                                                                         
-                                                                              ── Jira ──────────────────── TEST-123 ──  
-                                                                              Status    In Progress                     
-                                                                              Assignee  Casey Dev                       
-                                                                              Author    Riley Author                    
-                                                                              Reporter  Jordan QA                       
-                                                                              Updated   2024-01-01 13:00                
+                                                                                  ── Jira ──────────────── TEST-123 ──  
+                                                                                  Status    In Progress                 
+                                                                                  Assignee  Casey Dev                   
+                                                                                  Author    Riley Author                
+                                                                                  Reporter  Jordan QA                   
+                                                                                  Updated   2024-01-01 13:00            
                                                                                                                         
-                                                                              Confirm sidebar, list, and command        
-                                                                              bar layouts.
+                                                                                  Confirm sidebar, list, and            
+                                                                                  command bar layouts.

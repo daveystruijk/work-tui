@@ -2,9 +2,9 @@
 source: src/ui/list/mod.rs
 expression: rendered
 ---
- Issue                                            Status       Dev                                                      
- BOARD (1 issue)                                                              ◦ Snapshot the sidebar render             
-▌◦ TEST-123 Snapshot the sidebar render           In Progress  Casey                                                    
-                                                                              ── Jira ──────────────────── TEST-123 ──  
-                                                                              Status    In Progress                     
-/ snap  (2 results)  Press / to edit, Esc to clear                            Assignee  Casey Dev
+ Issue                                                Status       Dev                                                  
+ BOARD (1 issue)                                                                  ◦ Snapshot the sidebar render         
+▌◦ TEST-123 Snapshot the sidebar render               In Progress  Casey                                                
+                                                                                  ── Jira ──────────────── TEST-123 ──  
+                                                                                  Status    In Progress                 
+/ snap  (2 results)  Press / to edit, Esc to clear                                Assignee  Casey Dev
