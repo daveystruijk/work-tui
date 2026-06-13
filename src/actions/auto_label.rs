@@ -34,8 +34,11 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, to_label: V
                 current: i + 1,
                 total,
             }));
-            let result = client.update_labels(&issue_key, &new_labels).await;
-            let _ = tx.send(Message::AutoLabeled(issue_key, result.map(|_| ())));
+            let result = client
+                .update_labels(&issue_key, &new_labels)
+                .await
+                .map(|_| new_labels);
+            let _ = tx.send(Message::AutoLabeled(issue_key, result));
         }
     });
 }

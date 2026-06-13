@@ -1,0 +1,8 @@
+---
+source: src/app.rs
+assertion_line: 1952
+expression: display_rows_snapshot(&app)
+---
+0: Board (2)
+ 1: depth=0 TEST-1 — Existing ticket
+>2: depth=0 TEST-2 — Submitted optimistic summary

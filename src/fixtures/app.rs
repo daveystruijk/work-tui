@@ -72,6 +72,8 @@ pub fn test_app() -> AppView {
             should_auto_open_picker: false,
             loading_status_projects: Default::default(),
         },
+        optimistic_issues: Default::default(),
+        optimistic_labels: Default::default(),
     }
 }
 

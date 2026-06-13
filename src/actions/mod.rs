@@ -75,6 +75,14 @@ pub struct PickUpResult {
     pub branch: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct InlineCreatedIssue {
+    pub key: String,
+    pub summary: String,
+    pub project_key: String,
+    pub parent_key: Option<String>,
+}
+
 /// Messages sent from background actions back to the main event loop.
 ///
 /// Each variant corresponds to a result produced by an action in [`crate::actions`].
@@ -110,9 +118,9 @@ pub enum Message {
     /// Carries (issue_key, pr_url).
     Finished(String, Result<String>),
     /// Inline new issue created (from [`create_inline_issue`]).
-    InlineCreated(Result<String>),
+    InlineCreated(Result<InlineCreatedIssue>),
     /// Labels updated for auto-labeling (from [`auto_label`]).
-    AutoLabeled(String, Result<()>),
+    AutoLabeled(String, Result<Vec<String>>),
     /// Label added to an issue (from [`add_label`]).
     LabelAdded(Result<(String, String)>),
     /// Child issues loaded for a parent story (from [`fetch_children`]).

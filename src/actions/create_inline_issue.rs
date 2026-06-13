@@ -14,13 +14,12 @@ use color_eyre::eyre::eyre;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use super::Message;
+use super::{InlineCreatedIssue, Message};
 use crate::actions::Progress;
 use crate::apis::jira::Issue;
 use crate::apis::jira::JiraClient;
 
 struct RunResult {
-    created_key: String,
     refreshed_issues: Option<Vec<Issue>>,
 }
 
@@ -83,16 +82,20 @@ pub fn spawn(
                     )
                     .await?;
 
-                let mut last_issues = None;
+                let _ = tx.send(Message::InlineCreated(Ok(InlineCreatedIssue {
+                    key: created_key.clone(),
+                    summary: summary.clone(),
+                    project_key: project_key.clone(),
+                    parent_key: parent_key.clone(),
+                })));
+
                 for attempt in 0..6 {
                     if let Ok(issues) = client.search(&jql).await {
                         if issues.iter().any(|issue| issue.key == created_key) {
                             return Ok(RunResult {
-                                created_key,
                                 refreshed_issues: Some(issues),
                             });
                         }
-                        last_issues = Some(issues);
                     }
 
                     if attempt < 5 {
@@ -107,8 +110,7 @@ pub fn spawn(
                 }
 
                 Ok(RunResult {
-                    created_key,
-                    refreshed_issues: last_issues,
+                    refreshed_issues: None,
                 })
             }
             .await;
@@ -117,7 +119,6 @@ pub fn spawn(
                     if let Some(issues) = run_result.refreshed_issues {
                         let _ = tx.send(Message::Issues(Ok(issues)));
                     }
-                    let _ = tx.send(Message::InlineCreated(Ok(run_result.created_key)));
                 }
                 Err(error) => {
                     let _ = tx.send(Message::InlineCreated(Err(error)));

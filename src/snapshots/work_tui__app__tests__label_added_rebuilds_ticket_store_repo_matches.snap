@@ -1,0 +1,7 @@
+---
+source: src/app.rs
+assertion_line: 1763
+expression: "format!(\"issue_labels={:?}\\nticket_repo_matches={:?}\", ticket.issue.labels(),\nticket.repos.iter().map(|repo| repo.label.as_str()).collect::<Vec<_>>())"
+---
+issue_labels=["work-tui"]
+ticket_repo_matches=["work-tui"]

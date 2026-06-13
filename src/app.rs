@@ -1,12 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use color_eyre::Result;
 use crossterm::event::KeyCode;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::{
-    actions::{self, Message},
+    actions::{self, InlineCreatedIssue, Message},
     apis::{
         github::{CheckStatus, GithubStatus, PrInfo, ReviewDecision},
         jira::{build_issue_search_jql, Issue, JiraClient, JiraProject, JiraStatus},
@@ -146,6 +147,8 @@ pub struct AppView {
     /// Enriched ticket data combining issues, PRs, repos, and active branches.
     pub ticket_store: TicketStore,
     pub jira_filter: JiraFilterState,
+    pub(crate) optimistic_issues: HashMap<String, Issue>,
+    pub(crate) optimistic_labels: HashMap<String, Vec<String>>,
 }
 
 pub(crate) const DEFAULT_HIDDEN_JIRA_STATUSES: &[&str] = &["done", "on development", "canceled"];
@@ -208,6 +211,8 @@ impl AppView {
                 should_auto_open_picker,
                 loading_status_projects: HashSet::new(),
             },
+            optimistic_issues: HashMap::new(),
+            optimistic_labels: HashMap::new(),
         };
 
         app.check_durations = cached.check_durations;
@@ -641,7 +646,11 @@ impl AppView {
                 }
             }
             Message::InlineCreated(result) => self.handle_inline_created_message(result),
-            Message::AutoLabeled(_key, _result) => {}
+            Message::AutoLabeled(key, result) => {
+                if let Ok(labels) = result {
+                    self.apply_labels_updated(&key, &labels);
+                }
+            }
             Message::LabelAdded(result) => {
                 if let Ok((issue_key, label)) = result {
                     self.apply_label_added(&issue_key, &label);
@@ -805,6 +814,8 @@ impl AppView {
                 let expanded_story_keys = self.expanded_loaded_story_keys();
                 let selection_restore_keys = self.selected_issue_restore_keys();
                 self.issues = issues;
+                self.merge_optimistic_issues();
+                self.apply_optimistic_label_overlays();
                 // Retain story_children for stories that still exist in the
                 // new issues list. Clearing eagerly causes a visible flicker
                 // because the async refetch hasn't completed yet.
@@ -885,10 +896,12 @@ impl AppView {
         self.prefetch_selected_pr_detail();
     }
 
-    fn handle_inline_created_message(&mut self, result: Result<String>) {
+    fn handle_inline_created_message(&mut self, result: Result<InlineCreatedIssue>) {
         match result {
-            Ok(key) => {
+            Ok(created) => {
+                self.apply_inline_created(&created);
                 self.input_focus = InputFocus::List;
+                let key = created.key;
                 let found_index = self.list.display_rows.iter().position(|row| {
                     self.list
                         .ticket_for_display_row(row, &self.ticket_store)
@@ -984,21 +997,193 @@ impl AppView {
         }
     }
 
-    /// Optimistically update the labels field on a local issue after a label was added.
-    fn apply_label_added(&mut self, issue_key: &str, label: &str) {
-        let issue = self
+    /// Optimistically insert a newly-created Jira issue before Jira search indexing catches up.
+    fn apply_inline_created(&mut self, created: &InlineCreatedIssue) {
+        let issue = self.optimistic_issue(created);
+        self.optimistic_issues
+            .insert(created.key.clone(), issue.clone());
+        self.upsert_issue(issue);
+        self.list
+            .rebuild_display_rows(&self.issues, &self.story_children);
+        self.rebuild_tickets();
+    }
+
+    fn optimistic_issue(&self, created: &InlineCreatedIssue) -> Issue {
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3f%z")
+            .to_string();
+        let mut fields = BTreeMap::from([
+            ("summary".to_string(), json!(created.summary)),
+            ("labels".to_string(), json!([])),
+            ("created".to_string(), json!(now.clone())),
+            ("updated".to_string(), json!(now)),
+            (
+                "status".to_string(),
+                json!({
+                    "description": "",
+                    "iconUrl": "",
+                    "id": "",
+                    "name": "To Do",
+                    "self": ""
+                }),
+            ),
+            (
+                "issuetype".to_string(),
+                json!({
+                    "description": "",
+                    "iconUrl": "",
+                    "id": "",
+                    "name": "Task",
+                    "self": "",
+                    "subtask": false
+                }),
+            ),
+            (
+                "project".to_string(),
+                json!({
+                    "id": "",
+                    "key": created.project_key,
+                    "name": created.project_key,
+                    "self": ""
+                }),
+            ),
+        ]);
+
+        if let Some(parent_key) = &created.parent_key {
+            fields.insert("parent".to_string(), self.optimistic_parent(parent_key));
+        }
+
+        Issue {
+            self_link: format!(
+                "{}/rest/api/3/issue/{}",
+                self.config.jira.jira_url.trim_end_matches('/'),
+                created.key
+            ),
+            key: created.key.clone(),
+            id: created.key.clone(),
+            fields,
+        }
+    }
+
+    fn optimistic_parent(&self, parent_key: &str) -> Value {
+        if let Some(parent) = self.find_issue(parent_key) {
+            return json!({
+                "key": parent.key.clone(),
+                "id": parent.id.clone(),
+                "self": parent.self_link.clone(),
+                "fields": {
+                    "summary": parent.summary().unwrap_or_default(),
+                    "issuetype": parent.fields.get("issuetype").cloned().unwrap_or_else(default_story_issue_type),
+                }
+            });
+        }
+
+        json!({
+            "key": parent_key,
+            "id": parent_key,
+            "self": "",
+            "fields": {
+                "summary": "",
+                "issuetype": default_story_issue_type(),
+            }
+        })
+    }
+
+    fn find_issue(&self, issue_key: &str) -> Option<&Issue> {
+        self.issues
+            .iter()
+            .chain(self.story_children.values().flatten())
+            .find(|issue| issue.key == issue_key)
+    }
+
+    fn upsert_issue(&mut self, issue: Issue) {
+        if let Some(existing) = self
             .issues
             .iter_mut()
             .chain(self.story_children.values_mut().flatten())
-            .find(|issue| issue.key == issue_key);
-        if let Some(issue) = issue {
-            let mut labels = issue.labels();
-            if !labels.contains(&label.to_string()) {
-                labels.push(label.to_string());
+            .find(|existing| existing.key == issue.key)
+        {
+            *existing = issue;
+            return;
+        }
+        self.issues.push(issue);
+    }
+
+    fn merge_optimistic_issues(&mut self) {
+        let refreshed_keys: HashSet<String> = self
+            .issues
+            .iter()
+            .chain(self.story_children.values().flatten())
+            .map(|issue| issue.key.clone())
+            .collect();
+        self.optimistic_issues
+            .retain(|key, _| !refreshed_keys.contains(key));
+        let optimistic_issues = self.optimistic_issues.values().cloned().collect::<Vec<_>>();
+        for issue in optimistic_issues {
+            self.upsert_issue(issue);
+        }
+    }
+
+    /// Optimistically update the labels field on a local issue after a label was added.
+    fn apply_label_added(&mut self, issue_key: &str, label: &str) {
+        self.apply_labels_updated(issue_key, &[label.to_string()]);
+    }
+
+    fn apply_labels_updated(&mut self, issue_key: &str, labels_to_ensure: &[String]) {
+        let optimistic = self
+            .optimistic_labels
+            .entry(issue_key.to_string())
+            .or_default();
+        for label in labels_to_ensure {
+            if !optimistic.contains(label) {
+                optimistic.push(label.clone());
             }
-            issue
-                .fields
-                .insert("labels".to_string(), serde_json::json!(labels));
+        }
+
+        let mut changed = false;
+        for issue in self
+            .issues
+            .iter_mut()
+            .chain(self.story_children.values_mut().flatten())
+            .filter(|issue| issue.key == issue_key)
+        {
+            if apply_label_overlay(issue, labels_to_ensure) {
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.rebuild_tickets();
+        }
+    }
+
+    fn apply_optimistic_label_overlays(&mut self) {
+        let optimistic_labels = self.optimistic_labels.clone();
+        let mut confirmed_keys = Vec::new();
+
+        for (issue_key, labels) in &optimistic_labels {
+            let confirmed = self
+                .issues
+                .iter()
+                .chain(self.story_children.values().flatten())
+                .any(|issue| issue.key == *issue_key && contains_all_labels(issue, labels));
+            if confirmed {
+                confirmed_keys.push(issue_key.clone());
+                continue;
+            }
+
+            for issue in self
+                .issues
+                .iter_mut()
+                .chain(self.story_children.values_mut().flatten())
+                .filter(|issue| issue.key == *issue_key)
+            {
+                apply_label_overlay(issue, labels);
+            }
+        }
+
+        for key in confirmed_keys {
+            self.optimistic_labels.remove(&key);
         }
     }
 
@@ -1018,6 +1203,7 @@ impl AppView {
             }
         }
         self.story_children.insert(parent_key, children);
+        self.apply_optimistic_label_overlays();
         self.rebuild_tickets();
         self.list
             .rebuild_display_rows(&self.issues, &self.story_children);
@@ -1316,6 +1502,37 @@ impl AppView {
     }
 }
 
+fn default_story_issue_type() -> Value {
+    json!({
+        "description": "",
+        "iconUrl": "",
+        "id": "",
+        "name": "Story",
+        "self": "",
+        "subtask": false
+    })
+}
+
+fn contains_all_labels(issue: &Issue, labels: &[String]) -> bool {
+    let existing = issue.labels();
+    labels.iter().all(|label| existing.contains(label))
+}
+
+fn apply_label_overlay(issue: &mut Issue, labels_to_ensure: &[String]) -> bool {
+    let mut labels = issue.labels();
+    let mut changed = false;
+    for label in labels_to_ensure {
+        if !labels.contains(label) {
+            labels.push(label.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        issue.fields.insert("labels".to_string(), json!(labels));
+    }
+    changed
+}
+
 /// Parse a GitHub PR URL like `https://github.com/owner/repo/pull/123`
 /// into `(pr_number, repo_slug)`. Returns `(0, "")` on parse failure.
 fn parse_pr_url(url: &str) -> (u64, String) {
@@ -1343,10 +1560,11 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        actions::Message,
+        actions::{InlineCreatedIssue, Message},
         apis::github::{CheckStatus, MergeableState, ReviewDecision},
         apis::jira::Issue,
         fixtures::{test_app, test_issue},
+        repos::{normalize_label, RepoEntry},
     };
 
     use super::{build_reviewable_pr_notification, DisplayRow, ListSection};
@@ -1520,6 +1738,40 @@ mod tests {
     }
 
     #[test]
+    fn label_added_rebuilds_ticket_store_repo_matches_snapshot() {
+        let mut app = test_app();
+        app.repo_entries = vec![repo_entry("work-tui")];
+        let mut issue = test_issue();
+        issue.key = "TEST-1".to_string();
+        issue.fields.insert("labels".to_string(), json!([]));
+        app.issues = vec![issue];
+        app.list.display_rows.push(DisplayRow::Ticket {
+            key: "TEST-1".to_string(),
+            depth: 0,
+        });
+        app.rebuild_tickets();
+
+        app.handle_message(Message::LabelAdded(Ok((
+            "TEST-1".to_string(),
+            "work-tui".to_string(),
+        ))));
+
+        let ticket = app.ticket_store.get("TEST-1").expect("ticket exists");
+        assert_snapshot!(
+            "label_added_rebuilds_ticket_store_repo_matches",
+            format!(
+                "issue_labels={:?}\nticket_repo_matches={:?}",
+                ticket.issue.labels(),
+                ticket
+                    .repos
+                    .iter()
+                    .map(|repo| repo.label.as_str())
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+
+    #[test]
     fn approve_auto_merged_sets_pr_flags() {
         let mut app = test_app();
         let mut pr = crate::fixtures::pr::test_pr();
@@ -1665,13 +1917,95 @@ mod tests {
     }
 
     #[test]
-    fn inline_created_sets_pending_key_when_not_found() {
+    fn inline_created_selects_created_issue() {
         let mut app = test_app();
-        // No issues in display_rows, so the created key won't be found.
 
-        app.handle_message(Message::InlineCreated(Ok("NEW-1".to_string())));
+        app.handle_message(Message::InlineCreated(Ok(inline_created(
+            "NEW-1",
+            "Created summary",
+        ))));
 
-        assert_eq!(app.pending_selected_issue_key, Some("NEW-1".to_string()));
+        assert_eq!(app.pending_selected_issue_key, None);
+        assert_eq!(
+            app.list
+                .selected_ticket(&app.ticket_store)
+                .map(|ticket| ticket.issue.key.as_str()),
+            Some("NEW-1")
+        );
+    }
+
+    #[test]
+    fn inline_created_inserts_and_selects_before_refresh_snapshot() {
+        let mut app = test_app();
+        let mut existing = ticket_issue("TEST-1", None);
+        existing
+            .fields
+            .insert("summary".to_string(), json!("Existing ticket"));
+        app.issues = vec![existing];
+        app.list
+            .rebuild_display_rows(&app.issues, &app.story_children);
+        app.rebuild_tickets();
+
+        app.handle_message(Message::InlineCreated(Ok(inline_created(
+            "TEST-2",
+            "Submitted optimistic summary",
+        ))));
+
+        assert_snapshot!(
+            "inline_created_inserts_and_selects_before_refresh",
+            display_rows_snapshot(&app)
+        );
+    }
+
+    fn inline_created(key: &str, summary: &str) -> InlineCreatedIssue {
+        InlineCreatedIssue {
+            key: key.to_string(),
+            summary: summary.to_string(),
+            project_key: "TEST".to_string(),
+            parent_key: None,
+        }
+    }
+
+    fn display_rows_snapshot(app: &super::AppView) -> String {
+        app.list
+            .display_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| match row {
+                DisplayRow::SectionHeader { section, count } => {
+                    format!("{index}: {section:?} ({count})")
+                }
+                DisplayRow::Ticket { depth, .. } => {
+                    let ticket = app
+                        .list
+                        .ticket_for_display_row(row, &app.ticket_store)
+                        .expect("ticket row has ticket");
+                    let marker = if index == app.list.selected_index {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    format!(
+                        "{marker}{index}: depth={depth} {} — {}",
+                        ticket.issue.key,
+                        ticket.issue.summary().unwrap_or_default()
+                    )
+                }
+                DisplayRow::InlineNew { depth } => format!("{index}: inline depth={depth}"),
+                DisplayRow::Loading { depth } => format!("{index}: loading depth={depth}"),
+                DisplayRow::Empty { depth } => format!("{index}: empty depth={depth}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn repo_entry(label: &str) -> RepoEntry {
+        RepoEntry {
+            label: label.to_string(),
+            normalized: normalize_label(label),
+            path: std::path::PathBuf::from(format!("/tmp/test-repos/{label}")),
+            github_slug: None,
+        }
     }
 
     fn story_issue(key: &str, summary: &str) -> Issue {
