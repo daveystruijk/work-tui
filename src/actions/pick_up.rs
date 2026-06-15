@@ -25,6 +25,7 @@ use crate::apis::jira::{Issue, JiraClient};
 use crate::git;
 
 /// Spawn the pick-up workflow for a single issue.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     tx: mpsc::UnboundedSender<Message>,
     client: JiraClient,
@@ -32,6 +33,7 @@ pub fn spawn(
     issue_summary: String,
     issue_description: String,
     repo_path: Option<PathBuf>,
+    base_ref: String,
     my_account_id: String,
     ancestors: Vec<Issue>,
 ) {
@@ -62,12 +64,12 @@ pub fn spawn(
 
                 let _ = tx.send(Message::Progress(Progress {
                     task_id: "pick_up".into(),
-                    message: "Creating or reusing branch...".into(),
+                    message: format!("Creating or reusing branch (off {base_ref})..."),
                     current: 3,
                     total: total_steps,
                 }));
                 let branch_setup =
-                    git::create_branch_from_origin_main(repo_path, &issue_key, &issue_summary)
+                    git::create_branch_from(repo_path, &issue_key, &issue_summary, &base_ref)
                         .await?;
 
                 Some(branch_setup.branch_name)

@@ -2320,12 +2320,29 @@ fn show_pick_up_dialog(app: &mut AppView) {
     let ancestors =
         crate::issue::ancestors_from_sources(&ticket.issue, &app.issues, &app.story_children);
 
+    // Offer a branch-base choice only when the linked repo is currently on a
+    // non-trunk branch — otherwise branching off main is the only sensible
+    // default and no prompt is needed.
+    let base_choice = repo_path.as_ref().and_then(|path| {
+        crate::git::current_branch_sync(path).and_then(|current_branch| {
+            if crate::git::is_trunk_branch(&current_branch) {
+                None
+            } else {
+                Some(crate::ui::confirm_dialog::BranchBaseChoice {
+                    current_branch,
+                    selected: crate::ui::confirm_dialog::BranchBase::Main,
+                })
+            }
+        })
+    });
+
     app.confirm_dialog = Some(ConfirmDialogView {
         action: ConfirmAction::PickUp {
             issue_key,
             issue_summary,
             issue_description,
             repo_path,
+            base_choice,
             my_account_id: app.my_account_id.clone(),
             ancestors,
         },

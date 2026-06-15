@@ -50,6 +50,35 @@ pub fn format_branch_name(issue_key: &str, slug: &str) -> String {
     format!("{issue_key}-{slug}")
 }
 
+/// Returns true if the given branch name is a trunk branch (`main`/`master`).
+pub fn is_trunk_branch(branch: &str) -> bool {
+    branch == "main" || branch == "master"
+}
+
+/// Synchronously resolve the current branch of a repo.
+///
+/// Used by the UI on a keypress to decide whether to offer a branch-base
+/// choice when picking up an issue. Returns `None` if the branch cannot be
+/// resolved (e.g. detached HEAD or git failure).
+pub fn current_branch_sync(repo_path: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
 /// Check if a repo's working tree is clean (no uncommitted changes).
 pub async fn is_clean(repo_path: &Path) -> Result<bool> {
     let output = Command::new("git")
@@ -163,13 +192,17 @@ async fn find_branch_by_prefix(repo_path: &Path, prefix: &str) -> Result<Option<
     Ok(matching_branch.map(String::from))
 }
 
-/// Create a new branch off origin/main, or check out an existing branch
+/// Create a new branch off the given base ref, or check out an existing branch
 /// that matches the issue key. Refuses to switch to an existing branch
 /// when the working tree is dirty.
-pub async fn create_branch_from_origin_main(
+///
+/// `base_ref` is the git ref the new branch should branch off (e.g.
+/// `origin/main` or the name of the currently checked-out branch).
+pub async fn create_branch_from(
     repo_path: &Path,
     issue_key: &str,
     summary: &str,
+    base_ref: &str,
 ) -> Result<BranchCheckoutResult> {
     // Check for any existing branch matching this issue key before creating.
     if let Some(existing) = find_branch_by_prefix(repo_path, issue_key).await? {
@@ -206,7 +239,7 @@ pub async fn create_branch_from_origin_main(
     let branch_name = format_branch_name(issue_key, &slug);
 
     let output = Command::new("git")
-        .args(["checkout", "-b", &branch_name, "origin/main"])
+        .args(["checkout", "-b", &branch_name, base_ref])
         .current_dir(repo_path)
         .output()
         .await?;

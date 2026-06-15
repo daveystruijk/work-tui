@@ -299,7 +299,7 @@ async fn pick_up(args: &[String]) -> Result<()> {
         work_tui::git::fetch_origin(repo_path).await?;
         println!("fetch_origin: ok");
         let branch_setup =
-            work_tui::git::create_branch_from_origin_main(repo_path, issue_key, issue_summary)
+            work_tui::git::create_branch_from(repo_path, issue_key, issue_summary, "origin/main")
                 .await?;
         println!("branch_name: {}", branch_setup.branch_name);
     }

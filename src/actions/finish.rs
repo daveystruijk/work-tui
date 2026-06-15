@@ -36,7 +36,7 @@ pub fn spawn(
             if branch.is_empty() {
                 return Err(eyre!("Cannot finish: no branch checked out"));
             }
-            if branch == "main" || branch == "master" {
+            if git::is_trunk_branch(&branch) {
                 return Err(eyre!("Cannot finish: on {branch}, not a feature branch"));
             }
 
