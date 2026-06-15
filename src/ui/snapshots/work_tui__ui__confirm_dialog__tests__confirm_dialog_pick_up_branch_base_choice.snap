@@ -16,5 +16,5 @@ expression: output
      │  transition to In Progress, open editor                  │     
      │                                                          │     
      │                                                          │     
-     │←/→:Branch off  Enter:Confirm  Esc:Cancel                 │     
+     │←/→:Branch  Enter:Confirm  Esc:Cancel                     │     
      └──────────────────────────────────────────────────────────┘

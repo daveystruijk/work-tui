@@ -79,6 +79,22 @@ pub fn current_branch_sync(repo_path: &Path) -> Option<String> {
     }
 }
 
+/// Synchronously check whether a repo's working tree has uncommitted changes.
+///
+/// Used by the UI while opening confirmation dialogs. Returns `false` when git
+/// fails so an unknown state does not show the dirty-tree carry option.
+pub fn is_dirty_sync(repo_path: &Path) -> bool {
+    let Ok(output) = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+    else {
+        return false;
+    };
+
+    output.status.success() && !output.stdout.is_empty()
+}
+
 /// Check if a repo's working tree is clean (no uncommitted changes).
 pub async fn is_clean(repo_path: &Path) -> Result<bool> {
     let output = Command::new("git")
@@ -194,7 +210,7 @@ async fn find_branch_by_prefix(repo_path: &Path, prefix: &str) -> Result<Option<
 
 /// Create a new branch off the given base ref, or check out an existing branch
 /// that matches the issue key. Refuses to switch to an existing branch
-/// when the working tree is dirty.
+/// when the working tree is dirty unless `carry_changes` is true.
 ///
 /// `base_ref` is the git ref the new branch should branch off (e.g.
 /// `origin/main` or the name of the currently checked-out branch).
@@ -203,10 +219,11 @@ pub async fn create_branch_from(
     issue_key: &str,
     summary: &str,
     base_ref: &str,
+    carry_changes: bool,
 ) -> Result<BranchCheckoutResult> {
     // Check for any existing branch matching this issue key before creating.
     if let Some(existing) = find_branch_by_prefix(repo_path, issue_key).await? {
-        if !is_clean(repo_path).await? {
+        if !carry_changes && !is_clean(repo_path).await? {
             return Err(eyre!(
                 "Cannot switch to {existing}: working tree has uncommitted changes"
             ));

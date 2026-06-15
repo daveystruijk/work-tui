@@ -44,6 +44,9 @@ pub enum ConfirmAction {
         /// `Some` when the linked repo is on a non-trunk branch and the user
         /// can choose the branch base. `None` means branch off `origin/main`.
         base_choice: Option<BranchBaseChoice>,
+        /// `Some` when the linked repo was dirty as the dialog opened. `false`
+        /// keeps the default abort-on-dirty behavior; `true` carries changes.
+        carry_changes: Option<bool>,
         my_account_id: String,
         ancestors: Vec<Issue>,
     },
@@ -109,10 +112,14 @@ impl ConfirmDialogView {
             content_area,
         );
 
-        let footer = if self.has_branch_base_choice() {
-            "←/→:Branch off  Enter:Confirm  Esc:Cancel"
-        } else {
-            "Enter:Confirm  Esc:Cancel"
+        let footer = match (
+            self.has_branch_base_choice(),
+            self.has_carry_changes_choice(),
+        ) {
+            (true, true) => "←/→:Branch  Tab:Changes  Enter:Confirm  Esc:Cancel",
+            (true, false) => "←/→:Branch  Enter:Confirm  Esc:Cancel",
+            (false, true) => "←/→/Tab:Changes  Enter:Confirm  Esc:Cancel",
+            (false, false) => "Enter:Confirm  Esc:Cancel",
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -135,6 +142,17 @@ impl ConfirmDialogView {
         )
     }
 
+    /// Whether the dialog currently offers a dirty-tree carry toggle.
+    fn has_carry_changes_choice(&self) -> bool {
+        matches!(
+            &self.action,
+            ConfirmAction::PickUp {
+                carry_changes: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Toggle the branch-base selection between `main` and the current branch.
     fn toggle_branch_base(&mut self) {
         if let ConfirmAction::PickUp {
@@ -149,6 +167,17 @@ impl ConfirmDialogView {
         }
     }
 
+    /// Toggle whether uncommitted changes should be carried onto the branch.
+    fn toggle_carry_changes(&mut self) {
+        if let ConfirmAction::PickUp {
+            carry_changes: Some(carry_changes),
+            ..
+        } = &mut self.action
+        {
+            *carry_changes = !*carry_changes;
+        }
+    }
+
     fn build_lines(&self) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
@@ -158,6 +187,7 @@ impl ConfirmDialogView {
                 issue_summary,
                 repo_path,
                 base_choice,
+                carry_changes,
                 ..
             } => {
                 lines.push(Line::from(""));
@@ -175,6 +205,10 @@ impl ConfirmDialogView {
                     if let Some(choice) = base_choice {
                         lines.push(Line::from(""));
                         lines.push(branch_base_line(choice));
+                    }
+                    if let Some(carry_changes) = carry_changes {
+                        lines.push(Line::from(""));
+                        lines.push(carry_changes_line(*carry_changes));
                     }
                     lines.push(Line::from(""));
                     lines.push(detail_line("Will checkout branch, then assign issue,"));
@@ -286,6 +320,46 @@ fn branch_base_line(choice: &BranchBaseChoice) -> Line<'static> {
     ])
 }
 
+/// Render the dirty-tree carry toggle, highlighting the selected behavior.
+fn carry_changes_line(carry_changes: bool) -> Line<'static> {
+    let selected_style = Style::default()
+        .fg(Theme::Accent)
+        .add_modifier(Modifier::BOLD);
+    let unselected_style = Style::default().fg(Theme::Muted);
+
+    let carry_label = if carry_changes {
+        "[ Carry ]"
+    } else {
+        "  Carry  "
+    };
+    let abort_label = if carry_changes {
+        "  Abort  "
+    } else {
+        "[ Abort ]"
+    };
+
+    Line::from(vec![
+        Span::styled("  Changes    ", Style::default().fg(Theme::Muted)),
+        Span::styled(
+            carry_label,
+            if carry_changes {
+                selected_style
+            } else {
+                unselected_style
+            },
+        ),
+        Span::styled("  ", Style::default().fg(Theme::Muted)),
+        Span::styled(
+            abort_label,
+            if carry_changes {
+                unselected_style
+            } else {
+                selected_style
+            },
+        ),
+    ])
+}
+
 fn centered_fixed_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
@@ -299,9 +373,18 @@ pub fn update(app: &mut AppView, key_event: KeyEvent) {
             app.input_focus = InputFocus::List;
         }
         KeyCode::Enter => confirm_action(app),
-        KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char('h' | 'l') => {
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l') => {
             if let Some(dialog) = app.confirm_dialog.as_mut() {
-                dialog.toggle_branch_base();
+                if dialog.has_branch_base_choice() {
+                    dialog.toggle_branch_base();
+                } else {
+                    dialog.toggle_carry_changes();
+                }
+            }
+        }
+        KeyCode::Tab => {
+            if let Some(dialog) = app.confirm_dialog.as_mut() {
+                dialog.toggle_carry_changes();
             }
         }
         _ => {}
@@ -321,6 +404,7 @@ fn confirm_action(app: &mut AppView) {
             issue_description,
             repo_path,
             base_choice,
+            carry_changes,
             my_account_id,
             ancestors,
         } => {
@@ -334,6 +418,7 @@ fn confirm_action(app: &mut AppView) {
                 }) => current_branch,
                 _ => "origin/main".to_string(),
             };
+            let carry_changes = carry_changes.unwrap_or(false);
             actions::pick_up::spawn(
                 app.message_tx.clone(),
                 app.client.clone(),
@@ -342,6 +427,7 @@ fn confirm_action(app: &mut AppView) {
                 issue_description,
                 repo_path,
                 base_ref,
+                carry_changes,
                 my_account_id,
                 ancestors,
             );
@@ -385,6 +471,7 @@ mod tests {
                 issue_description: "Some description".to_string(),
                 repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
                 base_choice: None,
+                carry_changes: None,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -406,6 +493,7 @@ mod tests {
                     current_branch: "TEST-7-some-feature".to_string(),
                     selected: BranchBase::Main,
                 }),
+                carry_changes: None,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -427,6 +515,7 @@ mod tests {
                     current_branch: "TEST-7-some-feature".to_string(),
                     selected: BranchBase::Current,
                 }),
+                carry_changes: None,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -449,6 +538,7 @@ mod tests {
                     current_branch: "TEST-7-some-feature".to_string(),
                     selected: BranchBase::Main,
                 }),
+                carry_changes: None,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -478,6 +568,107 @@ mod tests {
             _ => panic!("expected pick up with base choice"),
         };
         assert_eq!(selected, BranchBase::Main);
+    }
+
+    #[test]
+    fn confirm_dialog_pick_up_carry_changes_not_selected() {
+        let dialog = ConfirmDialogView {
+            action: ConfirmAction::PickUp {
+                issue_key: "TEST-42".to_string(),
+                issue_summary: "Implement feature X".to_string(),
+                issue_description: "Some description".to_string(),
+                repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
+                base_choice: None,
+                carry_changes: Some(false),
+                my_account_id: "abc123".to_string(),
+                ancestors: Vec::new(),
+            },
+        };
+
+        let output = render_to_string(70, 18, |frame| dialog.render(frame));
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn confirm_dialog_pick_up_carry_changes_selected() {
+        let dialog = ConfirmDialogView {
+            action: ConfirmAction::PickUp {
+                issue_key: "TEST-42".to_string(),
+                issue_summary: "Implement feature X".to_string(),
+                issue_description: "Some description".to_string(),
+                repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
+                base_choice: None,
+                carry_changes: Some(true),
+                my_account_id: "abc123".to_string(),
+                ancestors: Vec::new(),
+            },
+        };
+
+        let output = render_to_string(70, 18, |frame| dialog.render(frame));
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn confirm_dialog_pick_up_branch_base_and_carry_changes() {
+        let dialog = ConfirmDialogView {
+            action: ConfirmAction::PickUp {
+                issue_key: "TEST-42".to_string(),
+                issue_summary: "Implement feature X".to_string(),
+                issue_description: "Some description".to_string(),
+                repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
+                base_choice: Some(BranchBaseChoice {
+                    current_branch: "TEST-7-some-feature".to_string(),
+                    selected: BranchBase::Main,
+                }),
+                carry_changes: Some(false),
+                my_account_id: "abc123".to_string(),
+                ancestors: Vec::new(),
+            },
+        };
+
+        let output = render_to_string(70, 20, |frame| dialog.render(frame));
+        assert_snapshot!(output);
+    }
+
+    #[test]
+    fn confirm_dialog_carry_changes_toggle() {
+        let mut app = test_app();
+        app.confirm_dialog = Some(ConfirmDialogView {
+            action: ConfirmAction::PickUp {
+                issue_key: "TEST-42".to_string(),
+                issue_summary: "Implement feature X".to_string(),
+                issue_description: String::new(),
+                repo_path: Some(PathBuf::from("/tmp/repo")),
+                base_choice: None,
+                carry_changes: Some(false),
+                my_account_id: "abc123".to_string(),
+                ancestors: Vec::new(),
+            },
+        });
+        app.input_focus = InputFocus::ConfirmDialog;
+
+        let right = KeyEvent::new(KeyCode::Right, crossterm::event::KeyModifiers::NONE);
+        update(&mut app, right);
+
+        let carry_changes = match &app.confirm_dialog.as_ref().unwrap().action {
+            ConfirmAction::PickUp {
+                carry_changes: Some(carry_changes),
+                ..
+            } => *carry_changes,
+            _ => panic!("expected pick up with carry changes choice"),
+        };
+        assert!(carry_changes);
+
+        let left = KeyEvent::new(KeyCode::Left, crossterm::event::KeyModifiers::NONE);
+        update(&mut app, left);
+        let carry_changes = match &app.confirm_dialog.as_ref().unwrap().action {
+            ConfirmAction::PickUp {
+                carry_changes: Some(carry_changes),
+                ..
+            } => *carry_changes,
+            _ => panic!("expected pick up with carry changes choice"),
+        };
+        assert!(!carry_changes);
     }
 
     #[test]
@@ -516,6 +707,7 @@ mod tests {
                 issue_description: String::new(),
                 repo_path: None,
                 base_choice: None,
+                carry_changes: None,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },

@@ -1,13 +1,14 @@
 //! **Pick Up** — claims an issue and optionally creates a feature branch.
 //!
 //! Performs the full "pick up" workflow:
-//! 1. If a repo is linked, require a clean working tree, then checkout/create branch
+//! 1. If a repo is linked, require a clean working tree unless carrying changes, then checkout/create branch
 //! 2. Open a tmux pane with an opencode session
 //! 3. Assign the issue to the current user
 //! 4. Transition the issue to "In Progress" (if available)
 //!
 //! Jira mutations (assign, transition, board move) only happen after all git
-//! operations succeed. A dirty working tree aborts the entire action.
+//! operations succeed. A dirty working tree aborts the entire action unless the
+//! user chose to carry uncommitted changes onto the target branch.
 //!
 //! # Channel messages produced
 //! - [`Message::Progress`] (per-step progress)
@@ -34,10 +35,11 @@ pub fn spawn(
     issue_description: String,
     repo_path: Option<PathBuf>,
     base_ref: String,
+    carry_changes: bool,
     my_account_id: String,
     ancestors: Vec<Issue>,
 ) {
-    super::spawn_action(tx, "pick_up", "Picking up", |tx| async move {
+    super::spawn_action(tx, "pick_up", "Picking up", move |tx| async move {
         let result: color_eyre::Result<PickUpResult> = async {
             let has_linked_repo = repo_path.is_some();
             let total_steps = if has_linked_repo { 6 } else { 3 };
@@ -48,7 +50,7 @@ pub fn spawn(
                     current: 1,
                     total: total_steps,
                 }));
-                if !git::is_clean(repo_path).await? {
+                if !carry_changes && !git::is_clean(repo_path).await? {
                     return Err(eyre!(
                         "Working tree has uncommitted changes — commit or stash first"
                     ));
@@ -68,9 +70,14 @@ pub fn spawn(
                     current: 3,
                     total: total_steps,
                 }));
-                let branch_setup =
-                    git::create_branch_from(repo_path, &issue_key, &issue_summary, &base_ref)
-                        .await?;
+                let branch_setup = git::create_branch_from(
+                    repo_path,
+                    &issue_key,
+                    &issue_summary,
+                    &base_ref,
+                    carry_changes,
+                )
+                .await?;
 
                 Some(branch_setup.branch_name)
             } else {

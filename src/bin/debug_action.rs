@@ -298,9 +298,14 @@ async fn pick_up(args: &[String]) -> Result<()> {
         println!("working_tree_clean: {}", clean);
         work_tui::git::fetch_origin(repo_path).await?;
         println!("fetch_origin: ok");
-        let branch_setup =
-            work_tui::git::create_branch_from(repo_path, issue_key, issue_summary, "origin/main")
-                .await?;
+        let branch_setup = work_tui::git::create_branch_from(
+            repo_path,
+            issue_key,
+            issue_summary,
+            "origin/main",
+            false,
+        )
+        .await?;
         println!("branch_name: {}", branch_setup.branch_name);
     }
     client.assign_issue(issue_key, &account_id).await?;

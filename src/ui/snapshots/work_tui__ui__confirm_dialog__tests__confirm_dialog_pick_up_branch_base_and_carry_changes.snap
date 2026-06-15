@@ -10,11 +10,13 @@ expression: output
      │  Issue     TEST-42 Implement feature X                   │     
      │  Repo      my-project                                    │     
      │                                                          │     
-     │  Branch off    main    [ TEST-7-some-feature ]           │     
+     │  Branch off  [ main ]    TEST-7-some-feature             │     
+     │                                                          │     
+     │  Changes      Carry    [ Abort ]                         │     
      │                                                          │     
      │  Will checkout branch, then assign issue,                │     
      │  transition to In Progress, open editor                  │     
      │                                                          │     
      │                                                          │     
-     │←/→:Branch  Enter:Confirm  Esc:Cancel                     │     
+     │←/→:Branch  Tab:Changes  Enter:Confirm  Esc:Cancel        │     
      └──────────────────────────────────────────────────────────┘

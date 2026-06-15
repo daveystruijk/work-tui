@@ -2335,6 +2335,9 @@ fn show_pick_up_dialog(app: &mut AppView) {
             }
         })
     });
+    let carry_changes = repo_path
+        .as_ref()
+        .and_then(|path| crate::git::is_dirty_sync(path).then_some(false));
 
     app.confirm_dialog = Some(ConfirmDialogView {
         action: ConfirmAction::PickUp {
@@ -2343,6 +2346,7 @@ fn show_pick_up_dialog(app: &mut AppView) {
             issue_description,
             repo_path,
             base_choice,
+            carry_changes,
             my_account_id: app.my_account_id.clone(),
             ancestors,
         },
