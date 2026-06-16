@@ -1,0 +1,11 @@
+---
+source: src/ui/list/mod.rs
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (4) ──
+▸ STORY-1 Mixed group [board]
+  • TASK-1 Non-draft child [In Progress]
+  • TASK-2 Draft child [In Progress]
+▸ STORY-2 All-draft group [board]
+  • TASK-3 Draft child A [In Progress]
+  • TASK-4 Draft child B [In Progress]

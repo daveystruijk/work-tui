@@ -1,0 +1,8 @@
+---
+source: src/ui/list/mod.rs
+expression: "format_display_rows(&list.display_rows, &issues, &story_children)"
+---
+── BOARD (3) ──
+• TASK-1 Non-draft board task A [In Progress]
+• TASK-3 Non-draft board task B [In Progress]
+• TASK-2 Draft board task [In Progress]

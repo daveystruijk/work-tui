@@ -884,6 +884,10 @@ pub async fn fetch_check_run_steps(
 }
 
 /// Create a pull request using `gh pr create`, enable auto-merge, and return the PR URL.
+///
+/// If a pull request already exists for the current branch, this reuses the
+/// existing PR (returning its URL) instead of failing, so the surrounding
+/// workflow can continue on the branch and PR that are already there.
 pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<String> {
     let output = Command::new("gh")
         .args(["pr", "create", "--title", title, "--body", body])
@@ -891,19 +895,25 @@ pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<Stri
         .output()
         .await?;
 
-    if !output.status.success() {
+    let pr_url = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(eyre!(
-            "gh pr create failed: {}",
-            if stderr.is_empty() {
-                "unknown error"
-            } else {
-                &stderr
-            }
-        ));
-    }
-
-    let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // A PR may already exist for this branch (e.g. finish was run before).
+        // In that case reuse it rather than aborting the workflow.
+        if let Some(existing_url) = existing_pr_url(repo_path).await? {
+            existing_url
+        } else {
+            return Err(eyre!(
+                "gh pr create failed: {}",
+                if stderr.is_empty() {
+                    "unknown error"
+                } else {
+                    &stderr
+                }
+            ));
+        }
+    };
 
     let auto_merge = Command::new("gh")
         .args(["pr", "merge", &pr_url, "--auto", "--merge"])
@@ -918,6 +928,29 @@ pub async fn create_pr(repo_path: &Path, title: &str, body: &str) -> Result<Stri
     }
 
     Ok(pr_url)
+}
+
+/// Return the URL of an existing PR for the current branch, if one exists.
+///
+/// Returns `Ok(None)` when no PR is associated with the branch.
+async fn existing_pr_url(repo_path: &Path) -> Result<Option<String>> {
+    let output = Command::new("gh")
+        .args(["pr", "view", "--json", "url", "--jq", ".url"])
+        .current_dir(repo_path)
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        // No PR found for the branch (or some other non-fatal lookup failure).
+        return Ok(None);
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(url))
+    }
 }
 
 fn parse_mergeable_state(pr_node: &Value) -> Option<MergeableState> {

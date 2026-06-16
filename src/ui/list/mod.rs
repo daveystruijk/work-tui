@@ -85,7 +85,7 @@ fn has_children_in_section(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use insta::assert_snapshot;
     use serde_json::json;
@@ -617,6 +617,71 @@ mod tests {
         );
     }
 
+    /// Draft-PR tickets sort to the bottom of their section, below
+    /// non-draft tickets of the same status.
+    #[test]
+    fn snapshots_draft_prs_sort_to_bottom() {
+        let issues = vec![
+            issue_with_parent("TASK-1", "Non-draft board task A", "Task", None),
+            issue_with_parent("TASK-2", "Draft board task", "Task", None),
+            issue_with_parent("TASK-3", "Non-draft board task B", "Task", None),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        // TASK-2 has a draft PR and should sink below the others.
+        list.set_draft_pr_keys(HashSet::from(["TASK-2".to_string()]));
+
+        list.rebuild_display_rows(&issues, &story_children);
+
+        assert_snapshot!(
+            "draft_prs_sort_to_bottom",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
+    /// A story group sinks to the bottom only when ALL of its renderable
+    /// children have draft PRs; a single non-draft child keeps it up top.
+    #[test]
+    fn snapshots_draft_story_group_sorts_to_bottom() {
+        let issues = vec![
+            // Group with a mix: stays up because TASK-1 is non-draft.
+            story_issue("STORY-1", "Mixed group"),
+            task_issue_with_parent("TASK-1", "Non-draft child", "STORY-1", "Mixed group"),
+            task_issue_with_parent("TASK-2", "Draft child", "STORY-1", "Mixed group"),
+            // Group where every child is draft: sinks to the bottom.
+            story_issue("STORY-2", "All-draft group"),
+            task_issue_with_parent("TASK-3", "Draft child A", "STORY-2", "All-draft group"),
+            task_issue_with_parent("TASK-4", "Draft child B", "STORY-2", "All-draft group"),
+        ];
+        let story_children = HashMap::new();
+        let mut list = ListView::default();
+        list.set_draft_pr_keys(HashSet::from([
+            "TASK-2".to_string(),
+            "TASK-3".to_string(),
+            "TASK-4".to_string(),
+        ]));
+
+        list.rebuild_display_rows(&issues, &story_children);
+        // Expand both stories in BOARD to reveal child ordering.
+        list.selected_index = 1;
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
+        list.selected_index = 1;
+        list.expand_story(
+            &ticket_store_from(&issues, &story_children),
+            &issues,
+            &story_children,
+        );
+
+        assert_snapshot!(
+            "draft_story_group_sorts_to_bottom",
+            format_display_rows(&list.display_rows, &issues, &story_children)
+        );
+    }
+
     /// Backlog epic with loaded children via story_children (fetched).
     #[test]
     fn snapshots_backlog_epic_with_fetched_children() {
@@ -920,9 +985,15 @@ pub struct ListView {
     pub collapsed_stories: HashSet<(String, ListSection)>,
     pub inline_new: Option<InlineNewView>,
     pub pending_import_keys: HashSet<String>,
+    pub draft_pr_keys: HashSet<String>,
 }
 
 impl ListView {
+    /// Update the set of issue keys whose associated PR is a draft.
+    pub fn set_draft_pr_keys(&mut self, keys: HashSet<String>) {
+        self.draft_pr_keys = keys;
+    }
+
     fn has_ticket_row(&self, key: &str) -> bool {
         self.display_rows
             .iter()
@@ -1309,6 +1380,7 @@ impl ListView {
     ) {
         use std::collections::HashMap as StdMap;
 
+        let draft_pr_keys = self.draft_pr_keys.clone();
         let is_searching = !self.search_filter.is_empty();
 
         let mut matcher = Matcher::new(Config::DEFAULT);
@@ -1402,8 +1474,10 @@ impl ListView {
 
         for (_, children) in parent_groups.values_mut() {
             children.sort_by(|a, b| {
-                status_rank(&issues[*a])
-                    .cmp(&status_rank(&issues[*b]))
+                draft_pr_keys
+                    .contains(&issues[*a].key)
+                    .cmp(&draft_pr_keys.contains(&issues[*b].key))
+                    .then_with(|| status_rank(&issues[*a]).cmp(&status_rank(&issues[*b])))
                     .then_with(|| {
                         issue_created_str(&issues[*b]).cmp(&issue_created_str(&issues[*a]))
                     })
@@ -1450,16 +1524,49 @@ impl ListView {
         }
 
         top_levels.sort_by(|a, b| {
+            let draft_a = top_level_is_draft(a, issues, &parent_groups, &draft_pr_keys);
+            let draft_b = top_level_is_draft(b, issues, &parent_groups, &draft_pr_keys);
             let rank_a = top_level_status_rank(a, issues, &parent_groups);
             let rank_b = top_level_status_rank(b, issues, &parent_groups);
-            rank_a.cmp(&rank_b).then_with(|| {
-                top_level_created(b, issues, &parent_groups).cmp(&top_level_created(
-                    a,
-                    issues,
-                    &parent_groups,
-                ))
+            draft_a.cmp(&draft_b).then_with(|| {
+                rank_a.cmp(&rank_b).then_with(|| {
+                    top_level_created(b, issues, &parent_groups).cmp(&top_level_created(
+                        a,
+                        issues,
+                        &parent_groups,
+                    ))
+                })
             })
         });
+
+        fn top_level_is_draft(
+            entry: &TopLevel,
+            issues: &[Issue],
+            parent_groups: &StdMap<String, (String, Vec<usize>)>,
+            draft_pr_keys: &HashSet<String>,
+        ) -> bool {
+            match entry {
+                TopLevel::Standalone(idx) => draft_pr_keys.contains(&issues[*idx].key),
+                TopLevel::StoryGroup {
+                    key,
+                    parent_issue_idx,
+                    ..
+                } => {
+                    let mut members: Vec<usize> = parent_groups
+                        .get(key)
+                        .into_iter()
+                        .flat_map(|(_, children)| children.iter().copied())
+                        .collect();
+                    if let Some(idx) = parent_issue_idx {
+                        members.push(*idx);
+                    }
+                    !members.is_empty()
+                        && members
+                            .iter()
+                            .all(|idx| draft_pr_keys.contains(&issues[*idx].key))
+                }
+            }
+        }
 
         fn top_level_created(
             entry: &TopLevel,

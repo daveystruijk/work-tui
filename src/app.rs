@@ -891,6 +891,8 @@ impl AppView {
         self.record_check_durations();
         self.save_cache();
         self.rebuild_tickets();
+        self.list
+            .rebuild_display_rows(&self.issues, &self.story_children);
         self.spawn_auto_label();
         self.github_loading = false;
         self.prefetch_selected_pr_detail();
@@ -1451,6 +1453,13 @@ impl AppView {
             dirty_repos: &self.dirty_repos,
             repo_entries: &self.repo_entries,
         });
+        let draft_keys: std::collections::HashSet<String> = self
+            .github_prs
+            .iter()
+            .filter(|(_, pr)| pr.is_draft)
+            .map(|(key, _)| key.clone())
+            .collect();
+        self.list.set_draft_pr_keys(draft_keys);
     }
 
     pub fn tick_spinner(&mut self) {
@@ -1820,6 +1829,8 @@ mod tests {
 
     #[test]
     fn github_pr_refresh_notifies_when_pr_becomes_reviewable() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
         let mut app = test_app();
         let mut issue = test_issue();
         issue.key = "TEST-1".to_string();
@@ -1850,6 +1861,8 @@ mod tests {
 
     #[test]
     fn github_pr_refresh_does_not_notify_on_initial_reviewable_load() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
         let mut app = test_app();
         let mut issue = test_issue();
         issue.key = "TEST-1".to_string();
@@ -1871,6 +1884,8 @@ mod tests {
 
     #[test]
     fn github_pr_refresh_does_not_notify_when_refresh_has_errors() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
         let mut app = test_app();
         let mut issue = test_issue();
         issue.key = "TEST-1".to_string();
