@@ -2454,6 +2454,7 @@ fn show_pick_up_dialog(app: &mut AppView) {
             repo_path,
             base_choice,
             carry_changes,
+            open_mode: crate::actions::pick_up::OpenMode::Opencode,
             my_account_id: app.my_account_id.clone(),
             ancestors,
         },

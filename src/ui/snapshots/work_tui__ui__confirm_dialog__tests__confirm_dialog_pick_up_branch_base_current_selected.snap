@@ -3,7 +3,6 @@ source: src/ui/confirm_dialog.rs
 expression: output
 ---
                                                                       
-                                                                      
      ┌ Pick Up ─────────────────────────────────────────────────┐     
      │                                                          │     
      │  Action    Pick up issue                                 │     
@@ -12,9 +11,11 @@ expression: output
      │                                                          │     
      │  Branch off    main    [ TEST-7-some-feature ]           │     
      │                                                          │     
+     │  Open       [ opencode ]  none  explore                  │     
+     │                                                          │     
      │  Will checkout branch, then assign issue,                │     
      │  transition to In Progress, open editor                  │     
      │                                                          │     
      │                                                          │     
-     │←/→:Branch  Enter:Confirm  Esc:Cancel                     │     
+     │←/→:Branch  ↑/↓:Open  Enter:Confirm  Esc:Cancel           │     
      └──────────────────────────────────────────────────────────┘

@@ -3,16 +3,17 @@ source: src/ui/confirm_dialog.rs
 expression: output
 ---
                                                                       
-                                                                      
      ┌ Pick Up ─────────────────────────────────────────────────┐     
      │                                                          │     
      │  Action    Pick up issue                                 │     
      │  Issue     TEST-42 Implement feature X                   │     
      │  Repo      my-project                                    │     
      │                                                          │     
+     │  Open       [ opencode ]  none  explore                  │     
+     │                                                          │     
      │  Will checkout branch, then assign issue,                │     
      │  transition to In Progress, open editor                  │     
      │                                                          │     
      │                                                          │     
-     │Enter:Confirm  Esc:Cancel                                 │     
+     │↑/↓:Open  Enter:Confirm  Esc:Cancel                       │     
      └──────────────────────────────────────────────────────────┘

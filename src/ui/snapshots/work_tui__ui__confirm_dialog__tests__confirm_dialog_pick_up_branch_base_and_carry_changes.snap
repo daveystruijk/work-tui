@@ -3,7 +3,6 @@ source: src/ui/confirm_dialog.rs
 expression: output
 ---
                                                                       
-                                                                      
      ┌ Pick Up ─────────────────────────────────────────────────┐     
      │                                                          │     
      │  Action    Pick up issue                                 │     
@@ -14,9 +13,11 @@ expression: output
      │                                                          │     
      │  Changes      Carry    [ Abort ]                         │     
      │                                                          │     
+     │  Open       [ opencode ]  none  explore                  │     
+     │                                                          │     
      │  Will checkout branch, then assign issue,                │     
      │  transition to In Progress, open editor                  │     
      │                                                          │     
      │                                                          │     
-     │←/→:Branch  Tab:Changes  Enter:Confirm  Esc:Cancel        │     
+     │←/→:Branch Tab:Changes ↑/↓:Open Enter:Ok Esc:Cancel       │     
      └──────────────────────────────────────────────────────────┘

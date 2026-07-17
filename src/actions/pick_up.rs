@@ -25,6 +25,17 @@ use crate::actions::Progress;
 use crate::apis::jira::{Issue, JiraClient};
 use crate::git;
 
+/// How the pick-up workflow opens a working session in tmux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenMode {
+    /// Open opencode with the issue prompt (default).
+    Opencode,
+    /// Only open the tmux window, no opencode.
+    None,
+    /// Open opencode with "/explore" prepended to the prompt.
+    Explore,
+}
+
 /// Spawn the pick-up workflow for a single issue.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
@@ -38,6 +49,7 @@ pub fn spawn(
     carry_changes: bool,
     my_account_id: String,
     ancestors: Vec<Issue>,
+    open_mode: OpenMode,
 ) {
     super::spawn_action(tx, "pick_up", "Picking up", move |tx| async move {
         let result: color_eyre::Result<PickUpResult> = async {
@@ -86,7 +98,7 @@ pub fn spawn(
 
             let _ = tx.send(Message::Progress(Progress {
                 task_id: "pick_up".into(),
-                message: "Opening opencode session...".into(),
+                message: "Opening tmux session...".into(),
                 current: if has_linked_repo { 4 } else { 1 },
                 total: total_steps,
             }));
@@ -96,8 +108,11 @@ pub fn spawn(
                 &issue_description,
                 &ancestors,
             );
+            let prompt = match open_mode {
+                OpenMode::Explore => format!("/explore\n{prompt}"),
+                OpenMode::Opencode | OpenMode::None => prompt,
+            };
             let escaped_prompt = prompt.replace('\'', "'\\''");
-            let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
             let repo_dir = repo_path.as_ref().cloned().map(Ok).unwrap_or_else(|| {
                 dirs::home_dir()
                     .map(|dir| dir.join("momo"))
@@ -110,10 +125,13 @@ pub fn spawn(
                     .args(["new-window", "-c", &repo_dir])
                     .output()
                     .await;
-                let _ = Command::new("tmux")
-                    .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
-                    .output()
-                    .await;
+                if open_mode != OpenMode::None {
+                    let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
+                    let _ = Command::new("tmux")
+                        .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
+                        .output()
+                        .await;
+                }
             });
 
             let _ = tx.send(Message::Progress(Progress {
