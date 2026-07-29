@@ -22,7 +22,7 @@ use color_eyre::Result;
 use tokio::sync::mpsc;
 
 use super::Message;
-use crate::apis::jira::{Issue, JiraClient};
+use crate::apis::jira::{Issue, JiraClient, TransitionOption};
 
 /// A single story that needs its status synced.
 #[derive(Debug, Clone)]
@@ -73,15 +73,58 @@ impl DerivedStatus {
     fn matches_current(&self, story_status: &str) -> bool {
         match self {
             DerivedStatus::Planned => {
-                story_status.contains("plan")
-                    || story_status.contains("proposed")
-                    || story_status.contains("backlog")
+                contains_word_prefix(story_status, "plan")
+                    || contains_word_prefix(story_status, "proposed")
+                    || contains_word_prefix(story_status, "backlog")
             }
-            DerivedStatus::InProgress => story_status.contains("progress"),
-            DerivedStatus::Review => story_status.contains("review"),
-            DerivedStatus::Done => story_status.contains("done"),
+            DerivedStatus::InProgress => contains_word_prefix(story_status, "progress"),
+            DerivedStatus::Review => contains_word_prefix(story_status, "review"),
+            DerivedStatus::Done => contains_word_prefix(story_status, "done"),
         }
     }
+}
+
+/// Whether any word in `haystack` starts with `keyword`, ignoring case.
+fn contains_word_prefix(haystack: &str, keyword: &str) -> bool {
+    let keyword = keyword.to_lowercase();
+    !keyword.is_empty()
+        && haystack
+            .to_lowercase()
+            .split(|character: char| !character.is_alphanumeric())
+            .any(|word| word.starts_with(&keyword))
+}
+
+/// Select the transition whose target status best matches the derived status.
+/// Transition names are used as a fallback because Jira often names a
+/// transition differently from the status it reaches.
+fn select_transition(
+    transitions: &[TransitionOption],
+    derived: DerivedStatus,
+) -> Option<&TransitionOption> {
+    let keywords = [
+        Some(derived.transition_keyword()),
+        derived.fallback_keyword(),
+    ];
+
+    for keyword in keywords.into_iter().flatten() {
+        if let Some(transition) = transitions
+            .iter()
+            .find(|transition| contains_word_prefix(&transition.to.name, keyword))
+        {
+            return Some(transition);
+        }
+    }
+
+    for keyword in keywords.into_iter().flatten() {
+        if let Some(transition) = transitions
+            .iter()
+            .find(|transition| contains_word_prefix(&transition.name, keyword))
+        {
+            return Some(transition);
+        }
+    }
+
+    None
 }
 
 /// Classify a single status string into a tier.
@@ -226,21 +269,7 @@ pub fn spawn(tx: mpsc::UnboundedSender<Message>, client: JiraClient, entries: Ve
 
 async fn sync_one(client: &JiraClient, entry: &StorySyncEntry) -> Result<()> {
     let transitions = client.get_transitions(&entry.story_key).await?;
-
-    let keyword = entry.derived_status.transition_keyword();
-    let transition = transitions
-        .iter()
-        .find(|t| t.name.to_lowercase().contains(keyword))
-        .or_else(|| {
-            entry
-                .derived_status
-                .fallback_keyword()
-                .and_then(|fallback| {
-                    transitions
-                        .iter()
-                        .find(|t| t.name.to_lowercase().contains(fallback))
-                })
-        });
+    let transition = select_transition(&transitions, entry.derived_status);
 
     let Some(transition) = transition else {
         return Ok(()); // No matching transition available, skip silently
@@ -258,6 +287,7 @@ async fn sync_one(client: &JiraClient, entry: &StorySyncEntry) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use gouqi::TransitionTo;
     use serde_json::json;
 
     use crate::fixtures::test_issue;
@@ -289,6 +319,78 @@ mod tests {
             }),
         );
         issue
+    }
+
+    fn transition(name: &str, target: &str) -> TransitionOption {
+        TransitionOption {
+            id: name.to_string(),
+            name: name.to_string(),
+            to: TransitionTo {
+                id: target.to_string(),
+                name: target.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn contains_word_prefix_uses_word_boundaries() {
+        assert!(contains_word_prefix("planned", "plan"));
+        assert!(contains_word_prefix("plan it", "plan"));
+        assert!(contains_word_prefix("In Progress", "progress"));
+        assert!(contains_word_prefix("Review", "review"));
+        assert!(!contains_word_prefix("needs explanation", "plan"));
+        assert!(!contains_word_prefix("backlog", "plan"));
+    }
+
+    #[test]
+    fn select_transition_matches_target_status_before_transition_name() {
+        let transitions = vec![
+            transition("Needs Explanation", "Needs Explanation"),
+            transition("Plan", "Planned"),
+        ];
+
+        assert_eq!(
+            select_transition(&transitions, DerivedStatus::Planned)
+                .map(|transition| transition.name.as_str()),
+            Some("Plan")
+        );
+    }
+
+    #[test]
+    fn select_transition_returns_none_for_unrelated_transition() {
+        let transitions = vec![transition("Needs Explanation", "Needs Explanation")];
+
+        assert!(select_transition(&transitions, DerivedStatus::Planned).is_none());
+    }
+
+    #[test]
+    fn select_transition_prefers_target_status_match() {
+        let transitions = vec![transition("Ready", "Review")];
+
+        assert_eq!(
+            select_transition(&transitions, DerivedStatus::Review)
+                .map(|transition| transition.name.as_str()),
+            Some("Ready")
+        );
+    }
+
+    #[test]
+    fn select_transition_falls_back_to_transition_name() {
+        let transitions = vec![transition("Start Progress", "Doing")];
+
+        assert_eq!(
+            select_transition(&transitions, DerivedStatus::InProgress)
+                .map(|transition| transition.name.as_str()),
+            Some("Start Progress")
+        );
+    }
+
+    #[test]
+    fn matches_current_uses_word_boundaries() {
+        assert!(!DerivedStatus::Planned.matches_current("needs explanation"));
+        assert!(DerivedStatus::Planned.matches_current("planned"));
+        assert!(DerivedStatus::Planned.matches_current("backlog"));
+        assert!(DerivedStatus::Planned.matches_current("proposed"));
     }
 
     #[test]
