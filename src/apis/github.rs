@@ -139,6 +139,17 @@ impl PrInfo {
         format!("{}#{}", self.repo_slug, self.number)
     }
 
+    /// Number of comments in unresolved review threads. Top-level PR
+    /// comments (e.g. bot comments) are not resolvable conversations
+    /// and are excluded.
+    pub fn unresolved_comment_count(&self) -> usize {
+        self.review_threads
+            .iter()
+            .filter(|thread| !thread.is_resolved)
+            .map(|thread| thread.comments.len())
+            .sum()
+    }
+
     pub fn apply_detail(&mut self, detail: PrDetail) {
         self.checks = detail.checks;
         self.check_runs = detail.check_runs;

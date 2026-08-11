@@ -33,5 +33,13 @@ pub fn render(ticket: &Ticket) -> Line<'static> {
         pr_spans.push(Span::styled("!", Style::default().fg(Theme::Error)));
     }
 
+    let unresolved = pr.unresolved_comment_count();
+    if unresolved > 0 {
+        pr_spans.push(Span::styled(
+            format!(" \u{26a0}{unresolved}"),
+            Style::default().fg(Theme::Warning),
+        ));
+    }
+
     Line::from(pr_spans)
 }

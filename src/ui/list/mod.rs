@@ -141,6 +141,21 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_list_view_with_pr_unresolved_comments() {
+        use crate::fixtures::pr::test_pr;
+
+        let mut app = selected_issue_app();
+        let issue_key = app.issues[0].key.clone();
+        app.github_prs.insert(issue_key, test_pr());
+        app.rebuild_tickets();
+        let rendered = render_to_string(120, 16, |frame| {
+            render(&mut app, frame);
+        });
+
+        assert_snapshot!("list_view_with_pr_unresolved_comments", rendered);
+    }
+
+    #[test]
     fn board_story_starts_expanded_with_children() {
         let issues = vec![
             story_issue("TEST-1", "Story parent"),
@@ -2174,7 +2189,7 @@ impl ListView {
             Constraint::Length(max_col_width(&row_data, "Status").min(14)),
             Constraint::Length(max_col_width(&row_data, "Dev").min(12)),
             Constraint::Length(max_col_width(&row_data, "◷").min(4)),
-            Constraint::Length(max_col_width(&row_data, "PR").min(8)),
+            Constraint::Length(max_col_width(&row_data, "PR").min(12)),
             Constraint::Length(max_col_width(&row_data, "CI").min(14)),
             Constraint::Length(max_col_width(&row_data, "Repo").min(24)),
         ];

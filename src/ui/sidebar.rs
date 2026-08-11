@@ -611,19 +611,14 @@ fn section_height(lines: &[Line<'_>]) -> u16 {
 }
 
 fn comment_counts(pr: &PrInfo) -> (usize, usize) {
-    let mut unresolved = pr.comments.len();
-    let mut resolved = 0;
+    let resolved = pr
+        .review_threads
+        .iter()
+        .filter(|thread| thread.is_resolved)
+        .map(|thread| thread.comments.len())
+        .sum();
 
-    for thread in &pr.review_threads {
-        let thread_comment_count = thread.comments.len();
-        if thread.is_resolved {
-            resolved += thread_comment_count;
-        } else {
-            unresolved += thread_comment_count;
-        }
-    }
-
-    (unresolved, resolved)
+    (pr.unresolved_comment_count(), resolved)
 }
 
 fn is_running_check_step(step: &crate::apis::github::CheckStep) -> bool {
