@@ -28,7 +28,9 @@ use crate::git;
 /// How the pick-up workflow opens a working session in tmux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenMode {
-    /// Open opencode with the issue prompt (default).
+    /// Open Claude Code with the issue prompt (default).
+    Claude,
+    /// Open opencode with the issue prompt.
     Opencode,
     /// Only open the tmux window, no opencode.
     None,
@@ -110,7 +112,7 @@ pub fn spawn(
             );
             let prompt = match open_mode {
                 OpenMode::Explore => format!("/explore\n{prompt}"),
-                OpenMode::Opencode | OpenMode::None => prompt,
+                OpenMode::Claude | OpenMode::Opencode | OpenMode::None => prompt,
             };
             let escaped_prompt = prompt.replace('\'', "'\\''");
             let repo_dir = repo_path.as_ref().cloned().map(Ok).unwrap_or_else(|| {
@@ -125,8 +127,14 @@ pub fn spawn(
                     .args(["new-window", "-c", &repo_dir])
                     .output()
                     .await;
-                if open_mode != OpenMode::None {
-                    let shell_cmd = format!("opencode --prompt '{escaped_prompt}'");
+                let shell_cmd = match open_mode {
+                    OpenMode::Claude => Some(format!("claude '{escaped_prompt}'")),
+                    OpenMode::Opencode | OpenMode::Explore => {
+                        Some(format!("opencode --prompt '{escaped_prompt}'"))
+                    }
+                    OpenMode::None => None,
+                };
+                if let Some(shell_cmd) = shell_cmd {
                     let _ = Command::new("tmux")
                         .args(["split-window", "-h", "-c", &repo_dir, &shell_cmd])
                         .output()

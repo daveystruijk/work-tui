@@ -189,13 +189,14 @@ impl ConfirmDialogView {
         }
     }
 
-    /// Cycle the open-mode selection (opencode -> none -> explore).
+    /// Cycle the open-mode selection (claude -> opencode -> none -> explore).
     fn cycle_open_mode(&mut self) {
         if let ConfirmAction::PickUp { open_mode, .. } = &mut self.action {
             *open_mode = match open_mode {
+                OpenMode::Claude => OpenMode::Opencode,
                 OpenMode::Opencode => OpenMode::None,
                 OpenMode::None => OpenMode::Explore,
-                OpenMode::Explore => OpenMode::Opencode,
+                OpenMode::Explore => OpenMode::Claude,
             };
         }
     }
@@ -393,6 +394,7 @@ fn open_mode_line(open_mode: OpenMode) -> Line<'static> {
         .add_modifier(Modifier::BOLD);
     let unselected_style = Style::default().fg(Theme::Muted);
     let labels = [
+        (OpenMode::Claude, "claude"),
         (OpenMode::Opencode, "opencode"),
         (OpenMode::None, "none"),
         (OpenMode::Explore, "explore"),
@@ -537,7 +539,7 @@ mod tests {
                 repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
                 base_choice: None,
                 carry_changes: None,
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -560,7 +562,7 @@ mod tests {
                     selected: BranchBase::Main,
                 }),
                 carry_changes: None,
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -583,7 +585,7 @@ mod tests {
                     selected: BranchBase::Current,
                 }),
                 carry_changes: None,
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -607,7 +609,7 @@ mod tests {
                     selected: BranchBase::Main,
                 }),
                 carry_changes: None,
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -649,7 +651,7 @@ mod tests {
                 repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
                 base_choice: None,
                 carry_changes: Some(false),
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -669,7 +671,7 @@ mod tests {
                 repo_path: Some(PathBuf::from("/home/user/repos/my-project")),
                 base_choice: None,
                 carry_changes: Some(true),
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -692,7 +694,7 @@ mod tests {
                     selected: BranchBase::Main,
                 }),
                 carry_changes: Some(false),
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -713,7 +715,7 @@ mod tests {
                 repo_path: Some(PathBuf::from("/tmp/repo")),
                 base_choice: None,
                 carry_changes: Some(false),
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -781,7 +783,7 @@ mod tests {
                 repo_path: None,
                 base_choice: None,
                 carry_changes: None,
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
@@ -789,6 +791,25 @@ mod tests {
 
         let output = render_to_string(70, 14, |frame| dialog.render(frame));
         assert_snapshot!(output);
+    }
+
+    #[test]
+    fn confirm_dialog_pick_up_open_mode_opencode() {
+        let dialog = ConfirmDialogView {
+            action: ConfirmAction::PickUp {
+                issue_key: "TEST-42".to_string(),
+                issue_summary: "Implement feature X".to_string(),
+                issue_description: String::new(),
+                repo_path: Some(PathBuf::from("/tmp/repo")),
+                base_choice: None,
+                carry_changes: None,
+                open_mode: OpenMode::Opencode,
+                my_account_id: "abc123".to_string(),
+                ancestors: Vec::new(),
+            },
+        };
+
+        assert_snapshot!(render_to_string(70, 16, |frame| dialog.render(frame)));
     }
 
     #[test]
@@ -840,13 +861,21 @@ mod tests {
                 repo_path: None,
                 base_choice: None,
                 carry_changes: None,
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 my_account_id: "abc123".to_string(),
                 ancestors: Vec::new(),
             },
         });
 
         let key = |code| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        update(&mut app, key(KeyCode::Down));
+        assert!(matches!(
+            app.confirm_dialog.as_ref().unwrap().action,
+            ConfirmAction::PickUp {
+                open_mode: OpenMode::Opencode,
+                ..
+            }
+        ));
         update(&mut app, key(KeyCode::Down));
         assert!(matches!(
             app.confirm_dialog.as_ref().unwrap().action,
@@ -864,13 +893,13 @@ mod tests {
             }
         ));
         update(&mut app, key(KeyCode::Down));
-        for _ in 0..3 {
+        for _ in 0..4 {
             update(&mut app, key(KeyCode::Down));
         }
         assert!(matches!(
             app.confirm_dialog.as_ref().unwrap().action,
             ConfirmAction::PickUp {
-                open_mode: OpenMode::Opencode,
+                open_mode: OpenMode::Claude,
                 ..
             }
         ));

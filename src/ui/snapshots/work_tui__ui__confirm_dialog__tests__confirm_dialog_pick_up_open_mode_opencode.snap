@@ -1,0 +1,19 @@
+---
+source: src/ui/confirm_dialog.rs
+expression: "render_to_string(70, 16, |frame| dialog.render(frame))"
+---
+                                                                      
+     ┌ Pick Up ─────────────────────────────────────────────────┐     
+     │                                                          │     
+     │  Action    Pick up issue                                 │     
+     │  Issue     TEST-42 Implement feature X                   │     
+     │  Repo      repo                                          │     
+     │                                                          │     
+     │  Open       claude  [ opencode ]  none  explore          │     
+     │                                                          │     
+     │  Will checkout branch, then assign issue,                │     
+     │  transition to In Progress, open editor                  │     
+     │                                                          │     
+     │                                                          │     
+     │↑/↓:Open  Enter:Confirm  Esc:Cancel                       │     
+     └──────────────────────────────────────────────────────────┘

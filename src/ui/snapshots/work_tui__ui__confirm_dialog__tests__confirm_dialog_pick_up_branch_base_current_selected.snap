@@ -11,7 +11,7 @@ expression: output
      │                                                          │     
      │  Branch off    main    [ TEST-7-some-feature ]           │     
      │                                                          │     
-     │  Open       [ opencode ]  none  explore                  │     
+     │  Open       [ claude ]  opencode  none  explore          │     
      │                                                          │     
      │  Will checkout branch, then assign issue,                │     
      │  transition to In Progress, open editor                  │     
