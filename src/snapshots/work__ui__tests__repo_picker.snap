@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "rendered(&app, 80, 12)"
+---
+"  Issue                       Status       Dev       Age   PR         CI Repo   "
+"▾ Review (1) ───────────────────────────────────────────────────────────────────"
+"  INI-3 Export as CSV         Review       Casey     1d                  backend"
+"▾ In Progress (┌ Repository for INI-4 ──────────────────────────┐───────────────"
+"  INI-2   WORK │/end█                                           │     ✗  backend"
+"▾ Backlog (1) ─│ backend                                        │───────────────"
+"  INI-4 Fix the│ frontend                                       │        backend"
+"               └────────────────────────────────────────────────┘               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"type to filter  ↑/↓ select  ⏎ choose  esc cancel                                "

@@ -1,0 +1,10 @@
+---
+source: src/ui.rs
+expression: "rendered(&app, 80, 6)"
+---
+"  Issue                       Status       Dev       Age   PR         CI Repo   "
+"▸ Review (1) ───────────────────────────────────────────────────────────────────"
+"▾ In Progress (1) ──────────────────────────────────────────────────────────────"
+"  INI-2   WORK   Add the exp… In Progress  Casey     2h    #42 ⚠1     ✗  backend"
+"▾ Backlog (1) ──────────────────────────────────────────────────────────────────"
+"⏎ switch  f finish  n new  a tag  / search  space fold  </> board/backlog  c CI "

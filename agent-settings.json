@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '{\"terminalSequence\":\"\\\\u0007\"}'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '{\"terminalSequence\":\"\\\\u0007\"}'"
+          }
+        ]
+      }
+    ]
+  }
+}

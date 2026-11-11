@@ -1,0 +1,18 @@
+---
+source: src/ui.rs
+expression: "rendered(&app, 80, 14)"
+---
+"  Issue                       Status       Dev       Age   PR         CI Repo   "
+"▾ Review (1) ───────────────────────────────────────────────────────────────────"
+"  INI-3 ┌ Put this on your name? ──────────────────────────────────────┐ backend"
+"▾ In Pro│ INI-4 Fix the login redirect                                 │────────"
+"  INI-2 │                                                              │ backend"
+"▾ Backlo│ This assigns it to you, moves it to In Progress and puts it  │────────"
+"  INI-4 │ on the board. It is currently unassigned.                    │ backend"
+"        │                                                              │        "
+"        │ y assign and open   esc cancel                               │        "
+"        └──────────────────────────────────────────────────────────────┘        "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"y assign and open  esc cancel                                                   "
