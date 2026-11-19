@@ -8,6 +8,7 @@ use anyhow::{Context as _, Result, bail};
 
 use crate::config::{
     AGENT, AGENT_SETTINGS, Config, DIFF_VIEWER, DIFF_WATCH, PROJECT, WORKTREE_ADD, WORKTREE_LIST,
+    WORKTREE_REMOVE,
 };
 use crate::github;
 use crate::jira::Jira;
@@ -37,6 +38,8 @@ const MAX_BRANCH_LENGTH: usize = 60;
 const MAX_WINDOW_NAME_LENGTH: usize = 30; // in characters; tabs of several issues have to fit next to each other
 /// tmux pane option that holds the issue key of the diff shown in the pane.
 const DIFF_PANE_OPTION: &str = "@work_diff";
+/// tmux pane option that the hooks in `agent-settings.json` keep set while the agent works.
+const AGENT_BUSY_OPTION: &str = "@work_agent_busy";
 
 pub struct Context {
     pub config: Config,
@@ -59,12 +62,13 @@ pub struct Issues {
     pub issues: Vec<Issue>,
     pub sections: Vec<String>,
     pub workspaces: HashMap<String, String>,
+    pub main_checkouts: HashSet<String>,
     pub me: Person,
 }
 
 /// The issues on the board up to and including the Review column, plus the backlog.
 /// Sections run from Review back to the first column, with the backlog last.
-pub fn load_issues(context: &Context) -> Result<Issues> {
+pub fn load_issues(context: &Context, repos: &[String]) -> Result<Issues> {
     let jira = &context.jira;
     let board = jira.board(PROJECT)?;
     let review = board
@@ -84,6 +88,7 @@ pub fn load_issues(context: &Context) -> Result<Issues> {
     thread::scope(|scope| {
         let me = scope.spawn(|| jira.myself());
         let workspaces = scope.spawn(|| workspaces(&context.config));
+        let main_checkouts = scope.spawn(|| main_checkouts(&context.config, repos));
         let backlog = scope.spawn(|| jira.backlog(board.id));
         let mut issues = jira.search(&jql)?;
         let backlog = backlog.join().expect("backlog lookup panicked")?;
@@ -135,16 +140,53 @@ pub fn load_issues(context: &Context) -> Result<Issues> {
             issues,
             sections,
             workspaces: workspaces.join().expect("workspace listing panicked")?,
+            main_checkouts: main_checkouts
+                .join()
+                .expect("main checkout listing panicked"),
             me: me.join().expect("user lookup panicked")?,
         })
     })
 }
 
-/// The current GitHub login and the open pull requests of the project, by issue key.
-pub fn load_prs(context: &Context, repos: &[String]) -> Result<(String, HashMap<String, Pr>)> {
+pub fn load_prs(context: &Context, repos: &[String]) -> Result<github::PullRequests> {
     let organisation = github::organisation(&context.config.repos_dir, repos)
         .context("no repository with a GitHub origin found in REPOS_DIR")?;
     github::pull_requests(&organisation, PROJECT)
+}
+
+/// The keys of the issues whose branch a repository's main checkout is on, or detached at.
+fn main_checkouts(config: &Config, repos: &[String]) -> HashSet<String> {
+    let branches_at_head = |repo: &str| {
+        let dir = config.repos_dir.join(repo);
+        let dir = Some(dir.as_path());
+        match run("git", &["symbolic-ref", "--quiet", "--short", "HEAD"], dir) {
+            Ok(branch) => vec![branch],
+            Err(_) => run(
+                "git",
+                &[
+                    "for-each-ref",
+                    "--points-at",
+                    "HEAD",
+                    "--format=%(refname:short)",
+                    "refs/heads",
+                    "refs/remotes/origin",
+                ],
+                dir,
+            )
+            .map(|branches| {
+                branches
+                    .lines()
+                    .map(|branch| branch.strip_prefix("origin/").unwrap_or(branch).to_owned())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        }
+    };
+    repos
+        .iter()
+        .flat_map(|repo| branches_at_head(repo))
+        .filter_map(|branch| issue_key_of(&branch))
+        .collect()
 }
 
 fn workspaces(config: &Config) -> Result<HashMap<String, String>> {
@@ -171,13 +213,62 @@ pub fn switch(
     let path = worktree(context, target)?;
     let issue = &target.issue;
     let prompt = issue_prompt(template, issue, target.parent.as_ref());
-    open_session(issue, &path, &prompt, template.starts_new_agent)?;
+    open_session(issue, &path, Some(&prompt), template.starts_new_agent)?;
     if let Some(me) = claim_as
         && !(issue.in_progress() && issue.assignee.as_ref() == Some(me))
     {
-        context.jira.claim(&issue.key, &me.account_id)?;
+        context
+            .jira
+            .claim(&issue.key, issue.board_key(), &me.account_id)?;
     }
     Ok(format!("{} is open in {}", issue.key, path.display()))
+}
+
+/// Bring up the issue's worktree and open or focus its tmux window, without an agent and without
+/// touching the issue in Jira: for looking at or running someone else's work.
+pub fn checkout(context: &Context, target: &Target) -> Result<String> {
+    let path = worktree(context, target)?;
+    open_session(&target.issue, &path, None, false)?;
+    Ok(format!(
+        "{} is checked out in {}",
+        target.issue.key,
+        path.display()
+    ))
+}
+
+/// Check out the issue's branch in the repository's main checkout, brought up to date with origin.
+/// A branch that a worktree has checked out is checked out detached at its commit instead, since git
+/// allows a branch in only one place. Refuses, leaving the checkout as it was, when it has
+/// uncommitted changes.
+pub fn checkout_in_main(context: &Context, target: &Target) -> Result<String> {
+    let repo = context.config.repos_dir.join(&target.repo);
+    let dir = Some(repo.as_path());
+    let key = &target.issue.key;
+    if target.add_label {
+        context.jira.add_label(key, &target.repo)?;
+    }
+    run("git", &["fetch", "--quiet", "origin"], dir)?;
+    let branch = match &target.pr {
+        Some(pr) => pr.branch.clone(),
+        None => existing_branch(&repo, key)?
+            .with_context(|| format!("{key} has no branch in {} yet", target.repo))?,
+    };
+    if !run("git", &["status", "--porcelain"], dir)?.is_empty() {
+        bail!("{} has uncommitted changes", repo.display());
+    }
+    if let Some(worktree) = worktree_with_branch(&repo, &branch)? {
+        run("git", &["switch", "--quiet", "--detach", &branch], dir)?;
+        return Ok(format!(
+            "{} is at {branch}, detached: the branch is checked out in {worktree}",
+            repo.display()
+        ));
+    }
+    run("git", &["switch", "--quiet", &branch], dir)?; // creates the local branch from origin's when there is none
+    let remote = format!("origin/{branch}");
+    if run("git", &["rev-parse", "--verify", "--quiet", &remote], dir).is_ok() {
+        run("git", &["merge", "--ff-only", "--quiet", &remote], dir)?;
+    }
+    Ok(format!("{} is on {branch}", repo.display()))
 }
 
 /// Commit what is left, push, have the agent write the description, open the pull request (or
@@ -267,20 +358,54 @@ pub fn diff(context: &Context, target: &Target) -> Result<String> {
         "tmux",
         &["set-option", "-p", "-t", &pane, DIFF_PANE_OPTION, key],
         None,
-    )?; // see `open_diffs`
+    )?; // see `panes`
     Ok(format!("Showing the diff of {key}"))
 }
 
-/// The keys of the issues whose diff is open in some pane right now. The diff panes carry
-/// the issue key as a tmux pane option, so tmux is the only place this is kept.
-pub fn open_diffs() -> HashSet<String> {
-    let format = format!("#{{{DIFF_PANE_OPTION}}}");
-    let panes = run("tmux", &["list-panes", "-a", "-F", &format], None).unwrap_or_default();
+/// What the tmux panes say about the issues right now, by issue key. tmux is the only place
+/// this is kept: a diff pane carries its issue key as a pane option, and an agent's hooks keep
+/// another option set on its pane while it works.
+#[derive(Default)]
+pub struct Panes {
+    pub diffs: HashSet<String>,
+    /// Issues whose window has an agent working on a turn.
+    pub busy_agents: HashSet<String>,
+}
+
+pub fn panes() -> Panes {
+    let format = format!("#{{{DIFF_PANE_OPTION}}}\t#{{{AGENT_BUSY_OPTION}}}\t#{{window_name}}");
+    let listing = run("tmux", &["list-panes", "-a", "-F", &format], None).unwrap_or_default();
+    let mut panes = Panes::default();
+    for line in listing.lines() {
+        let mut fields = line.splitn(3, '\t');
+        let (diff, busy, window) = (
+            fields.next().unwrap_or_default(),
+            fields.next().unwrap_or_default(),
+            fields.next().unwrap_or_default(),
+        );
+        if !diff.is_empty() {
+            panes.diffs.insert(diff.to_owned());
+        }
+        if !busy.is_empty()
+            && let Some(key) = window.split_whitespace().next() // see `window_name`
+        {
+            panes.busy_agents.insert(key.to_owned());
+        }
+    }
     panes
-        .lines()
-        .filter(|key| !key.is_empty())
-        .map(str::to_owned)
-        .collect()
+}
+
+/// Remove the issue's workspace with all its worktrees, and close the issue's tmux window,
+/// whose panes would otherwise sit in removed directories. The branches stay.
+pub fn remove_worktree(context: &Context, key: &str) -> Result<String> {
+    let command = WORKTREE_REMOVE.replace("{workspace}", &quote(&key.to_lowercase())); // `momo worktree ls` names workspaces after the lowercased key
+    run("sh", &["-c", &command], Some(&context.config.repos_dir))?;
+    if std::env::var_os("TMUX").is_some()
+        && let Some(window) = issue_window(key)?
+    {
+        run("tmux", &["kill-window", "-t", &window], None)?;
+    }
+    Ok(format!("Removed the worktree of {key}"))
 }
 
 /// The path of the issue's worktree, created on the right branch if it does not exist yet.
@@ -303,6 +428,19 @@ fn worktree(context: &Context, target: &Target) -> Result<PathBuf> {
         bail!("`{command}` did not print a worktree path");
     }
     Ok(path)
+}
+
+/// The path of the worktree that has `branch` checked out, if any.
+fn worktree_with_branch(repo: &Path, branch: &str) -> Result<Option<String>> {
+    let listing = run("git", &["worktree", "list", "--porcelain"], Some(repo))?;
+    let checked_out = format!("branch refs/heads/{branch}");
+    Ok(listing.split("\n\n").find_map(|entry| {
+        let mut lines = entry.lines();
+        let path = lines.next()?.strip_prefix("worktree ")?;
+        lines
+            .any(|line| line == checked_out)
+            .then(|| path.to_owned())
+    }))
 }
 
 fn existing_branch(repo: &Path, key: &str) -> Result<Option<String>> {
@@ -367,20 +505,15 @@ fn window_name(issue: &Issue) -> String {
 /// Focus the issue's tmux window (the one whose name starts with the issue key), or open one
 /// with a live diff of the worktree and the agent side by side.
 /// With `always_start_agent`, an existing window gets a new agent pane for the given prompt.
-fn open_session(issue: &Issue, path: &Path, prompt: &str, always_start_agent: bool) -> Result<()> {
+fn open_session(
+    issue: &Issue,
+    path: &Path,
+    prompt: Option<&str>, // without one, no agent is started
+    always_start_agent: bool,
+) -> Result<()> {
     require_tmux()?;
-    let key = issue.key.as_str();
     let dir = path.to_string_lossy();
-    let windows = run(
-        "tmux",
-        &["list-windows", "-a", "-F", "#{window_name}\t#{window_id}"],
-        None,
-    )?;
-    let existing = windows
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .find(|(name, _)| name.split_whitespace().next() == Some(key)) // the summary after the key may have changed
-        .map(|(_, id)| id.to_owned());
+    let existing = issue_window(&issue.key)?;
     let window = match &existing {
         Some(window) => window.clone(),
         None => run(
@@ -406,7 +539,9 @@ fn open_session(issue: &Issue, path: &Path, prompt: &str, always_start_agent: bo
             None,
         )?;
     }
-    if existing.is_none() || always_start_agent {
+    if let Some(prompt) = prompt
+        && (existing.is_none() || always_start_agent)
+    {
         let agent = format!(
             "{AGENT} --settings {} {}",
             quote(AGENT_SETTINGS.trim()),
@@ -421,6 +556,20 @@ fn open_session(issue: &Issue, path: &Path, prompt: &str, always_start_agent: bo
     run("tmux", &["select-window", "-t", &window], None)?;
     run("tmux", &["switch-client", "-t", &window], None)?; // the window may live in another session
     Ok(())
+}
+
+/// The id of the issue's tmux window: the one whose name starts with the issue key.
+fn issue_window(key: &str) -> Result<Option<String>> {
+    let windows = run(
+        "tmux",
+        &["list-windows", "-a", "-F", "#{window_name}\t#{window_id}"],
+        None,
+    )?;
+    Ok(windows
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(name, _)| name.split_whitespace().next() == Some(key)) // the summary after the key may have changed
+        .map(|(_, id)| id.to_owned()))
 }
 
 pub fn issue_prompt(template: Template, issue: &Issue, parent: Option<&Issue>) -> String {

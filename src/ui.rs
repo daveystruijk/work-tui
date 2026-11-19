@@ -8,15 +8,17 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use crate::app::{App, Mode};
 use crate::model::{self, CheckState, Issue, Kind, Pr, Review, Row};
 
+const PR_WIDTH: usize = 14; // `+1.2k -340 ⚠12`
 const MUTED: Color = Color::DarkGray;
 const SELECTION: Color = Color::Rgb(66, 66, 88);
 const PARENT_SHADE: Color = Color::Rgb(42, 42, 55); // sets parents apart from the tickets under them
 const DIFF_OPEN: Color = Color::Rgb(30, 50, 40); // the issue's diff is open in a pane
 const WORKTREE_OPEN: Color = Color::Rgb(34, 44, 72); // the issue has a worktree
+const MAIN_CHECKOUT: Color = Color::Rgb(56, 36, 64); // a main checkout is on the issue's branch
 const SIDEBAR_WIDTH: u16 = 46;
 const MIN_WIDTH_FOR_SIDEBAR: u16 = 110;
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const KEYS: &str = "⏎ switch  f finish  n new  a tag  / search  space fold  </> board/backlog  c CI logs  C fix CI  b diff  V approve  o PR  t ticket  r refresh  q quit";
+const KEYS: &str = "⏎ switch  f finish  n new  a tag  / search  space fold  </> board/backlog  c CI logs  C fix CI  b diff  m main  x rm worktree  V approve  o PR  t ticket  r refresh  q quit";
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [main, footer] =
@@ -85,7 +87,7 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
         .max()
         .unwrap_or(0)
         .clamp(4, 24);
-    let fixed = 2 + 1 + status_width + 2 + 8 + 2 + 4 + 2 + 9 + 2 + 2 + 1 + repo_width;
+    let fixed = 2 + 1 + status_width + 2 + 8 + 2 + 4 + 2 + PR_WIDTH + 2 + 2 + 1 + repo_width;
     let issue_width = (area.width as usize).saturating_sub(fixed);
 
     let header = Line::from(format!(
@@ -95,7 +97,7 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
         pad("Status", status_width),
         pad("Dev", 8),
         pad("Age", 4),
-        pad("PR", 9),
+        pad("Diff", PR_WIDTH),
     ))
     .style(Style::new().fg(MUTED));
 
@@ -117,6 +119,8 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
             Style::new().bg(PARENT_SHADE)
         } else if app.open_diffs.contains(&row.key) {
             Style::new().bg(DIFF_OPEN)
+        } else if app.data.main_checkouts.contains(&row.key) {
+            Style::new().bg(MAIN_CHECKOUT)
         } else if app.data.workspaces.contains_key(&row.key) {
             Style::new().bg(WORKTREE_OPEN)
         } else {
@@ -135,7 +139,7 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
             .map(|issue| &issues[issue]);
         let pr = app.data.prs.get(&row.key).filter(|_| has_columns);
         // Between the key and the title, a badge for the most pressing thing about the issue.
-        let badge = |label: &'static str, color: Color| {
+        let badge = |label: String, color: Color| {
             Span::styled(
                 label,
                 Style::new()
@@ -146,11 +150,16 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
         };
         let newly_reviewable = issue.is_some_and(|issue| app.awaits_first_look(issue));
         let badge = if app.open_diffs.contains(&row.key) {
-            badge("  DIFF  ", Color::Green)
+            badge("  DIFF  ".to_owned(), Color::Green)
+        } else if app.data.main_checkouts.contains(&row.key) {
+            badge("  MAIN  ".to_owned(), Color::Magenta)
+        } else if app.busy_agents.contains(&row.key) {
+            let spinner = SPINNER[app.spinner % SPINNER.len()];
+            badge(format!(" {spinner} WORK "), Color::Yellow)
         } else if app.data.workspaces.contains_key(&row.key) {
-            badge("  WORK  ", Color::LightBlue)
+            badge("  WORK  ".to_owned(), Color::LightBlue)
         } else if newly_reviewable {
-            badge("  NEW  ", Color::Yellow)
+            badge("  NEW  ".to_owned(), Color::Yellow)
         } else {
             Span::raw("")
         };
@@ -238,23 +247,33 @@ fn issue_cell(row: &Row, badge: Span<'static>, width: usize) -> Vec<Span<'static
     ]
 }
 
-/// `#123 ⚠2`: the number coloured by review state, then the unresolved review threads.
+/// `+72 -14 ⚠2`: the lines added and removed coloured by review state, then the unresolved
+/// review threads.
 fn pr_cell(pr: Option<&Pr>) -> Vec<Span<'static>> {
     let Some(pr) = pr else {
-        return vec![Span::raw(" ".repeat(9))];
+        return vec![Span::raw(" ".repeat(PR_WIDTH))];
     };
-    let number = format!("#{}", pr.number);
+    let changes = format!("+{} -{}", compact(pr.additions), compact(pr.deletions));
     let unresolved = if pr.unresolved > 0 {
         format!(" ⚠{}", pr.unresolved)
     } else {
         String::new()
     };
-    let padding = 9usize.saturating_sub(width(&number) + width(&unresolved));
+    let padding = PR_WIDTH.saturating_sub(width(&changes) + width(&unresolved));
     vec![
-        Span::styled(number, review_style(pr)),
+        Span::styled(changes, review_style(pr)),
         Span::styled(unresolved, Style::new().fg(Color::Yellow)),
         Span::raw(" ".repeat(padding)),
     ]
+}
+
+/// `340`, `1.2k`, `12k`: a line count in at most four characters.
+fn compact(lines: u64) -> String {
+    match lines {
+        0..1000 => lines.to_string(),
+        1000..9950 => format!("{:.1}k", lines as f64 / 1000.0),
+        _ => format!("{}k", (lines + 500) / 1000),
+    }
 }
 
 fn review_style(pr: &Pr) -> Style {
@@ -469,7 +488,16 @@ fn footer_line(app: &App) -> Line<'static> {
     let muted = Style::new().fg(MUTED);
     match &app.mode {
         Mode::Search => return Line::from(format!("/{}█", app.query)),
-        Mode::NewIssue(summary) => return Line::from(format!("New task: {summary}█")),
+        Mode::NewIssue { summary, epic } => {
+            let under = match epic {
+                Some(epic) => format!(" in {} {} (tab: no epic)", epic.key, epic.summary),
+                None => " without epic".to_owned(),
+            };
+            return Line::from(vec![
+                Span::raw(format!("New task: {summary}█")),
+                Span::styled(under, muted),
+            ]);
+        }
         Mode::PickRepo { .. } => {
             return Line::from("type to filter  ↑/↓ select  ⏎ choose  esc cancel").style(muted);
         }
@@ -564,7 +592,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
     use std::sync::mpsc;
 
@@ -664,6 +692,7 @@ mod tests {
                 },
             )]),
             workspaces: HashMap::from([("INI-2".to_owned(), "http://localhost:9001".to_owned())]),
+            main_checkouts: HashSet::new(),
             me: casey,
             github_login: "casey".to_owned(),
         };
@@ -707,7 +736,16 @@ mod tests {
     fn badges_sit_between_key_and_title() {
         let mut app = app();
         app.open_diffs.insert("INI-3".to_owned());
+        app.data.main_checkouts.insert("INI-4".to_owned());
         insta::assert_snapshot!(rendered(&app, 80, 8));
+    }
+
+    #[test]
+    fn a_working_agent_spins_in_the_work_badge() {
+        let mut app = app();
+        assert!(rendered(&app, 80, 8).contains("  WORK  "));
+        app.busy_agents.insert("INI-2".to_owned());
+        assert!(rendered(&app, 80, 8).contains(" ⠋ WORK "));
     }
 
     #[test]

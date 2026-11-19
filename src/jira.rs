@@ -94,8 +94,9 @@ impl Jira {
         parse_person(&me).context("Jira returned no account for these credentials")
     }
 
-    /// Assign the issue, move it to In Progress and onto the board.
-    pub fn claim(&self, key: &str, account_id: &str) -> Result<()> {
+    /// Assign the issue, move it to In Progress and put `board_key` (the issue, or the parent a
+    /// subtask is on the board with) onto the board.
+    pub fn claim(&self, key: &str, board_key: &str, account_id: &str) -> Result<()> {
         let assignee = json!({ "accountId": account_id });
         self.request(
             "PUT",
@@ -103,7 +104,7 @@ impl Jira {
             Some(assignee),
         )?;
         self.transition(key, "progress")?;
-        self.move_to_board(key)
+        self.move_to_board(board_key)
     }
 
     /// Apply the first available transition whose name contains `name`.

@@ -2,11 +2,11 @@
 source: src/ui.rs
 expression: "rendered(&app, 80, 8)"
 ---
-"  Issue                       Status       Dev       Age   PR         CI Repo   "
+"  Issue                  Status       Dev       Age   Diff            CI Repo   "
 "▾ Review (1) ───────────────────────────────────────────────────────────────────"
-"  INI-3   DIFF   Export as C… Review       Casey     1d                  backend"
+"  INI-3   DIFF   Export… Review       Casey     1d                       backend"
 "▾ In Progress (1) ──────────────────────────────────────────────────────────────"
-"  INI-2   WORK   Add the exp… In Progress  Casey     2h    #42 ⚠1     ✗  backend"
+"  INI-2   WORK   Add th… In Progress  Casey     2h    +72 -14 ⚠1      ✗  backend"
 "▾ Backlog (1) ──────────────────────────────────────────────────────────────────"
-"  INI-4 Fix the login redire… Plan                   12d                 backend"
+"  INI-4   MAIN   Fix th… Plan                   12d                      backend"
 "⏎ switch  f finish  n new  a tag  / search  space fold  </> board/backlog  c CI "

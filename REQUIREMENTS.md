@@ -31,7 +31,7 @@ The size sits in three places: the list (`ui/list/mod.rs`, 2.9k), the app state 
 | 6 | Reviewing stays | Branch diff, approve & auto-merge, reviewable-PR notifications |
 | 7 | Inline ticket creation stays | Used a lot |
 | 8 | CI logs and fix-CI stay, but rebuilt | The current versions are not good enough to be used; they need a simpler design, not a port |
-| 9 | A worktree per issue, always | No single-working-tree mode, no stash or carry logic, no dirty-tree handling anywhere. Main checkouts stay on main |
+| 9 | A worktree per issue, always | No single-working-tree mode, no stash or carry logic, no dirty-tree handling anywhere. Main checkouts stay on main, except that `m` switches one to an issue's branch for now, while worktree services are unproven; it refuses on a dirty checkout, and checks out detached when a worktree has the branch |
 | 10 | Finish stays as is | Commit all as `KEY summary`, push, create PR, enable auto-merge, transition to Review |
 | 11 | No stories, no subtasks | The hierarchy is epic > task. Tasks are grouped under their epic, collapsible. The story/task toggle and story status sync have nothing left to do |
 | 12 | Sessions open in tmux | One window per issue, named after its key and the start of its title, focused if it already exists |
@@ -56,11 +56,11 @@ The size sits in three places: the list (`ui/list/mod.rs`, 2.9k), the app state 
 - Issues appear as soon as Jira answers (about a second); pull requests fill in when GitHub does. The bare GitHub search takes about 1.3s; the per-pull-request details (reviews, review threads, CI checks) take several seconds more, so they are fetched in three parallel requests and must never hold up the list.
 - PRs from a single GitHub search on `head:<PROJECT>-`, matched to issues by branch prefix.
 - Board columns are flat lists; an issue's epic is shown in the sidebar and matched by search. The backlog is grouped by epic. Epics themselves are not listed as rows.
-- Columns: issue, status, assignee, age, PR number + unresolved comments, CI, repo (the repositories its labels name).
+- Columns: issue, status, assignee, age, PR lines added and removed + unresolved comments, CI, repo (the repositories its labels name).
 - A pull request is greyed out unless I can move it forward: mine with conflicts, failing CI, requested changes or unresolved comments; someone else's that is not a draft and that I have not reviewed yet (or where a new review was requested from me).
 - Age fades in four steps of white: last hour, last day, last week, older.
 - `a` tags an issue with a repository: the chosen one replaces any other repository labels on the issue. Labels that do not name a repository are never touched.
-- A coloured badge between the issue key and the title says what stands out (no column is reserved for it): `DIFF` (green) while its diff is open in a pane, `WORK` (blue) when it has a worktree, `NEW` (yellow) on a PR that is mine to review and that I have not looked at yet (in that order of precedence). Looking means opening its diff or the PR; the ids of looked-at PRs are the one thing the tool keeps on disk (`~/.local/state/work/seen-pull-requests`), so `NEW` survives restarts. There is deliberately no badge for every reviewable PR; that was too much. `DIFF` and `WORK` also tint the row. Both are read from the outside world (the worktree list, tmux), not remembered by the tool.
+- A coloured badge between the issue key and the title says what stands out (no column is reserved for it): `DIFF` (green) while its diff is open in a pane, `MAIN` (magenta) when a repository's main checkout is on its branch or detached at it, `WORK` (blue) when it has a worktree, with a spinner while its agent is working on a turn, `NEW` (yellow) on a PR that is mine to review and that I have not looked at yet (in that order of precedence). Looking means opening its diff or the PR; the ids of looked-at PRs are the one thing the tool keeps on disk (`~/.local/state/work/seen-pull-requests`), so `NEW` survives restarts. There is deliberately no badge for every reviewable PR; that was too much. `DIFF`, `MAIN` and `WORK` also tint the row. They are read from the outside world (the worktree list, tmux), not remembered by the tool.
 - The workspace URL of an issue with a worktree is in the sidebar.
 - Fuzzy search over visible rows.
 - Open PR / ticket in browser.
@@ -70,8 +70,8 @@ The size sits in three places: the list (`ui/list/mod.rs`, 2.9k), the app state 
 1. Repo comes from the issue's label. If there is none, fuzzy-pick a repo once; the tool writes the label.
 2. Branch name is the existing branch for the issue key if there is one (local or remote), otherwise `KEY-slugged-summary`.
 3. Run the worktree command (see below) with repo and branch. It creates the worktree if needed, starts its services and returns the path.
-4. (The agent's tab is marked in tmux, via the terminal bell, whenever the agent finishes a turn or needs an answer.) Focus the tmux window for the issue, or open one in the worktree: a live diff of the uncommitted changes (`hunk diff --watch`) in one pane, the agent with the issue (plus its epic) as prompt in the other.
-5. If the issue is not mine and In Progress yet: assign to me, transition to In Progress, move to board. This is the one step that asks first (`y` to confirm), and it asks before anything else happens, so cancelling leaves no worktree behind.
+4. (The agent's tab is marked in tmux, via the terminal bell, whenever the agent finishes a turn or needs an answer.) Focus the tmux window for the issue, or open one in the worktree: a live diff of everything the branch changes against main, committed or not (`hunk diff --watch` against the merge-base with `origin/main`) in one pane, the agent with the issue (plus its epic) as prompt in the other.
+5. If the issue is unassigned, or mine but not In Progress yet: assign to me, transition to In Progress, move to board. This is the one step that asks first (`y` to confirm), and it asks before anything else happens, so cancelling leaves no worktree behind. Someone else's issue is never touched in Jira (not even the repo label) and gets no agent: only the worktree and the diff window, to check out and run the branch.
 
 Steps 1–4 are the same for a new issue, one of mine from yesterday, and someone else's PR I want to look at; only step 5 is conditional.
 
@@ -88,11 +88,11 @@ Steps 1–4 are the same for a new issue, one of mine from yesterday, and someon
 - Approve & auto-merge the selected PR.
 - Branch diff: `hunk diff origin/main...<branch>` in a pane beside the list (not a window of its own), read straight from the repository. It creates no worktree and starts no services, so glancing at someone's PR is instant and leaves nothing behind.
 - A terminal bell (which marks the tab in tmux until visited) and a line in the status bar when a PR becomes reviewable by me: someone else's, not a draft, not reviewed by me yet or with a new review requested from me. The same rule that un-greys a PR in the list. Only for PRs that appear while the tool runs, not for what is there at startup.
-- Removing a workspace is `momo worktree rm`, not a key in the TUI.
+- `x` removes the issue's workspace (`momo worktree rm`, which refuses on uncommitted changes) and closes its tmux window. The branch stays.
 
 ### Capture
 
-- Inline new task under the cursor's epic. It gets no repo label; tag it with `a` or let switch ask.
+- Inline new task under the cursor's epic (the selected issue's, or the selected backlog group), fixed when `n` is pressed and named in the prompt; `tab` drops it. It gets no repo label; tag it with `a` or let switch ask.
 
 ### Config
 
@@ -110,7 +110,8 @@ Where it differs from the requirements above:
 - **A new task shows up on the next refresh**, not instantly: Jira's search lags a moment behind creation, and there is no optimistic insert.
 - **Move to board** posts the issue to the project's single board. Projects with several boards or sprints are not handled.
 - **Refresh fetches at most 500 issues.**
-- **An issue with subtasks is flattened into its subtasks.** The parent is not listed; each subtask is, in the column of its own status, filed under the parent's epic. Jira reports every subtask as backlog, so a subtask only counts as backlog when its parent is there.
+- **An issue with subtasks is flattened into its subtasks.** The parent is not listed; each subtask is, in the column of its own status, filed under the parent's epic. Jira reports every subtask as backlog, so a subtask only counts as backlog when its parent is there, and claiming it or moving it with `<`/`>` moves its parent. A subtask works like a task: its own branch, worktree and PR. The parent is still listed when it has a PR of its own.
+- **One PR per issue.** An issue with several open PRs is reported as an error naming them, so I can fix it; only the first (by repository and number) is shown.
 
 Not yet run for real, because they write to Jira, GitHub, git or tmux: switch, fix CI, finish, diff, approve, new task.
 

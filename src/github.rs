@@ -32,9 +32,22 @@ const PR_FIELD_PARTS: [&str; 3] = [
      } } } } } }",
 ];
 
-/// The current user's login and the open pull requests whose branch starts with the project
-/// key, by issue key.
-pub fn pull_requests(org: &str, project: &str) -> Result<(String, HashMap<String, Pr>)> {
+/// The open pull requests of the project, found by their branch starting with the project key.
+pub struct PullRequests {
+    /// The current user's GitHub login.
+    pub login: String,
+    pub by_key: HashMap<String, Pr>,
+    /// The issues that have more than one open pull request, of which only one is kept.
+    pub duplicates: Vec<Duplicate>,
+}
+
+pub struct Duplicate {
+    pub key: String,
+    /// `repo#number` of each of its pull requests.
+    pub prs: Vec<String>,
+}
+
+pub fn pull_requests(org: &str, project: &str) -> Result<PullRequests> {
     let fetch = |fields: &str| {
         graphql(&format!(
             r#"{{
@@ -74,7 +87,12 @@ pub fn pull_requests(org: &str, project: &str) -> Result<(String, HashMap<String
         }
     }
     let nodes = Value::Array(merged.into_values().map(Value::Object).collect());
-    Ok((login, by_issue_key(&nodes)))
+    let (by_key, duplicates) = by_issue_key(&nodes);
+    Ok(PullRequests {
+        login,
+        by_key,
+        duplicates,
+    })
 }
 
 /// The current state of the given pull requests, by issue key. Far quicker than the search
@@ -83,7 +101,7 @@ pub fn pull_requests_by_id(ids: &[String]) -> Result<HashMap<String, Pr>> {
     let ids = serde_json::to_string(ids)?;
     let fields = PR_FIELD_PARTS.join(" ");
     let query = format!("{{ nodes(ids: {ids}) {{ ... on PullRequest {{ {fields} }} }} }}");
-    Ok(by_issue_key(&graphql(&query)?["nodes"]))
+    Ok(by_issue_key(&graphql(&query)?["nodes"]).0) // the full search reports duplicates
 }
 
 /// Run a GraphQL query and return its data. GitHub answers 200 even when it gave up on the
@@ -106,8 +124,10 @@ fn graphql(query: &str) -> Result<Value> {
     Ok(response["data"].take())
 }
 
-fn by_issue_key(nodes: &Value) -> HashMap<String, Pr> {
-    let mut prs = HashMap::new();
+/// The pull requests by issue key, keeping the first by repository and number when an issue has
+/// several, and those issues.
+fn by_issue_key(nodes: &Value) -> (HashMap<String, Pr>, Vec<Duplicate>) {
+    let mut grouped: HashMap<String, Vec<Pr>> = HashMap::new();
     for node in nodes
         .as_array()
         .into_iter()
@@ -116,10 +136,26 @@ fn by_issue_key(nodes: &Value) -> HashMap<String, Pr> {
     {
         let pr = parse_pr(node);
         if let Some(key) = issue_key_of(&pr.branch) {
-            prs.insert(key, pr);
+            grouped.entry(key).or_default().push(pr);
         }
     }
-    prs
+    let mut prs = HashMap::new();
+    let mut duplicates = Vec::new();
+    for (key, mut group) in grouped {
+        group.sort_by(|a, b| (&a.repo_slug, a.number).cmp(&(&b.repo_slug, b.number)));
+        if group.len() > 1 {
+            duplicates.push(Duplicate {
+                key: key.clone(),
+                prs: group
+                    .iter()
+                    .map(|pr| format!("{}#{}", pr.repo(), pr.number))
+                    .collect(),
+            });
+        }
+        prs.insert(key, group.swap_remove(0));
+    }
+    duplicates.sort_by(|a, b| a.key.cmp(&b.key));
+    (prs, duplicates)
 }
 
 fn parse_pr(node: &Value) -> Pr {

@@ -2,9 +2,9 @@
 source: src/ui.rs
 expression: "rendered(&app, 80, 6)"
 ---
-"  Issue                       Status       Dev       Age   PR         CI Repo   "
+"  Issue                  Status       Dev       Age   Diff            CI Repo   "
 "▾ Review (1) ───────────────────────────────────────────────────────────────────"
-"  INI-3 Export as CSV         Review       Casey     1d                  backend"
+"  INI-3 Export as CSV    Review       Casey     1d                       backend"
 "                                                                                "
 "                                                                                "
 "/csv  (esc clears)                                                              "

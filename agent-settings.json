@@ -1,11 +1,31 @@
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set-option -p -t \"$TMUX_PANE\" @work_agent_busy 1"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set-option -p -t \"$TMUX_PANE\" @work_agent_busy 1"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "printf '{\"terminalSequence\":\"\\\\u0007\"}'"
+            "command": "tmux set-option -p -t \"$TMUX_PANE\" -u @work_agent_busy; printf '{\"terminalSequence\":\"\\\\u0007\"}'"
           }
         ]
       }
@@ -15,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '{\"terminalSequence\":\"\\\\u0007\"}'"
+            "command": "tmux set-option -p -t \"$TMUX_PANE\" -u @work_agent_busy; printf '{\"terminalSequence\":\"\\\\u0007\"}'"
           }
         ]
       }

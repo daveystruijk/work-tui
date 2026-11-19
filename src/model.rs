@@ -23,7 +23,8 @@ pub struct Issue {
     pub is_subtask: bool,
     pub is_epic: bool,
     /// Whether the issue is a row of the list. Epics are context for their tasks, and an issue
-    /// with subtasks is represented by those subtasks; both are loaded but not listed.
+    /// with subtasks is represented by those subtasks; both are loaded but not listed, unless
+    /// they have a pull request of their own.
     pub listed: bool,
     /// What the issue is filed under: its parent, or for a subtask its parent's parent.
     pub epic: Option<Parent>,
@@ -37,6 +38,15 @@ pub struct Issue {
 }
 
 impl Issue {
+    /// The issue that moves between the board and the backlog for this one: a subtask is on the
+    /// board exactly when its parent is.
+    pub fn board_key(&self) -> &str {
+        match &self.parent {
+            Some(parent) if self.is_subtask => &parent.key,
+            _ => &self.key,
+        }
+    }
+
     pub fn in_progress(&self) -> bool {
         self.status.to_lowercase().contains("progress")
     }
@@ -123,6 +133,8 @@ pub struct Data {
     pub prs: HashMap<String, Pr>,
     /// Workspace URLs by issue key.
     pub workspaces: HashMap<String, String>,
+    /// Keys of the issues whose branch a repository's main checkout has checked out.
+    pub main_checkouts: HashSet<String>,
     pub me: Person,
     pub github_login: String,
 }
@@ -197,6 +209,7 @@ pub fn section_fold(section: &str) -> String {
 /// on the name of an issue's parent, and ignores what is collapsed.
 pub fn rows(
     issues: &[Issue],
+    prs: &HashMap<String, Pr>,
     sections: &[String],
     collapsed: &HashSet<String>,
     query: &str,
@@ -217,7 +230,8 @@ pub fn rows(
         let members: Vec<usize> = issues
             .iter()
             .enumerate()
-            .filter(|(_, issue)| issue.section == *section && issue.listed)
+            .filter(|(_, issue)| issue.section == *section)
+            .filter(|(_, issue)| issue.listed || prs.contains_key(&issue.key))
             .filter(|(_, issue)| matches(&searchable(issue), query))
             .map(|(index, _)| index)
             .collect();
@@ -282,4 +296,31 @@ pub fn rows(
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_issue_with_subtasks_is_listed_only_with_a_pull_request_of_its_own() {
+        let issue = |key: &str, listed: bool| Issue {
+            key: key.to_owned(),
+            section: "Review".to_owned(),
+            listed,
+            ..Issue::default()
+        };
+        let issues = [issue("INI-1", false), issue("INI-2", true)];
+        let sections = ["Review".to_owned()];
+        let keys = |prs: &HashMap<String, Pr>| -> Vec<String> {
+            rows(&issues, prs, &sections, &HashSet::new(), "")
+                .into_iter()
+                .filter(|row| row.kind == Kind::Issue)
+                .map(|row| row.key)
+                .collect()
+        };
+        assert_eq!(keys(&HashMap::new()), ["INI-2"]);
+        let prs = HashMap::from([("INI-1".to_owned(), Pr::default())]);
+        assert_eq!(keys(&prs), ["INI-1", "INI-2"]);
+    }
 }

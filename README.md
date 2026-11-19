@@ -29,22 +29,24 @@ work
 | `j` `k` `g` `G` `ctrl-d` `ctrl-u` | Move |
 | `h` `l` `space` | Collapse, expand, toggle the section |
 | `/` | Search; `esc` clears |
-| `enter` | Switch: worktree and tmux window with a live diff (`hunk diff --watch`) next to the agent. If the issue is not yours and In Progress yet, asks before assigning it to you and moving it to In Progress and the board |
+| `enter` | Switch: worktree and tmux window with a live diff of everything the branch changes against main, committed or not (`hunk diff --watch <merge-base>`) next to the agent. If the issue is unassigned, or yours but not In Progress yet, asks before assigning it to you and moving it to In Progress and the board. Someone else's issue is only checked out: worktree and diff window, no agent, nothing changed in Jira |
 | `f` | Finish: commit, push, have the agent write a short description, open the pull request or mark the agent's draft ready, enable auto-merge, move to Review |
-| `n` | New task in the same epic as the selected issue |
+| `n` | New task in the epic of the selected issue or backlog group, named in the prompt; `tab` files it under no epic |
 | `a` | Tag the issue with a repository: sets that Jira label and removes other repository labels; other labels are left alone |
 | `<` `>` | Move the issue from the backlog onto the board, or back |
 | `c` | Failed CI output of the pull request |
 | `C` | Open the issue with an agent told to fix CI |
 | `b` | Diff against main in hunk, in a pane beside the list; reads the branch directly, no worktree is created |
+| `m` | Check out the issue's branch in the repository's main checkout (`$REPOS_DIR/<repo>`), fast-forwarded to origin, or detached at the branch's commit when a worktree has the branch; refuses when the checkout has uncommitted changes |
+| `x` | Remove the issue's worktree (`momo worktree rm`) and close its tmux window; refuses when a worktree has uncommitted changes. The branch stays |
 | `V` | Approve the pull request and enable auto-merge |
 | `o` `t` | Open pull request, ticket in the browser |
 | `r` | Refresh |
 | `q` | Quit |
 
-The list follows the project's board: one section per column from Review back to the first, then the backlog (collapsed at start). The board columns are flat, with an issue's epic in the sidebar; the backlog is grouped by epic. An issue with subtasks is not listed itself: its subtasks are, each in the column of its own status. Issues past Review are not loaded.
+The list follows the project's board: one section per column from Review back to the first, then the backlog (collapsed at start). The board columns are flat, with an issue's epic in the sidebar; the backlog is grouped by epic. An issue with subtasks is not listed itself, unless it has a PR of its own: its subtasks are, each in the column of its own status, and each works like a task with its own branch and PR. Claiming a subtask or moving it between board and backlog moves its parent, since Jira keeps a subtask wherever its parent is. An issue with more than one open PR is reported as an error; only one of them is shown. Issues past Review are not loaded.
 
-A badge between an issue's key and its title says what stands out about it: `DIFF` (green) while its diff is open in a pane, `WORK` (blue) when it has a worktree, `NEW` (yellow) on a pull request that is yours to review and that you have not looked at yet; opening its diff (`b`) or the pull request (`o`) clears it, and it is remembered across restarts in `~/.local/state/work/`. The first two also tint the row.
+A badge between an issue's key and its title says what stands out about it: `DIFF` (green) while its diff is open in a pane, `MAIN` (magenta) when a repository's main checkout is on its branch (`m`), `WORK` (blue) when it has a worktree, with a spinner while its agent is working, `NEW` (yellow) on a pull request that is yours to review and that you have not looked at yet; opening its diff (`b`) or the pull request (`o`) clears it, and it is remembered across restarts in `~/.local/state/work/`. The first three also tint the row.
 
 An issue's repository is the one its Jira label names, shown in the Repo column. `a` tags an issue by hand; when no label matches a repository, switch asks once and adds the label.
 
@@ -54,7 +56,7 @@ What the agent is told lives in `prompts/`: `implement.md` for `enter`, `fix-ci.
 
 ## Agent sessions
 
-Sessions started with `enter` or `C` get the hooks in `agent-settings.json`: the terminal bell rings when the agent finishes a turn or needs an answer, which marks the ticket's tab in tmux until you visit it. Your other Claude sessions are not affected.
+Sessions started with `enter` or `C` get the hooks in `agent-settings.json`: the terminal bell rings when the agent finishes a turn or needs an answer, which marks the ticket's tab in tmux until you visit it. They also keep a pane option set while the agent works, which puts the spinner in the `WORK` badge. Your other Claude sessions are not affected.
 
 ## Development
 

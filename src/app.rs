@@ -12,18 +12,18 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::actions::{self, Context, FIX_CI, IMPLEMENT, Issues, Target};
 use crate::config::PROJECT;
 use crate::model::{
-    self, BACKLOG, CheckState, Data, Issue, Kind, Pr, Row, normalize, section_fold,
+    self, BACKLOG, CheckState, Data, Issue, Kind, Parent, Pr, Row, normalize, section_fold,
 };
 use crate::{github, shell};
 
 const REFRESH: Duration = Duration::from_secs(60);
 const CI_REFRESH: Duration = Duration::from_secs(10);
-const DIFFS_REFRESH: Duration = Duration::from_secs(1); // one quick tmux call; a closed diff should clear promptly
+const PANES_REFRESH: Duration = Duration::from_secs(1); // one quick tmux call; a closed diff or a finished agent should show promptly
 
 /// What a background thread reports back; the label identifies it in the status line.
 pub enum Msg {
     Issues(Result<Issues>),
-    Prs(Result<(String, HashMap<String, Pr>)>),
+    Prs(Result<github::PullRequests>),
     /// Fresh state of the pull requests whose CI was running.
     CiUpdate(Result<HashMap<String, Pr>>),
     Done(String, Result<String>),
@@ -33,13 +33,16 @@ pub enum Msg {
 /// Something to do with an issue that needs its repository.
 #[derive(Clone, Copy)]
 pub enum Intent {
-    /// Open the issue; asks first when that would put it on my name.
+    /// Open the issue; asks first when that would put it on my name. Someone else's issue is only
+    /// checked out, without an agent.
     Switch,
     /// Open the issue and make it mine, after confirmation.
     Claim,
     FixCi,
     Finish,
     Diff,
+    /// Check out the issue's branch in the repository's main checkout.
+    Main,
     /// Only record the repository on the issue.
     Tag,
 }
@@ -47,7 +50,11 @@ pub enum Intent {
 pub enum Mode {
     List,
     Search,
-    NewIssue(String),
+    /// Typing the summary of a new task, to be filed under `epic`.
+    NewIssue {
+        summary: String,
+        epic: Option<Parent>,
+    },
     PickRepo {
         intent: Intent,
         issue: Box<Issue>,
@@ -91,9 +98,11 @@ pub struct App {
     refreshed_at: Instant,
     /// When the pull requests with running CI were last fetched, or a fetch was started.
     ci_checked_at: Instant,
-    /// Keys of the issues whose diff is open in a pane, as of `diffs_checked_at`.
+    /// Keys of the issues whose diff is open in a pane, as of `panes_checked_at`.
     pub open_diffs: HashSet<String>,
-    diffs_checked_at: Instant,
+    /// Keys of the issues with an agent at work, as of `panes_checked_at`.
+    pub busy_agents: HashSet<String>,
+    panes_checked_at: Instant,
     /// Issue keys whose pull request was already waiting for review at the last refresh.
     reviewable: Option<HashSet<String>>,
     /// Ids of the pull requests I have looked at, kept on disk; `None` until the first load of
@@ -126,7 +135,8 @@ impl App {
             refreshed_at: Instant::now(),
             ci_checked_at: Instant::now(),
             open_diffs: HashSet::new(),
-            diffs_checked_at: Instant::now(),
+            busy_agents: HashSet::new(),
+            panes_checked_at: Instant::now(),
             reviewable: None,
         }
     }
@@ -134,6 +144,7 @@ impl App {
     pub fn rows(&self) -> Vec<Row> {
         model::rows(
             &self.data.issues,
+            &self.data.prs,
             &self.data.sections,
             &self.collapsed,
             &self.query,
@@ -167,9 +178,11 @@ impl App {
         if self.ci_checked_at.elapsed() >= CI_REFRESH {
             self.refresh_running_ci();
         }
-        if self.diffs_checked_at.elapsed() >= DIFFS_REFRESH {
-            self.diffs_checked_at = Instant::now();
-            self.open_diffs = actions::open_diffs();
+        if self.panes_checked_at.elapsed() >= PANES_REFRESH {
+            self.panes_checked_at = Instant::now();
+            let panes = actions::panes();
+            self.open_diffs = panes.diffs;
+            self.busy_agents = panes.busy_agents;
         }
     }
 
@@ -199,9 +212,13 @@ impl App {
             return;
         }
         self.refreshing = 2;
-        let (context, sender) = (self.context.clone(), self.sender.clone());
+        let (context, sender, repos) = (
+            self.context.clone(),
+            self.sender.clone(),
+            self.repos.clone(),
+        );
         thread::spawn(move || {
-            let _ = sender.send(Msg::Issues(actions::load_issues(&context)));
+            let _ = sender.send(Msg::Issues(actions::load_issues(&context, &repos)));
         });
         let (context, sender, repos) = (
             self.context.clone(),
@@ -231,6 +248,7 @@ impl App {
                 self.data.issues = loaded.issues;
                 self.data.sections = loaded.sections;
                 self.data.workspaces = loaded.workspaces;
+                self.data.main_checkouts = loaded.main_checkouts;
                 self.data.me = loaded.me;
                 self.loaded = true;
                 self.finish_refresh();
@@ -239,12 +257,27 @@ impl App {
                     .and_then(|selected| rows.iter().position(|row| same(row, &selected)))
                     .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
             }
-            Msg::Prs(Ok((login, prs))) => {
+            Msg::Prs(Ok(found)) => {
+                let prs = found.by_key;
                 self.notify_reviewable(&prs);
                 self.update_seen(&prs);
-                self.data.github_login = login;
+                self.data.github_login = found.login;
                 self.data.prs = prs;
                 self.finish_refresh();
+                if !found.duplicates.is_empty() {
+                    let listed: Vec<String> = found
+                        .duplicates
+                        .iter()
+                        .map(|duplicate| format!("{} ({})", duplicate.key, duplicate.prs.join(", ")))
+                        .collect();
+                    self.message = Some((
+                        format!(
+                            "Several open PRs for one issue, showing only the first: {}",
+                            listed.join("; ")
+                        ),
+                        true,
+                    ));
+                }
             }
             Msg::CiUpdate(Ok(prs)) => self.data.prs.extend(prs),
             Msg::CiUpdate(Err(error)) => {
@@ -399,12 +432,19 @@ impl App {
                     self.launch(Intent::Claim, *issue, repo, add_label);
                 }
             }
-            Mode::NewIssue(mut summary) => match key.code {
+            Mode::NewIssue {
+                mut summary,
+                mut epic,
+            } => match key.code {
                 KeyCode::Esc => {}
-                KeyCode::Enter => self.create_task(summary),
+                KeyCode::Enter => self.create_task(summary, epic),
                 code => {
-                    edit(&mut summary, code);
-                    self.mode = Mode::NewIssue(summary);
+                    if code == KeyCode::Tab {
+                        epic = None; // file it under no epic at all
+                    } else {
+                        edit(&mut summary, code);
+                    }
+                    self.mode = Mode::NewIssue { summary, epic };
                 }
             },
             Mode::PickRepo {
@@ -507,13 +547,20 @@ impl App {
             KeyCode::Esc => self.query.clear(),
             KeyCode::Char('/') => self.mode = Mode::Search,
             KeyCode::Char('r') => self.refresh(),
-            KeyCode::Char('n') => self.mode = Mode::NewIssue(String::new()),
+            KeyCode::Char('n') => {
+                self.mode = Mode::NewIssue {
+                    summary: String::new(),
+                    epic: self.epic_under_cursor(),
+                }
+            }
             KeyCode::Enter => self.start(Intent::Switch),
             KeyCode::Char('C') => self.start(Intent::FixCi),
             KeyCode::Char('f') => self.start(Intent::Finish),
             KeyCode::Char('b') => self.start(Intent::Diff),
+            KeyCode::Char('m') => self.start(Intent::Main),
             KeyCode::Char('c') => self.show_ci_logs(),
             KeyCode::Char('V') => self.approve(),
+            KeyCode::Char('x') => self.remove_worktree(),
             KeyCode::Char('a') => {
                 if let Some(issue) = self.selected_issue() {
                     self.pick_repo(Intent::Tag, issue, self.repos.clone(), false);
@@ -609,16 +656,24 @@ impl App {
             })
             .cloned();
         let pr = self.data.prs.get(&key).cloned();
+        let is_someone_elses = issue
+            .assignee
+            .as_ref()
+            .is_some_and(|person| person != &self.data.me);
         let target = Target {
             issue,
             parent,
             pr,
             repo,
-            add_label,
+            add_label: add_label && !is_someone_elses, // their issue is not ours to label
         };
         let (context, me) = (self.context.clone(), self.data.me.clone());
         let is_mine = target.issue.in_progress() && target.issue.assignee.as_ref() == Some(&me);
         match intent {
+            Intent::Switch if is_someone_elses => self
+                .background(format!("Checking out {key}"), move || {
+                    actions::checkout(&context, &target)
+                }),
             Intent::Switch if !is_mine => {
                 self.mode = Mode::ConfirmClaim {
                     issue: Box::new(target.issue),
@@ -638,6 +693,10 @@ impl App {
             Intent::Finish => self.background(format!("Finishing {key}"), move || {
                 actions::finish(&context, &target)
             }),
+            Intent::Main => self.background(
+                format!("Checking out {key} in {}", target.repo),
+                move || actions::checkout_in_main(&context, &target),
+            ),
             Intent::Tag => unreachable!("handled above"),
             Intent::Diff => {
                 self.mark_seen_pr(&key);
@@ -648,16 +707,24 @@ impl App {
         }
     }
 
-    /// Create a task in the same epic as the selected issue.
-    fn create_task(&mut self, summary: String) {
+    /// The epic of the selected issue, or the selected backlog group itself.
+    fn epic_under_cursor(&self) -> Option<Parent> {
+        let row = self.rows().get(self.selected)?.clone();
+        if row.kind == Kind::Parent {
+            return Some(Parent {
+                key: row.key,
+                summary: row.title,
+            });
+        }
+        self.selected_issue()?.epic
+    }
+
+    fn create_task(&mut self, summary: String, epic: Option<Parent>) {
         let summary = summary.trim().to_owned();
         if summary.is_empty() {
             return;
         }
-        let parent = self
-            .selected_issue()
-            .and_then(|issue| issue.epic)
-            .map(|epic| epic.key);
+        let parent = epic.map(|epic| epic.key);
         let context = self.context.clone();
         self.background(format!("Creating \"{summary}\""), move || {
             let key = context
@@ -697,14 +764,29 @@ impl App {
         self.background(
             format!("Moving {} to {destination}", issue.key),
             move || {
+                let moved = issue.board_key();
                 if to_backlog {
-                    context.jira.move_to_backlog(&issue.key)?;
+                    context.jira.move_to_backlog(moved)?;
                 } else {
-                    context.jira.move_to_board(&issue.key)?;
+                    context.jira.move_to_board(moved)?;
                 }
-                Ok(format!("Moved {} to {destination}", issue.key))
+                Ok(format!("Moved {moved} to {destination}"))
             },
         );
+    }
+
+    fn remove_worktree(&mut self) {
+        let Some(key) = self.selected_issue().map(|issue| issue.key) else {
+            return;
+        };
+        if !self.data.workspaces.contains_key(&key) {
+            self.message = Some((format!("{key} has no worktree"), false));
+            return;
+        }
+        let context = self.context.clone();
+        self.background(format!("Removing the worktree of {key}"), move || {
+            actions::remove_worktree(&context, &key)
+        });
     }
 
     fn approve(&mut self) {
@@ -726,12 +808,16 @@ impl App {
             self.mark_seen_pr(&key);
         }
         let url = match code {
-            KeyCode::Char('o') => self.data.prs.get(&key).map(|pr| pr.url.clone()),
-            _ => Some(self.jira_url(&key)),
+            KeyCode::Char('o') => match self.data.prs.get(&key) {
+                Some(pr) => pr.url.clone(),
+                None => {
+                    self.message = Some((format!("{key} has no open PR"), true));
+                    return;
+                }
+            },
+            _ => self.jira_url(&key),
         };
-        if let Some(url) = url
-            && let Err(error) = shell::open_in_browser(&url)
-        {
+        if let Err(error) = shell::open_in_browser(&url) {
             self.message = Some((format!("{error:#}"), true));
         }
     }
