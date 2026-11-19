@@ -68,6 +68,17 @@ pub struct Check {
     pub run_id: Option<String>,
 }
 
+/// Whether a pull request merges cleanly into its base branch.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Mergeable {
+    Clean,
+    Conflicting,
+    /// GitHub has not worked it out yet: it does so in the background once asked, and again
+    /// whenever the base branch moves.
+    #[default]
+    Unknown,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Review {
     Approved,
@@ -87,8 +98,10 @@ pub struct Pr {
     pub branch: String,
     pub author: String,
     pub is_draft: bool,
+    /// Merged or closed since it was found.
+    pub is_closed: bool,
     pub review: Review,
-    pub has_conflicts: bool,
+    pub mergeable: Mergeable,
     pub is_mine: bool,
     /// I have not reviewed it yet, or a new review was requested from me since.
     pub awaits_my_review: bool,
@@ -108,7 +121,7 @@ impl Pr {
     /// resolve conflicts, fix CI or answer review feedback; on someone else's, review it.
     pub fn is_actionable(&self) -> bool {
         if self.is_mine {
-            return self.has_conflicts
+            return self.mergeable == Mergeable::Conflicting
                 || self.ci() == Some(CheckState::Failed)
                 || self.review == Review::ChangesRequested
                 || self.unresolved > 0;
@@ -175,6 +188,15 @@ pub fn resolve_prs(
         }
     }
     (resolved, ambiguous)
+}
+
+/// The key of the row standing in for the `count`th task created here, until Jira returns its key.
+pub fn placeholder_key(count: usize) -> String {
+    format!("…{count}")
+}
+
+pub fn is_placeholder(key: &str) -> bool {
+    key.starts_with('…')
 }
 
 /// The issue key a branch name starts with: `INI-12-fix-it` gives `INI-12`.

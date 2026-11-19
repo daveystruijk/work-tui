@@ -6,9 +6,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::app::{App, Mode};
-use crate::model::{self, CheckState, Issue, Kind, Pr, Review, Row};
+use crate::config::PROJECT;
+use crate::model::{self, CheckState, Issue, Kind, Mergeable, Pr, Review, Row};
 
-const PR_WIDTH: usize = 14; // `+1.2k -340 ⚠12`
+const PR_WIDTH: usize = 16; // `+1.2k -340 ✉12 ⚠`
 const MUTED: Color = Color::DarkGray;
 const SELECTION: Color = Color::Rgb(66, 66, 88);
 const PARENT_SHADE: Color = Color::Rgb(42, 42, 55); // sets parents apart from the tickets under them
@@ -66,7 +67,14 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_claim_confirmation(frame, issue, main);
         }
     }
+    let state = refresh_state(app);
+    let [footer, state_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(width(&state.content) as u16),
+    ])
+    .areas(footer);
     frame.render_widget(Paragraph::new(footer_line(app)), footer);
+    frame.render_widget(Paragraph::new(Line::from(state)), state_area);
 }
 
 fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
@@ -149,12 +157,16 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
             )
         };
         let newly_reviewable = issue.is_some_and(|issue| app.awaits_first_look(issue));
-        let badge = if app.open_diffs.contains(&row.key) {
+        let spinner = SPINNER[app.spinner % SPINNER.len()];
+        let badge = if app.pending.contains_key(&row.key) {
+            badge(format!("  {spinner}  "), Color::Yellow) // an action on it is under way
+        } else if app.is_merging(&row.key) {
+            badge(format!(" {spinner} MERGE "), Color::Green)
+        } else if app.open_diffs.contains(&row.key) {
             badge("  DIFF  ".to_owned(), Color::Green)
         } else if app.data.main_checkouts.contains(&row.key) {
             badge("  MAIN  ".to_owned(), Color::Magenta)
         } else if app.busy_agents.contains(&row.key) {
-            let spinner = SPINNER[app.spinner % SPINNER.len()];
             badge(format!(" {spinner} WORK "), Color::Yellow)
         } else if app.data.workspaces.contains_key(&row.key) {
             badge("  WORK  ".to_owned(), Color::LightBlue)
@@ -192,15 +204,22 @@ fn render_list(frame: &mut Frame, app: &App, rows: &[Row], area: Rect) {
             None => spans.push(Span::raw(" ".repeat(status_width + 2 + 8 + 2 + 4))),
         }
         spans.push(Span::raw("  "));
-        let mut pr_spans = pr_cell(pr);
-        pr_spans.push(Span::raw("  "));
-        pr_spans.push(ci_span(pr.and_then(Pr::ci), app.spinner));
-        if pr.is_some_and(|pr| !pr.is_actionable()) {
-            for span in &mut pr_spans {
-                span.style = Style::new().fg(MUTED); // nothing for me to do here
-            }
+        let muted = pr.is_some_and(|pr| !pr.is_actionable()); // nothing for me to do here
+        if !app.prs_loaded && issue.is_some() {
+            spans.push(Span::styled(
+                pad(&spinner.to_string(), PR_WIDTH),
+                Style::new().fg(MUTED),
+            ));
+        } else {
+            spans.extend(pr_cell(pr, muted));
         }
-        spans.extend(pr_spans);
+        spans.push(Span::raw("  "));
+        let ci = ci_span(pr.and_then(Pr::ci), app.spinner);
+        spans.push(if muted {
+            ci.style(Style::new().fg(MUTED))
+        } else {
+            ci
+        });
         let repo = issue.map_or("", |_| repos[row.issue.unwrap_or_default()].as_str());
         spans.push(Span::styled(
             format!(" {}", pad(repo, repo_width)),
@@ -235,34 +254,50 @@ fn issue_cell(row: &Row, badge: Span<'static>, width: usize) -> Vec<Span<'static
         _ if row.indented => ("  ", row.title.clone(), Style::new()),
         _ => ("", row.title.clone(), Style::new()),
     };
+    let shown_key = if model::is_placeholder(&row.key) {
+        format!("{PROJECT}-…") // Jira has not given it a key yet
+    } else {
+        row.key.clone()
+    };
     let badge_gap = if badge.content.is_empty() { "" } else { " " };
     let taken = self::width(prefix) + self::width(&badge.content) + self::width(badge_gap);
-    let title_width = width.saturating_sub(taken + self::width(&row.key) + 1);
+    let title_width = width.saturating_sub(taken + self::width(&shown_key) + 1);
     vec![
         Span::raw(prefix),
-        Span::styled(row.key.clone(), Style::new().fg(Color::Blue)),
+        Span::styled(shown_key, Style::new().fg(Color::Blue)),
         Span::raw(badge_gap),
         badge,
         Span::styled(format!(" {}", pad(&title, title_width)), style),
     ]
 }
 
-/// `+72 -14 ⚠2`: the lines added and removed coloured by review state, then the unresolved
-/// review threads.
-fn pr_cell(pr: Option<&Pr>) -> Vec<Span<'static>> {
+/// `+72 -14 ✉2 ⚠`: the lines added and removed coloured by review state, the unresolved review
+/// threads, and a warning when the pull request has merge conflicts. `muted` greys out all but
+/// the warning, which stands out even on someone else's pull request.
+fn pr_cell(pr: Option<&Pr>, muted: bool) -> Vec<Span<'static>> {
     let Some(pr) = pr else {
         return vec![Span::raw(" ".repeat(PR_WIDTH))];
     };
+    let style = |style: Style| if muted { Style::new().fg(MUTED) } else { style };
     let changes = format!("+{} -{}", compact(pr.additions), compact(pr.deletions));
     let unresolved = if pr.unresolved > 0 {
-        format!(" ⚠{}", pr.unresolved)
+        format!(" ✉{}", pr.unresolved)
     } else {
         String::new()
     };
-    let padding = PR_WIDTH.saturating_sub(width(&changes) + width(&unresolved));
+    let conflict = if pr.mergeable == Mergeable::Conflicting {
+        " ⚠"
+    } else {
+        ""
+    };
+    let padding = PR_WIDTH.saturating_sub(width(&changes) + width(&unresolved) + width(conflict));
     vec![
-        Span::styled(changes, review_style(pr)),
-        Span::styled(unresolved, Style::new().fg(Color::Yellow)),
+        Span::styled(changes, style(review_style(pr))),
+        Span::styled(unresolved, style(Style::new())),
+        Span::styled(
+            conflict,
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" ".repeat(padding)),
     ]
 }
@@ -285,6 +320,30 @@ fn review_style(pr: &Pr) -> Style {
         Review::ChangesRequested => Style::new().fg(Color::Red),
         Review::Awaited => Style::new(),
     }
+}
+
+/// What the refresh is loading, or how long ago it finished.
+fn refresh_state(app: &App) -> Span<'static> {
+    let (state, style) = if app.is_refreshing() {
+        let loading: Vec<&str> = [(app.loading_issues, "issues"), (app.loading_prs, "PRs")]
+            .into_iter()
+            .filter_map(|(loading, what)| loading.then_some(what))
+            .collect();
+        let spinner = SPINNER[app.spinner % SPINNER.len()];
+        (
+            format!("{spinner} loading {}", loading.join(", ")),
+            Style::new().fg(Color::Yellow),
+        )
+    } else {
+        let seconds = app.refreshed_at.elapsed().as_secs();
+        let ago = match seconds {
+            0..10 => "just now".to_owned(),
+            10..60 => format!("{seconds}s ago"),
+            _ => format!("{}m ago", seconds / 60),
+        };
+        (format!("updated {ago}"), Style::new().fg(MUTED))
+    };
+    Span::styled(format!(" {state}"), style)
 }
 
 fn ci_span(state: Option<CheckState>, spinner: usize) -> Span<'static> {
@@ -389,8 +448,10 @@ fn pr_lines(
         (_, Review::Awaited) => "Awaiting review",
     };
     let mut state = review.to_owned();
-    if pr.has_conflicts {
-        state.push_str(", conflicts");
+    match pr.mergeable {
+        Mergeable::Conflicting => state.push_str(", conflicts"),
+        Mergeable::Unknown => state.push_str(", checking for conflicts"),
+        Mergeable::Clean => {}
     }
     if pr.auto_merge {
         state.push_str(", auto-merge");
@@ -657,6 +718,7 @@ mod tests {
         };
         app.now = now;
         app.loaded = true;
+        app.prs_loaded = true;
         app.collapsed.clear();
         app.data = Data {
             sections: ["Review", "In Progress", "Backlog"]
@@ -684,6 +746,7 @@ mod tests {
                     additions: 72,
                     deletions: 14,
                     unresolved: 1,
+                    mergeable: Mergeable::Conflicting,
                     checks: vec![
                         check("lint", CheckState::Passed),
                         check("build", CheckState::Failed),
@@ -747,6 +810,26 @@ mod tests {
         assert!(rendered(&app, 80, 8).contains("  WORK  "));
         app.busy_agents.insert("INI-2".to_owned());
         assert!(rendered(&app, 80, 8).contains(" ⠋ WORK "));
+    }
+
+    #[test]
+    fn what_is_still_on_its_way_spins() {
+        let mut app = app();
+        app.prs_loaded = false;
+        app.pending
+            .insert("INI-3".to_owned(), "Moving INI-3 to the board".to_owned());
+        app.data.issues.push(Issue {
+            key: model::placeholder_key(1),
+            summary: "Export as PDF".to_owned(),
+            listed: true,
+            section: "Backlog".to_owned(),
+            ..Issue::default()
+        });
+        app.pending.insert(
+            model::placeholder_key(1),
+            "Creating \"Export as PDF\"".to_owned(),
+        );
+        insta::assert_snapshot!(rendered(&app, 80, 9));
     }
 
     #[test]

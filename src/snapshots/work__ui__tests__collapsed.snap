@@ -2,9 +2,9 @@
 source: src/ui.rs
 expression: "rendered(&app, 80, 6)"
 ---
-"  Issue                  Status       Dev       Age   Diff            CI Repo   "
+"  Issue                Status       Dev       Age   Diff              CI Repo   "
 "▸ Review (1) ───────────────────────────────────────────────────────────────────"
 "▾ In Progress (1) ──────────────────────────────────────────────────────────────"
-"  INI-2   WORK   Add th… In Progress  Casey     2h    +72 -14 ⚠1      ✗  backend"
+"  INI-2   WORK   Add … In Progress  Casey     2h    +72 -14 ✉1 ⚠      ✗  backend"
 "▾ Backlog (1) ──────────────────────────────────────────────────────────────────"
-"⏎ switch  f finish  n new  a tag  / search  space fold  </> board/backlog  c CI "
+"⏎ switch  f finish  n new  a tag  / search  space fold  </> boa updated just now"

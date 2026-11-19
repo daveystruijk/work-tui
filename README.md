@@ -39,7 +39,7 @@ work
 | `b` | Diff against main in hunk, in a pane beside the list; reads the branch directly, no worktree is created |
 | `m` | Check out the issue's branch in the repository's main checkout (`$REPOS_DIR/<repo>`), fast-forwarded to origin, or detached at the branch's commit when a worktree has the branch; refuses when the checkout has uncommitted changes |
 | `x` | Remove the issue's worktree (`momo worktree rm`) and close its tmux window; refuses when a worktree has uncommitted changes. The branch stays |
-| `V` | Approve the pull request and enable auto-merge |
+| `V` | Approve the pull request and enable auto-merge; the row shows `MERGE` until it is merged |
 | `o` `t` | Open pull request, ticket in the browser |
 | `r` | Refresh |
 | `q` | Quit |

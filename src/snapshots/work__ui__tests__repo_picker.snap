@@ -2,9 +2,9 @@
 source: src/ui.rs
 expression: "rendered(&app, 80, 12)"
 ---
-"  Issue                  Status       Dev       Age   Diff            CI Repo   "
+"  Issue                Status       Dev       Age   Diff              CI Repo   "
 "▾ Review (1) ───────────────────────────────────────────────────────────────────"
-"  INI-3 Export as CSV    Review       Casey     1d                       backend"
+"  INI-3 Export as CSV  Review       Casey     1d                         backend"
 "▾ In Progress (┌ Repository for INI-4 ──────────────────────────┐───────────────"
 "  INI-2   WORK │/end█                                           │     ✗  backend"
 "▾ Backlog (1) ─│ backend                                        │───────────────"
@@ -13,4 +13,4 @@ expression: "rendered(&app, 80, 12)"
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"type to filter  ↑/↓ select  ⏎ choose  esc cancel                                "
+"type to filter  ↑/↓ select  ⏎ choose  esc cancel                updated just now"

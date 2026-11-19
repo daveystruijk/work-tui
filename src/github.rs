@@ -5,7 +5,7 @@ use std::thread;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
-use crate::model::{Check, CheckState, Pr, Review, issue_key_of};
+use crate::model::{Check, CheckState, Mergeable, Pr, Review, issue_key_of};
 use crate::shell::run;
 
 /// What is fetched for each pull request, in three parts of similar cost. The search asks
@@ -85,11 +85,12 @@ pub fn pull_requests(org: &str, project: &str) -> Result<PullRequests> {
     })
 }
 
-/// The current state of the given pull requests. Far quicker than the search when there are
-/// only a few, which is what following a CI run needs.
+/// The current state of the given pull requests, including whether they were merged or closed
+/// since. Far quicker than the search when there are only a few, which is what following a CI
+/// run or an approved pull request on its way to merging needs.
 pub fn pull_requests_by_id(ids: &[String]) -> Result<Vec<Pr>> {
     let ids = serde_json::to_string(ids)?;
-    let fields = PR_FIELD_PARTS.join(" ");
+    let fields = format!("state {}", PR_FIELD_PARTS.join(" "));
     let query = format!("{{ nodes(ids: {ids}) {{ ... on PullRequest {{ {fields} }} }} }}");
     Ok(parse_prs(&graphql(&query)?["nodes"]))
 }
@@ -138,6 +139,7 @@ fn parse_pr(node: &Value) -> Pr {
         branch: text(&node["headRefName"]),
         author: text(&node["author"]["login"]),
         is_draft: node["isDraft"].as_bool().unwrap_or_default(),
+        is_closed: matches!(node["state"].as_str(), Some("MERGED" | "CLOSED")), // the search only finds open ones
         review: {
             let reviews = nodes(&node["latestOpinionatedReviews"]);
             let has = |state: &str| {
@@ -153,7 +155,11 @@ fn parse_pr(node: &Value) -> Pr {
                 Review::Awaited
             }
         },
-        has_conflicts: node["mergeable"].as_str() == Some("CONFLICTING"),
+        mergeable: match node["mergeable"].as_str() {
+            Some("MERGEABLE") => Mergeable::Clean,
+            Some("CONFLICTING") => Mergeable::Conflicting,
+            _ => Mergeable::Unknown,
+        },
         is_mine: node["viewerDidAuthor"].as_bool().unwrap_or_default(),
         awaits_my_review: node["viewerLatestReview"].is_null()
             || !node["viewerLatestReviewRequest"].is_null(),

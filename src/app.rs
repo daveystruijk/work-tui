@@ -12,7 +12,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::actions::{self, Context, FIX_CI, IMPLEMENT, Issues, Target};
 use crate::config::PROJECT;
 use crate::model::{
-    self, BACKLOG, CheckState, Data, Issue, Kind, Parent, Pr, Row, normalize, section_fold,
+    self, BACKLOG, CheckState, Data, Issue, Kind, Mergeable, Parent, Pr, Row, issue_key_of,
+    normalize, section_fold,
 };
 use crate::{github, shell};
 
@@ -27,6 +28,8 @@ pub enum Msg {
     /// Fresh state of the pull requests whose CI was running.
     CiUpdate(Result<Vec<Pr>>),
     Done(String, Result<String>),
+    /// A task was created: the placeholder row it replaces, and the issue as Jira has it.
+    Created(String, Result<Issue>),
     Logs(String, Result<String>),
 }
 
@@ -89,13 +92,27 @@ pub struct App {
     pub mode: Mode,
     /// Labels of the background work in flight.
     pub running: Vec<String>,
+    /// Issue keys with background work in flight, with its label.
+    pub pending: HashMap<String, String>,
+    /// Tasks created here that the Jira search does not return yet: placeholders while Jira is
+    /// still creating them, then the issue as Jira returned it.
+    provisional: Vec<Issue>,
+    created_count: usize,
+    /// Approved pull requests followed until they merge, by id, with their issue key.
+    merging: HashMap<String, String>,
+    /// Ids of pull requests seen merged or closed, which GitHub's search may still return for a
+    /// while.
+    closed_prs: HashSet<String>,
+    /// Whether the pull requests were loaded at least once.
+    pub prs_loaded: bool,
     /// The outcome of the last action, and whether it was an error.
     pub message: Option<(String, bool)>,
     pub now: DateTime<Utc>,
     pub spinner: usize,
-    /// Number of refresh requests still in flight.
-    refreshing: u8,
-    refreshed_at: Instant,
+    /// Whether a refresh is waiting for the issues and for the pull requests.
+    pub loading_issues: bool,
+    pub loading_prs: bool,
+    pub refreshed_at: Instant,
     /// When the pull requests with running CI were last fetched, or a fetch was started.
     ci_checked_at: Instant,
     /// Keys of the issues whose diff is open in a pane, as of `panes_checked_at`.
@@ -130,10 +147,17 @@ impl App {
             scroll: Cell::new(0),
             mode: Mode::List,
             running: Vec::new(),
+            pending: HashMap::new(),
+            provisional: Vec::new(),
+            created_count: 0,
+            merging: HashMap::new(),
+            closed_prs: HashSet::new(),
+            prs_loaded: false,
             message: None,
             now: Utc::now(),
             spinner: 0,
-            refreshing: 0,
+            loading_issues: false,
+            loading_prs: false,
             refreshed_at: Instant::now(),
             ci_checked_at: Instant::now(),
             open_diffs: HashSet::new(),
@@ -142,6 +166,11 @@ impl App {
             all_prs: Vec::new(),
             reviewable: None,
         }
+    }
+
+    /// Whether the issue's pull request was approved here and is on its way to merging.
+    pub fn is_merging(&self, key: &str) -> bool {
+        self.merging.values().any(|merging| merging == key)
     }
 
     pub fn rows(&self) -> Vec<Row> {
@@ -189,17 +218,26 @@ impl App {
         }
     }
 
-    /// Follow CI by re-fetching only the pull requests it is running on. The full search
-    /// takes several seconds and is a heavy query, too much to repeat every few seconds.
+    /// Follow CI, and GitHub working out whether a pull request has conflicts, by re-fetching
+    /// only the pull requests still waiting on either. The full search takes several seconds and
+    /// is a heavy query, too much to repeat every few seconds.
     fn refresh_running_ci(&mut self) {
         self.ci_checked_at = Instant::now();
         let running: Vec<String> = self
             .all_prs
             .iter()
-            .filter(|pr| pr.ci() == Some(CheckState::Running))
+            .filter(|pr| pr.ci() == Some(CheckState::Running) || pr.mergeable == Mergeable::Unknown)
             .map(|pr| pr.id.clone())
+            .chain(
+                self.merging
+                    .iter()
+                    .filter(|(_, key)| !self.pending.contains_key(*key)) // still being approved
+                    .map(|(id, _)| id.clone()),
+            )
+            .collect::<HashSet<String>>()
+            .into_iter()
             .collect();
-        if running.is_empty() || self.refreshing > 0 {
+        if running.is_empty() || self.is_refreshing() {
             return;
         }
         let sender = self.sender.clone();
@@ -210,10 +248,10 @@ impl App {
 
     /// Reload issues and pull requests side by side; the issues arrive well before GitHub answers.
     pub fn refresh(&mut self) {
-        if self.refreshing > 0 {
+        if self.is_refreshing() {
             return;
         }
-        self.refreshing = 2;
+        (self.loading_issues, self.loading_prs) = (true, true);
         let (context, sender, repos) = (
             self.context.clone(),
             self.sender.clone(),
@@ -232,6 +270,17 @@ impl App {
         });
     }
 
+    /// Run `job` in the background with a spinner on the issue's row until it is done.
+    fn background_for(
+        &mut self,
+        key: &str,
+        label: String,
+        job: impl FnOnce() -> Result<String> + Send + 'static,
+    ) {
+        self.pending.insert(key.to_owned(), label.clone());
+        self.background(label, job);
+    }
+
     fn background(&mut self, label: String, job: impl FnOnce() -> Result<String> + Send + 'static) {
         self.running.push(label.clone());
         let sender = self.sender.clone();
@@ -247,13 +296,17 @@ impl App {
                 let same = |row: &Row, other: &Row| {
                     row.kind == other.kind && row.key == other.key && row.section == other.section
                 };
+                self.provisional
+                    .retain(|issue| !loaded.issues.iter().any(|loaded| loaded.key == issue.key));
                 self.data.issues = loaded.issues;
+                self.data.issues.extend(self.provisional.iter().cloned());
                 self.data.sections = loaded.sections;
                 self.data.workspaces = loaded.workspaces;
                 self.data.main_checkouts = loaded.main_checkouts;
                 self.data.me = loaded.me;
                 self.resolve_prs(); // the labels may have changed
                 self.loaded = true;
+                self.loading_issues = false;
                 self.finish_refresh();
                 let rows = self.rows();
                 self.selected = selected
@@ -261,16 +314,30 @@ impl App {
                     .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
             }
             Msg::Prs(Ok(found)) => {
+                self.closed_prs
+                    .retain(|id| found.prs.iter().any(|pr| pr.id == *id)); // the search caught up with the rest
                 self.all_prs = found.prs;
+                self.all_prs.retain(|pr| !self.closed_prs.contains(&pr.id));
+                self.prs_loaded = true;
                 self.resolve_prs();
                 let prs = self.data.prs.clone();
                 self.notify_reviewable(&prs);
                 self.update_seen(&prs);
                 self.data.github_login = found.login;
+                self.loading_prs = false;
                 self.finish_refresh();
             }
             Msg::CiUpdate(Ok(updated)) => {
                 for pr in updated {
+                    if pr.is_closed {
+                        self.all_prs.retain(|known| known.id != pr.id);
+                        self.merging.remove(&pr.id);
+                        self.closed_prs.insert(pr.id);
+                        continue;
+                    }
+                    if !pr.auto_merge {
+                        self.merging.remove(&pr.id); // the approval did not get as far as auto-merge
+                    }
                     if let Some(known) = self.all_prs.iter_mut().find(|known| known.id == pr.id) {
                         *known = pr;
                     }
@@ -280,17 +347,49 @@ impl App {
             Msg::CiUpdate(Err(error)) => {
                 self.message = Some((format!("CI refresh failed: {error:#}"), true));
             }
-            Msg::Issues(Err(error)) | Msg::Prs(Err(error)) => {
-                self.message = Some((format!("Refresh failed: {error:#}"), true));
+            Msg::Issues(Err(error)) => {
+                self.message = Some((format!("Loading issues failed: {error:#}"), true));
+                self.loading_issues = false;
+                self.finish_refresh();
+            }
+            Msg::Prs(Err(error)) => {
+                self.message = Some((format!("Loading PRs failed: {error:#}"), true));
+                self.loading_prs = false;
                 self.finish_refresh();
             }
             Msg::Done(label, result) => {
                 self.running.retain(|running| *running != label);
+                self.pending.retain(|_, pending| *pending != label);
                 self.message = Some(match result {
                     Ok(outcome) => (outcome, false),
                     Err(error) => (format!("{label} failed: {error:#}"), true),
                 });
                 self.refresh();
+            }
+            Msg::Created(placeholder, result) => {
+                if let Some(label) = self.pending.remove(&placeholder) {
+                    self.running.retain(|running| *running != label);
+                }
+                match result {
+                    Ok(issue) => {
+                        self.message = Some((format!("Created {}", issue.key), false));
+                        for provisional in self
+                            .provisional
+                            .iter_mut()
+                            .chain(&mut self.data.issues)
+                            .filter(|provisional| provisional.key == placeholder)
+                        {
+                            *provisional = issue.clone();
+                        }
+                    }
+                    Err(error) => {
+                        self.message = Some((format!("Creating a task failed: {error:#}"), true));
+                        self.provisional.retain(|issue| issue.key != placeholder);
+                        self.data.issues.retain(|issue| issue.key != placeholder);
+                    }
+                }
+                let last = self.rows().len().saturating_sub(1);
+                self.selected = self.selected.min(last);
             }
             Msg::Logs(label, result) => {
                 self.running.retain(|running| *running != label);
@@ -337,8 +436,11 @@ impl App {
         pr
     }
 
+    pub fn is_refreshing(&self) -> bool {
+        self.loading_issues || self.loading_prs
+    }
+
     fn finish_refresh(&mut self) {
-        self.refreshing = self.refreshing.saturating_sub(1);
         self.refreshed_at = Instant::now();
     }
 
@@ -425,7 +527,8 @@ impl App {
     fn selected_issue(&self) -> Option<Issue> {
         let row = self.rows().get(self.selected)?.clone();
         let issue = &self.data.issues[row.issue?];
-        (!issue.is_epic).then(|| issue.clone()) // an epic heading is not something to work on
+        let actionable = !issue.is_epic && !model::is_placeholder(&issue.key); // an epic heading is not something to work on, a task still being created not yet
+        actionable.then(|| issue.clone())
     }
 
     fn selected_pr(&mut self) -> Option<Pr> {
@@ -669,18 +772,22 @@ impl App {
             }
             let added = (!already_tagged).then(|| repo.clone());
             let context = self.context.clone();
-            return self.background(format!("Tagging {key} with {repo}"), move || {
-                context
-                    .jira
-                    .change_labels(&key, added.as_deref(), &replaced)?;
-                Ok(match replaced.as_slice() {
-                    [] => format!("Tagged {key} with {repo}"),
-                    replaced => format!(
-                        "Tagged {key} with {repo}, replacing {}",
-                        replaced.join(", ")
-                    ),
-                })
-            });
+            return self.background_for(
+                &key.clone(),
+                format!("Tagging {key} with {repo}"),
+                move || {
+                    context
+                        .jira
+                        .change_labels(&key, added.as_deref(), &replaced)?;
+                    Ok(match replaced.as_slice() {
+                        [] => format!("Tagged {key} with {repo}"),
+                        replaced => format!(
+                            "Tagged {key} with {repo}, replacing {}",
+                            replaced.join(", ")
+                        ),
+                    })
+                },
+            );
         }
         let parent = issue
             .parent
@@ -721,26 +828,29 @@ impl App {
                     add_label: target.add_label,
                 };
             }
-            Intent::Switch => self.background(format!("Switching to {key}"), move || {
+            Intent::Switch => self.background_for(&key, format!("Switching to {key}"), move || {
                 actions::switch(&context, &target, None, IMPLEMENT)
             }),
-            Intent::Claim => self.background(format!("Switching to {key}"), move || {
+            Intent::Claim => self.background_for(&key, format!("Switching to {key}"), move || {
                 actions::switch(&context, &target, Some(&me), IMPLEMENT)
             }),
-            Intent::FixCi => self.background(format!("Opening {key} to fix CI"), move || {
-                actions::switch(&context, &target, None, FIX_CI)
-            }),
-            Intent::Finish => self.background(format!("Finishing {key}"), move || {
+            Intent::FixCi => {
+                self.background_for(&key, format!("Opening {key} to fix CI"), move || {
+                    actions::switch(&context, &target, None, FIX_CI)
+                })
+            }
+            Intent::Finish => self.background_for(&key, format!("Finishing {key}"), move || {
                 actions::finish(&context, &target)
             }),
-            Intent::Main => self.background(
+            Intent::Main => self.background_for(
+                &key,
                 format!("Checking out {key} in {}", target.repo),
                 move || actions::checkout_in_main(&context, &target),
             ),
             Intent::Tag => unreachable!("handled above"),
             Intent::Diff => {
                 self.mark_seen_pr(&key);
-                self.background(format!("Diffing {key}"), move || {
+                self.background_for(&key, format!("Diffing {key}"), move || {
                     actions::diff(&context, &target)
                 })
             }
@@ -759,18 +869,46 @@ impl App {
         self.selected_issue()?.epic
     }
 
+    /// File a new task, showing it right away as a placeholder row, selected, that the issue
+    /// takes the place of once Jira has created it.
     fn create_task(&mut self, summary: String, epic: Option<Parent>) {
         let summary = summary.trim().to_owned();
         if summary.is_empty() {
             return;
         }
+        self.created_count += 1;
+        let placeholder = Issue {
+            key: model::placeholder_key(self.created_count),
+            summary: summary.clone(),
+            listed: true,
+            section: BACKLOG.to_owned(), // where Jira puts a new task
+            epic: epic.clone(),
+            parent: epic.clone(),
+            ..Issue::default()
+        };
+        let key = placeholder.key.clone();
+        self.provisional.push(placeholder.clone());
+        self.data.issues.push(placeholder);
+        let label = format!("Creating \"{summary}\"");
+        self.pending.insert(key.clone(), label.clone());
+        self.running.push(label);
+        self.collapsed.remove(&section_fold(BACKLOG));
+        if let Some(index) = self.rows().iter().position(|row| row.key == key) {
+            self.selected = index;
+        }
         let parent = epic.map(|epic| epic.key);
-        let context = self.context.clone();
-        self.background(format!("Creating \"{summary}\""), move || {
-            let key = context
+        let (context, sender) = (self.context.clone(), self.sender.clone());
+        thread::spawn(move || {
+            let created = context
                 .jira
-                .create_task(PROJECT, &summary, parent.as_deref())?;
-            Ok(format!("Created {key}"))
+                .create_task(PROJECT, &summary, parent.as_deref())
+                .and_then(|created| context.jira.issue(&created))
+                .map(|mut issue| {
+                    issue.section = BACKLOG.to_owned();
+                    issue.epic = issue.parent.clone();
+                    issue
+                });
+            let _ = sender.send(Msg::Created(key, created));
         });
     }
 
@@ -801,7 +939,8 @@ impl App {
         } else {
             "the board"
         };
-        self.background(
+        self.background_for(
+            &issue.key.clone(),
             format!("Moving {} to {destination}", issue.key),
             move || {
                 let moved = issue.board_key();
@@ -824,16 +963,22 @@ impl App {
             return;
         }
         let context = self.context.clone();
-        self.background(format!("Removing the worktree of {key}"), move || {
-            actions::remove_worktree(&context, &key)
-        });
+        self.background_for(
+            &key.clone(),
+            format!("Removing the worktree of {key}"),
+            move || actions::remove_worktree(&context, &key),
+        );
     }
 
     fn approve(&mut self) {
         let Some(pr) = self.selected_pr() else {
             return;
         };
-        self.background(format!("Approving #{}", pr.number), move || {
+        let Some(key) = issue_key_of(&pr.branch) else {
+            return;
+        };
+        self.merging.insert(pr.id.clone(), key.clone()); // followed once approved, until merged
+        self.background_for(&key, format!("Approving #{}", pr.number), move || {
             github::approve_and_merge(&pr.url)?;
             Ok(format!("Approved #{} and enabled auto-merge", pr.number))
         });

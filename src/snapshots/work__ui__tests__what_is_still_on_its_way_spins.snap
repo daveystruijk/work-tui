@@ -1,0 +1,13 @@
+---
+source: src/ui.rs
+expression: "rendered(&app, 80, 9)"
+---
+"  Issue                Status       Dev       Age   Diff              CI Repo   "
+"▾ Review (1) ───────────────────────────────────────────────────────────────────"
+"  INI-3   ⠋   Export … Review       Casey     1d    ⠋                    backend"
+"▾ In Progress (1) ──────────────────────────────────────────────────────────────"
+"  INI-2   WORK   Add … In Progress  Casey     2h    ⠋                 ✗  backend"
+"▾ Backlog (2) ──────────────────────────────────────────────────────────────────"
+"  INI-4 Fix the login… Plan                   12d   ⠋                    backend"
+"  INI-…   ⠋   Export …                              ⠋                           "
+"⏎ switch  f finish  n new  a tag  / search  space fold  </> boa updated just now"

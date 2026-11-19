@@ -51,12 +51,12 @@ The size sits in three places: the list (`ui/list/mod.rs`, 2.9k), the app state 
 
 ### See
 
-- Issue list of the project's board, refreshed every 60s. While CI runs, only the pull requests it runs on are re-fetched every 10s, by id; the full GitHub search is too slow and heavy to repeat that often.
+- Issue list of the project's board, refreshed every 60s. While CI runs, or while GitHub has not yet worked out whether a pull request has conflicts, only those pull requests are re-fetched every 10s, by id; the full GitHub search is too slow and heavy to repeat that often. The footer's right end shows what a refresh is still loading (issues, PRs) or how long ago it finished.
 - One section per board column, from Review back to the first column, then the backlog. `<` moves an issue from the backlog onto the board, `>` back. Issues past Review are not loaded.
 - Issues appear as soon as Jira answers (about a second); pull requests fill in when GitHub does. The bare GitHub search takes about 1.3s; the per-pull-request details (reviews, review threads, CI checks) take several seconds more, so they are fetched in three parallel requests and must never hold up the list.
 - PRs from a single GitHub search on `head:<PROJECT>-`, matched to issues by branch prefix.
 - Board columns are flat lists; an issue's epic is shown in the sidebar and matched by search. The backlog is grouped by epic. Epics themselves are not listed as rows.
-- Columns: issue, status, assignee, age, PR lines added and removed + unresolved comments, CI, repo (the repositories its labels name).
+- Columns: issue, status, assignee, age, PR lines added and removed + unresolved comments (`✉`) + merge conflicts (`⚠`, never greyed out), CI, repo (the repositories its labels name).
 - A pull request is greyed out unless I can move it forward: mine with conflicts, failing CI, requested changes or unresolved comments; someone else's that is not a draft and that I have not reviewed yet (or where a new review was requested from me).
 - Age fades in four steps of white: last hour, last day, last week, older.
 - `a` tags an issue with a repository: the chosen one replaces any other repository labels on the issue. Labels that do not name a repository are never touched.
@@ -107,7 +107,8 @@ Where it differs from the requirements above:
 
 - **Backlog grouping is by direct parent, whatever its type.** The project still holds stories and subtasks; they group under their own parent.
 - **Collapsed sections are not remembered** between runs. Nothing is cached on disk at all.
-- **A new task shows up on the next refresh**, not instantly: Jira's search lags a moment behind creation, and there is no optimistic insert.
+- **A new task shows up at once**, as a selected `INI-…` row in the backlog with a spinner, and gets its key as soon as Jira has created it. Jira's search lags a moment behind creation, so the issue is fetched by key and kept until the search returns it. It always appears in the backlog first, where Jira puts a new task.
+- **Rows show what is under way:** a spinner badge while an action on the issue runs, a spinning `MERGE` badge on a pull request approved here until it is merged (followed by id every 10s, not by the full search), and a spinner in the Diff column until GitHub has answered for the first time.
 - **Move to board** posts the issue to the project's single board. Projects with several boards or sprints are not handled.
 - **Refresh fetches at most 500 issues.**
 - **An issue with subtasks is flattened into its subtasks.** The parent is not listed; each subtask is, in the column of its own status, filed under the parent's epic. Jira reports every subtask as backlog, so a subtask only counts as backlog when its parent is there, and claiming it or moving it with `<`/`>` moves its parent. A subtask works like a task: its own branch, worktree and PR. The parent is still listed when it has a PR of its own.

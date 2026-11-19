@@ -89,6 +89,12 @@ impl Jira {
         }
     }
 
+    /// One issue by key. Unlike the search, this sees an issue the moment it is created.
+    pub fn issue(&self, key: &str) -> Result<Issue> {
+        let path = format!("/rest/api/3/issue/{key}?fields={}", FIELDS.join(","));
+        Ok(parse_issue(&self.request("GET", &path, None)?))
+    }
+
     pub fn myself(&self) -> Result<Person> {
         let me = self.request("GET", "/rest/api/3/myself", None)?;
         parse_person(&me).context("Jira returned no account for these credentials")
