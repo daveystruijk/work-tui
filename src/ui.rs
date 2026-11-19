@@ -693,6 +693,7 @@ mod tests {
             )]),
             workspaces: HashMap::from([("INI-2".to_owned(), "http://localhost:9001".to_owned())]),
             main_checkouts: HashSet::new(),
+            ambiguous_prs: HashMap::new(),
             me: casey,
             github_login: "casey".to_owned(),
         };

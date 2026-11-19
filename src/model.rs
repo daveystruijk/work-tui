@@ -129,14 +129,52 @@ pub struct Data {
     pub issues: Vec<Issue>,
     /// The board columns up to and including Review, then the backlog.
     pub sections: Vec<String>,
-    /// Open pull requests by issue key.
+    /// Open pull requests by issue key; one of them for an issue in `ambiguous_prs`.
     pub prs: HashMap<String, Pr>,
+    /// Issues with several open pull requests that their labels do not narrow down to one.
+    pub ambiguous_prs: HashMap<String, Vec<Pr>>,
     /// Workspace URLs by issue key.
     pub workspaces: HashMap<String, String>,
     /// Keys of the issues whose branch a repository's main checkout has checked out.
     pub main_checkouts: HashSet<String>,
     pub me: Person,
     pub github_login: String,
+}
+
+/// The pull request of each issue, by issue key. An issue with several keeps those in the
+/// repositories its labels name, when that leaves any; if more than one remains, the first by
+/// repository and number stands in for them, and all of them are returned as ambiguous too.
+pub fn resolve_prs(
+    issues: &[Issue],
+    prs: &[Pr],
+) -> (HashMap<String, Pr>, HashMap<String, Vec<Pr>>) {
+    let mut grouped: HashMap<String, Vec<Pr>> = HashMap::new();
+    for pr in prs {
+        if let Some(key) = issue_key_of(&pr.branch) {
+            grouped.entry(key).or_default().push(pr.clone());
+        }
+    }
+    let mut resolved = HashMap::new();
+    let mut ambiguous = HashMap::new();
+    for (key, mut group) in grouped {
+        let labels: Vec<String> = issues
+            .iter()
+            .find(|issue| issue.key == key)
+            .map(|issue| issue.labels.iter().map(|label| normalize(label)).collect())
+            .unwrap_or_default();
+        if group
+            .iter()
+            .any(|pr| labels.contains(&normalize(pr.repo())))
+        {
+            group.retain(|pr| labels.contains(&normalize(pr.repo())));
+        }
+        group.sort_by(|a, b| (&a.repo_slug, a.number).cmp(&(&b.repo_slug, b.number)));
+        resolved.insert(key.clone(), group[0].clone());
+        if group.len() > 1 {
+            ambiguous.insert(key, group);
+        }
+    }
+    (resolved, ambiguous)
 }
 
 /// The issue key a branch name starts with: `INI-12-fix-it` gives `INI-12`.
@@ -322,5 +360,33 @@ mod tests {
         assert_eq!(keys(&HashMap::new()), ["INI-2"]);
         let prs = HashMap::from([("INI-1".to_owned(), Pr::default())]);
         assert_eq!(keys(&prs), ["INI-1", "INI-2"]);
+    }
+
+    #[test]
+    fn several_pull_requests_are_narrowed_down_by_the_issue_labels() {
+        let pr = |repo: &str, number: u64| Pr {
+            repo_slug: format!("org/{repo}"),
+            number,
+            branch: "INI-1-fix".to_owned(),
+            ..Pr::default()
+        };
+        let issue = |labels: &[&str]| Issue {
+            key: "INI-1".to_owned(),
+            labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+            ..Issue::default()
+        };
+        let prs = [pr("frontend", 2), pr("backend", 1), pr("backend", 3)];
+        let numbers = |found: &[Pr]| -> Vec<u64> { found.iter().map(|pr| pr.number).collect() };
+
+        let (resolved, ambiguous) = resolve_prs(&[issue(&["frontend"])], &prs);
+        assert_eq!(resolved["INI-1"].number, 2);
+        assert!(ambiguous.is_empty());
+
+        let (resolved, ambiguous) = resolve_prs(&[issue(&["Backend"])], &prs);
+        assert_eq!(resolved["INI-1"].number, 1);
+        assert_eq!(numbers(&ambiguous["INI-1"]), [1, 3]);
+
+        let (_, ambiguous) = resolve_prs(&[issue(&["other"])], &prs);
+        assert_eq!(numbers(&ambiguous["INI-1"]), [1, 3, 2]);
     }
 }

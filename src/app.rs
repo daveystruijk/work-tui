@@ -25,7 +25,7 @@ pub enum Msg {
     Issues(Result<Issues>),
     Prs(Result<github::PullRequests>),
     /// Fresh state of the pull requests whose CI was running.
-    CiUpdate(Result<HashMap<String, Pr>>),
+    CiUpdate(Result<Vec<Pr>>),
     Done(String, Result<String>),
     Logs(String, Result<String>),
 }
@@ -103,6 +103,8 @@ pub struct App {
     /// Keys of the issues with an agent at work, as of `panes_checked_at`.
     pub busy_agents: HashSet<String>,
     panes_checked_at: Instant,
+    /// Every open pull request of the project, of which `data.prs` holds one per issue.
+    all_prs: Vec<Pr>,
     /// Issue keys whose pull request was already waiting for review at the last refresh.
     reviewable: Option<HashSet<String>>,
     /// Ids of the pull requests I have looked at, kept on disk; `None` until the first load of
@@ -137,6 +139,7 @@ impl App {
             open_diffs: HashSet::new(),
             busy_agents: HashSet::new(),
             panes_checked_at: Instant::now(),
+            all_prs: Vec::new(),
             reviewable: None,
         }
     }
@@ -191,9 +194,8 @@ impl App {
     fn refresh_running_ci(&mut self) {
         self.ci_checked_at = Instant::now();
         let running: Vec<String> = self
-            .data
-            .prs
-            .values()
+            .all_prs
+            .iter()
             .filter(|pr| pr.ci() == Some(CheckState::Running))
             .map(|pr| pr.id.clone())
             .collect();
@@ -250,6 +252,7 @@ impl App {
                 self.data.workspaces = loaded.workspaces;
                 self.data.main_checkouts = loaded.main_checkouts;
                 self.data.me = loaded.me;
+                self.resolve_prs(); // the labels may have changed
                 self.loaded = true;
                 self.finish_refresh();
                 let rows = self.rows();
@@ -258,28 +261,22 @@ impl App {
                     .unwrap_or(self.selected.min(rows.len().saturating_sub(1)));
             }
             Msg::Prs(Ok(found)) => {
-                let prs = found.by_key;
+                self.all_prs = found.prs;
+                self.resolve_prs();
+                let prs = self.data.prs.clone();
                 self.notify_reviewable(&prs);
                 self.update_seen(&prs);
                 self.data.github_login = found.login;
-                self.data.prs = prs;
                 self.finish_refresh();
-                if !found.duplicates.is_empty() {
-                    let listed: Vec<String> = found
-                        .duplicates
-                        .iter()
-                        .map(|duplicate| format!("{} ({})", duplicate.key, duplicate.prs.join(", ")))
-                        .collect();
-                    self.message = Some((
-                        format!(
-                            "Several open PRs for one issue, showing only the first: {}",
-                            listed.join("; ")
-                        ),
-                        true,
-                    ));
-                }
             }
-            Msg::CiUpdate(Ok(prs)) => self.data.prs.extend(prs),
+            Msg::CiUpdate(Ok(updated)) => {
+                for pr in updated {
+                    if let Some(known) = self.all_prs.iter_mut().find(|known| known.id == pr.id) {
+                        *known = pr;
+                    }
+                }
+                self.resolve_prs();
+            }
             Msg::CiUpdate(Err(error)) => {
                 self.message = Some((format!("CI refresh failed: {error:#}"), true));
             }
@@ -309,6 +306,35 @@ impl App {
                 }
             }
         }
+    }
+
+    fn resolve_prs(&mut self) {
+        (self.data.prs, self.data.ambiguous_prs) =
+            model::resolve_prs(&self.data.issues, &self.all_prs);
+    }
+
+    /// The issue's pull request, or `None` with an error in the status line when it has none or
+    /// several that its labels do not narrow down to one.
+    fn pr_of(&mut self, key: &str) -> Option<Pr> {
+        if let Some(prs) = self.data.ambiguous_prs.get(key) {
+            let listed: Vec<String> = prs
+                .iter()
+                .map(|pr| format!("{}#{}", pr.repo(), pr.number))
+                .collect();
+            self.message = Some((
+                format!(
+                    "{key} has several open PRs ({}); tag it with one repo or close all but one",
+                    listed.join(", ")
+                ),
+                true,
+            ));
+            return None;
+        }
+        let pr = self.data.prs.get(key).cloned();
+        if pr.is_none() {
+            self.message = Some((format!("{key} has no open PR"), true));
+        }
+        pr
     }
 
     fn finish_refresh(&mut self) {
@@ -402,8 +428,9 @@ impl App {
         (!issue.is_epic).then(|| issue.clone()) // an epic heading is not something to work on
     }
 
-    fn selected_pr(&self) -> Option<Pr> {
-        self.data.prs.get(&self.selected_issue()?.key).cloned()
+    fn selected_pr(&mut self) -> Option<Pr> {
+        let key = self.selected_issue()?.key;
+        self.pr_of(&key)
     }
 
     /// Handle a key press; returns whether to quit.
@@ -579,6 +606,16 @@ impl App {
             return;
         };
         let labelled = self.repos_of(&issue);
+        if let Some(prs) = self.data.ambiguous_prs.get(&issue.key) {
+            let mut repos: Vec<String> = prs.iter().map(|pr| pr.repo().to_owned()).collect();
+            repos.dedup(); // sorted by repository
+            if repos.len() < prs.len() {
+                self.pr_of(&issue.key); // two in one repository: no choice of repository settles it
+                return;
+            }
+            let add_label = !repos.iter().any(|repo| labelled.contains(repo)); // either all of them are labelled or none
+            return self.pick_repo(intent, issue, repos, add_label);
+        }
         if let Some(pr) = self.data.prs.get(&issue.key) {
             let repo = pr.repo().to_owned();
             let add_label = !labelled.contains(&repo);
@@ -655,7 +692,10 @@ impl App {
                     .find(|issue| issue.key == parent.key)
             })
             .cloned();
-        let pr = self.data.prs.get(&key).cloned();
+        let pr = match self.data.ambiguous_prs.get(&key) {
+            Some(prs) => prs.iter().find(|pr| pr.repo() == repo).cloned(),
+            None => self.data.prs.get(&key).cloned(),
+        };
         let is_someone_elses = issue
             .assignee
             .as_ref()
@@ -808,12 +848,9 @@ impl App {
             self.mark_seen_pr(&key);
         }
         let url = match code {
-            KeyCode::Char('o') => match self.data.prs.get(&key) {
-                Some(pr) => pr.url.clone(),
-                None => {
-                    self.message = Some((format!("{key} has no open PR"), true));
-                    return;
-                }
+            KeyCode::Char('o') => match self.pr_of(&key) {
+                Some(pr) => pr.url,
+                None => return,
             },
             _ => self.jira_url(&key),
         };
